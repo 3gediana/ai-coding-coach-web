@@ -4,3 +4,6 @@ dist
 *.vsix
 *.log
 test-output*.log
+
+.env.local
+

@@ -26,6 +26,19 @@ export function SettingsModal() {
     }
   }, [open, cfg]);
 
+  // Esc 关闭
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, setOpen]);
+
   const onApplyPreset = (id: AIProvider) => {
     const p = PRESETS.find((x) => x.id === id);
     if (!p) return;

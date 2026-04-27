@@ -952,3 +952,14 @@ function guessLang(code: string): FileLang {
 
 // 启动时拉取数据 + 迁移
 useStore.getState().refreshAll();
+
+// 测试用：暴露强关所有 modal 的 helper（仅用于 e2e）
+if (typeof window !== 'undefined') {
+  (window as any).__aicc_clear__ = () => {
+    const s = useStore.getState();
+    s.setSettingsOpen(false);
+    s.setProblemEditorOpen(false);
+    s.setCmdPaletteOpen(false);
+    // 不清 diffSelection，避免 e2e 测试连锁失败
+  };
+}

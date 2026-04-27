@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../lib/store';
 import { X, ScrollText, Wand2, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,6 +12,19 @@ export function ProblemEditorModal() {
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
 
   const [text, setText] = useState('');
+
+  // Esc 关闭
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, setOpen]);
 
   const onSubmit = () => {
     if (text.trim().length < 8) {

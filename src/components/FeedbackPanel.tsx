@@ -180,9 +180,9 @@ function ResultView({ result }: { result: import('../core/types').AnalysisResult
                     <div className="text-[10px] uppercase tracking-wider text-accent-glow font-semibold mb-1">
                       建议
                     </div>
-                    <p className="text-xs text-ink-dim md-body">
+                    <div className="text-xs text-ink-dim md-body">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{iss.suggestion}</ReactMarkdown>
-                    </p>
+                    </div>
                   </div>
                 )}
               </div>

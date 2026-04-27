@@ -31,8 +31,6 @@ export function TabBar() {
   const duplicateFile = useStore((s) => s.duplicateFile);
   const deleteFile = useStore((s) => s.deleteFile);
   const pinFile = useStore((s) => s.pinFile);
-  const defaultLang = useStore((s) => s.defaultLang);
-  const setDefaultLang = useStore((s) => s.setDefaultLang);
   const diffSelection = useStore((s) => s.diffSelection);
   const toggleDiffSelection = useStore((s) => s.toggleDiffSelection);
   const enqueueDiff = useStore((s) => s.enqueueDiff);
@@ -54,11 +52,19 @@ export function TabBar() {
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; fileId: string } | null>(null);
   useEffect(() => {
     if (!ctxMenu) return;
-    const close = () => setCtxMenu(null);
-    window.addEventListener('click', close);
-    window.addEventListener('contextmenu', close);
+    let active = false;
+    const close = () => {
+      if (active) setCtxMenu(null);
+    };
+    // 延迟 100ms 后才让全局 listener 关菜单，避免触发它的那次右键事件自己把它关掉
+    const t = setTimeout(() => {
+      active = true;
+      window.addEventListener('mousedown', close);
+      window.addEventListener('contextmenu', close);
+    }, 100);
     return () => {
-      window.removeEventListener('click', close);
+      clearTimeout(t);
+      window.removeEventListener('mousedown', close);
       window.removeEventListener('contextmenu', close);
     };
   }, [ctxMenu]);
@@ -85,7 +91,8 @@ export function TabBar() {
   };
 
   const onCreateNew = async (lang: FileLang) => {
-    setDefaultLang(lang === 'markdown' || lang === 'plaintext' ? defaultLang : (lang as Lang));
+    // 不污染全局 defaultLang：单纯创建该语言文件
+    // (defaultLang 只用于"空 scope 自动建文件"的兜底)
     await createFile({ scope, language: lang, activate: true });
     setCreateOpen(false);
   };
@@ -205,29 +212,30 @@ export function TabBar() {
       {/* 对拍按钮 */}
       <AnimatePresence>
         {showDiff && (
-          <motion.button
+          <motion.div
             initial={{ opacity: 0, x: 4 }}
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 4 }}
-            onClick={() => {
-              enqueueDiff();
-            }}
-            className="px-3 flex items-center gap-1.5 text-xs font-semibold text-cyan border-l border-cyan/30 bg-cyan/5 hover:bg-cyan/10 shrink-0"
-            title="让 AI 对比这两个文件"
+            className="flex items-stretch text-xs font-semibold text-cyan border-l border-cyan/30 bg-cyan/5 shrink-0"
           >
-            <GitCompare size={13} />
-            对拍
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                clearDiffSelection();
+              onClick={() => {
+                enqueueDiff();
               }}
-              className="ml-1 opacity-50 hover:opacity-100"
+              className="px-3 flex items-center gap-1.5 hover:bg-cyan/10"
+              title="让 AI 对比这两个文件"
+            >
+              <GitCompare size={13} />
+              对拍
+            </button>
+            <button
+              onClick={() => clearDiffSelection()}
+              className="px-1.5 opacity-50 hover:opacity-100 hover:bg-cyan/10 border-l border-cyan/20"
               title="取消选择"
             >
               <X size={11} />
             </button>
-          </motion.button>
+          </motion.div>
         )}
       </AnimatePresence>
 
