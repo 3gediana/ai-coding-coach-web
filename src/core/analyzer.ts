@@ -81,6 +81,8 @@ export class Coach {
       language: Lang;
       profile?: LearnerProfile;
       history?: AnalysisHistoryEntry[];
+      /** 同题/草稿区下的其它文件（让 AI 知道上下文：暴力对照 / 笔记 / 多版本） */
+      siblings?: Array<{ name: string; language: string; content: string }>;
     },
     opts: StreamOpts = {},
   ): Promise<AnalysisResult> {

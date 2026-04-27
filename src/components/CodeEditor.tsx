@@ -8,6 +8,7 @@ import { cn } from '../lib/cn';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { TabBar } from './TabBar';
+import { registerSnippets } from '../lib/editor-snippets';
 
 const DRAFT_SCOPE = '__draft__';
 
@@ -94,6 +95,9 @@ export function CodeEditor() {
       },
     });
     monaco.editor.setTheme('aicc-dark');
+
+    // 注册 cpp/c/python 常用 snippet（学生级最常用）
+    registerSnippets(monaco);
 
     // 用户改某行 -> 移除该行 issue + 更新 lastEditAt
     editor.onDidChangeModelContent((e: any) => {
@@ -250,6 +254,19 @@ export function CodeEditor() {
                 wordWrap: 'on',
                 renderWhitespace: 'selection',
                 stickyScroll: { enabled: false },
+                // 补全 / Tab 触发
+                quickSuggestions: { other: true, comments: false, strings: false },
+                suggestOnTriggerCharacters: true,
+                acceptSuggestionOnEnter: 'smart',
+                tabCompletion: 'on',
+                snippetSuggestions: 'inline',
+                wordBasedSuggestions: 'currentDocument',
+                suggest: {
+                  snippetsPreventQuickSuggestions: false,
+                  showWords: true,
+                  showSnippets: true,
+                  showKeywords: true,
+                },
               }}
             />
           </div>

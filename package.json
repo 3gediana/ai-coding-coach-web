@@ -11,11 +11,13 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
+    "@xterm/addon-fit": "^0.11.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.15.0",
     "idb": "^8.0.0",
     "lucide-react": "^0.468.0",
     "nanoid": "^5.0.9",
+    "pyodide": "^0.29.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.3",
@@ -23,6 +25,7 @@
     "remark-gfm": "^4.0.0",
     "sonner": "^1.7.1",
     "tailwind-merge": "^2.5.5",
+    "xterm": "^5.3.0",
     "zustand": "^5.0.2"
   },
   "devDependencies": {

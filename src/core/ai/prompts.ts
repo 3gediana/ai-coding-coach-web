@@ -135,6 +135,7 @@ export function buildAnalyzeCodePrompt(args: {
   language: Lang;
   profile?: LearnerProfile;
   history?: AnalysisHistoryEntry[];
+  siblings?: Array<{ name: string; language: string; content: string }>;
 }): PromptPair {
   const problemContext = args.problem
     ? `【当前题目】
@@ -145,13 +146,15 @@ ${args.problem.constraints ? '约束：' + args.problem.constraints : ''}`
 
   const profileBlock = renderProfile(args.profile);
   const historyBlock = renderHistory(args.history);
+  const siblingBlock = renderSiblings(args.siblings);
 
   return {
     system: SYSTEM_CODING_COACH,
     user: `${problemContext}
 ${profileBlock}
 ${historyBlock}
-【学生提交的 ${args.language} 代码】
+${siblingBlock}
+【学生当前正在分析的 ${args.language} 代码】
 \`\`\`${args.language}
 ${args.code}
 \`\`\`
@@ -184,6 +187,38 @@ ${args.code}
    - 重点说"新出现"的问题
 6. 直接输出 JSON`,
   };
+}
+
+function renderSiblings(
+  siblings?: Array<{ name: string; language: string; content: string }>,
+): string {
+  if (!siblings || siblings.length === 0) return '';
+  // 单文件总长度限制，避免 prompt 爆炸
+  const MAX_PER_FILE = 1500; // 字符
+  const MAX_TOTAL = 6000;
+  let total = 0;
+  const parts: string[] = ['', '【同题/同会话下的其它文件（参考上下文）】'];
+  for (const s of siblings) {
+    if (total >= MAX_TOTAL) {
+      parts.push(`...还有 ${siblings.length - parts.length + 2} 个文件略`);
+      break;
+    }
+    let body = s.content;
+    let truncated = false;
+    if (body.length > MAX_PER_FILE) {
+      body = body.slice(0, MAX_PER_FILE);
+      truncated = true;
+    }
+    parts.push(`--- ${s.name} (${s.language})${truncated ? ' [截断]' : ''} ---`);
+    parts.push('```' + s.language);
+    parts.push(body);
+    parts.push('```');
+    total += body.length;
+  }
+  parts.push(
+    '⚠ 这些文件**只是上下文**：可以是另一份解法（暴力对照）/ 笔记 / 其它语言版本。请优先分析"当前正在分析的代码"，仅在必要时引用其它文件。',
+  );
+  return parts.join('\n');
 }
 
 function renderProfile(p?: LearnerProfile): string {

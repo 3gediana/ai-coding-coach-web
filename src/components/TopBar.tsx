@@ -1,7 +1,21 @@
 import { motion } from 'framer-motion';
-import { Settings, Sparkles, Plus, Play, CheckCircle2 } from 'lucide-react';
+import { useEffect } from 'react';
+import { Settings, Sparkles, Plus, Play, CheckCircle2, PlayCircle } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
+import { isRuntimeSupported } from '../lib/runtime';
+
+/** 展开终端 + 触发 RuntimePane 内的运行按钮 */
+function triggerRun(setOpen: (v: boolean) => void) {
+  setOpen(true);
+  // RuntimePane 动画 280ms，等它挂载
+  setTimeout(() => {
+    const btn = document.querySelector(
+      '[data-runtime-pane-run]',
+    ) as HTMLButtonElement | null;
+    btn?.click();
+  }, 350);
+}
 
 export function TopBar() {
   const aiConfig = useStore((s) => s.aiConfig);
@@ -9,6 +23,7 @@ export function TopBar() {
   const setProblemEditorOpen = useStore((s) => s.setProblemEditorOpen);
   const setCmdPaletteOpen = useStore((s) => s.setCmdPaletteOpen);
   const setSubmitModalOpen = useStore((s) => s.setSubmitModalOpen);
+  const setRuntimePaneOpen = useStore((s) => s.setRuntimePaneOpen);
   const enqueueAnalyze = useStore((s) => s.enqueueAnalyze);
   const activeProblemId = useStore((s) => s.activeProblemId);
   const problems = useStore((s) => s.problems);
@@ -28,6 +43,19 @@ export function TopBar() {
     apiOk &&
     activeFile &&
     (activeFile.language === 'cpp' || activeFile.language === 'c' || activeFile.language === 'python');
+  const canRun = activeFile && isRuntimeSupported(activeFile.language);
+
+  // Ctrl+Enter 全局：展开终端 + 触发运行
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canRun) {
+        e.preventDefault();
+        triggerRun(setRuntimePaneOpen);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canRun, setRuntimePaneOpen]);
 
   return (
     <header className="glass border-b border-line h-14 flex items-center px-4 gap-3 z-30">
@@ -96,6 +124,16 @@ export function TopBar() {
       <button onClick={() => setProblemEditorOpen(true)} className="btn" title="录入题目">
         <Plus size={14} />
         <span className="hidden md:inline">录入题目</span>
+      </button>
+
+      <button
+        onClick={() => triggerRun(setRuntimePaneOpen)}
+        className="btn"
+        disabled={!canRun}
+        title={canRun ? '运行（Ctrl+Enter）' : '当前文件不支持运行'}
+      >
+        <PlayCircle size={14} />
+        <span className="hidden md:inline">运行</span>
       </button>
 
       <button

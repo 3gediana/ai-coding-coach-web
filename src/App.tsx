@@ -11,6 +11,7 @@ import { DiffResultViewer } from './components/DiffResultViewer';
 import { SubmitResultModal } from './components/SubmitResultModal';
 import { StuckHintCard } from './components/StuckHintCard';
 import { PasteSuggestionChip } from './components/PasteSuggestionChip';
+import { RuntimePane } from './components/RuntimePane';
 import { useStore } from './lib/store';
 import { toast } from 'sonner';
 
@@ -40,6 +41,7 @@ export default function App() {
         <main className="flex-1 flex min-w-0">
           <div className="flex-1 min-w-0 flex flex-col">
             <CodeEditor />
+            <RuntimePane />
           </div>
           <FeedbackPanel />
         </main>

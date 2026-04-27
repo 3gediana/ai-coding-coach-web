@@ -119,6 +119,8 @@ interface State {
   problemEditorOpen: boolean;
   cmdPaletteOpen: boolean;
   submitModalOpen: boolean;
+  /** 底部运行时面板是否展开 */
+  runtimePaneOpen: boolean;
 
   // 卡住检测 / 粘贴提示 / 默认开关
   lastEditAt: number;
@@ -177,6 +179,7 @@ interface State {
   setProblemEditorOpen: (v: boolean) => void;
   setCmdPaletteOpen: (v: boolean) => void;
   setSubmitModalOpen: (v: boolean) => void;
+  setRuntimePaneOpen: (v: boolean) => void;
 
   // 卡住检测 / 粘贴
   markEdit: () => void;
@@ -377,6 +380,7 @@ export const useStore = create<State>((set, get) => {
     problemEditorOpen: false,
     cmdPaletteOpen: false,
     submitModalOpen: false,
+    runtimePaneOpen: localStorage.getItem('aicc.runtimePane.v1') === 'on',
 
     lastEditAt: Date.now(),
     lastHintAt: 0,
@@ -725,6 +729,12 @@ export const useStore = create<State>((set, get) => {
               })
               .filter((h) => h.issuesSnapshot.length > 0 || h.overallComment);
 
+            // 收集同 scope 其它文件作为上下文（除当前文件外，最多 5 个）
+            const siblings = files
+              .filter((f) => f.id !== file.id && f.content.trim().length > 0)
+              .slice(0, 5)
+              .map((f) => ({ name: f.name, language: f.language, content: f.content }));
+
             return get().coach.analyzeCode(
               {
                 problem,
@@ -732,6 +742,7 @@ export const useStore = create<State>((set, get) => {
                 language: langOfFile(file.language),
                 profile,
                 history,
+                siblings,
               },
               { onChunk, onRetry, signal },
             );
@@ -939,6 +950,10 @@ export const useStore = create<State>((set, get) => {
     setProblemEditorOpen: (v) => set({ problemEditorOpen: v }),
     setCmdPaletteOpen: (v) => set({ cmdPaletteOpen: v }),
     setSubmitModalOpen: (v) => set({ submitModalOpen: v }),
+    setRuntimePaneOpen: (v) => {
+      localStorage.setItem('aicc.runtimePane.v1', v ? 'on' : 'off');
+      set({ runtimePaneOpen: v });
+    },
 
     // ───── 卡住检测 ─────
     markEdit: () => set({ lastEditAt: Date.now() }),
