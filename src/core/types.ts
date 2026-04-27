@@ -1,0 +1,209 @@
+/**
+ * 核心类型定义。
+ *
+ * 这一层是为未来升级到 Web 版做准备的：
+ * - 不引用任何 vscode API
+ * - 数据结构稳定，方便序列化为 JSON 或存入数据库
+ * - 未来 Web 后端可以直接复用这些 interface
+ */
+
+export type Lang = 'cpp' | 'c' | 'python';
+
+/** 一道题目 */
+export interface Problem {
+  id: string;
+  title: string;
+  statement: string;
+  inputFormat?: string;
+  outputFormat?: string;
+  constraints?: string;
+  examples?: ProblemExample[];
+  source?: string;
+  difficulty?: 'easy' | 'medium' | 'hard';
+  tags?: string[];
+  createdAt: number;
+}
+
+export interface ProblemExample {
+  input: string;
+  output: string;
+  explanation?: string;
+}
+
+/** AI 输出的代码诊断（一条问题） */
+export type Severity = 'error' | 'warning' | 'info' | 'hint';
+
+export interface CodeIssue {
+  line: number; // 1-indexed
+  endLine?: number;
+  severity: Severity;
+  category: 'bug' | 'optimization' | 'style' | 'algorithm';
+  message: string;
+  suggestion?: string;
+}
+
+/** AI 分析整段代码后的结果 */
+export interface AnalysisResult {
+  issues: CodeIssue[];
+  complexitySummary?: string;
+  overallComment?: string;
+}
+
+/** 错题本里的一条记录 */
+export interface Mistake {
+  id: string;
+  problemId?: string;
+  problemTitle: string;
+  language: Lang;
+  wrongCode: string;
+  correctCode?: string;
+  rootCause: string;
+  category: string;
+  knowledgePoints: string[];
+  reviewTips: string[];
+  correctSketch?: string;
+  createdAt: number;
+  reviewedAt?: number;
+  reviewCount: number;
+}
+
+/**
+ * 学习画像：跨题维度的"学生侧写"。
+ *
+ * 用于在每次实时分析时给 AI 当上下文，让反馈针对该学生的薄弱点。
+ * 体积控制在约 200-300 tokens 以内。
+ */
+export interface LearnerProfile {
+  totalProblems: number;
+  totalMistakes: number;
+  /** 最薄弱的 3 个知识点（按掌握度升序） */
+  weakestTags: Array<{ tag: string; mastery: number; count: number }>;
+  /** 最常见的错误分类 + 频次（最近 N 道错题） */
+  topMistakeCategories: Array<{ category: string; count: number }>;
+  /** 当前题的 tags 中，哪些是该学生的薄弱项（命中即重点关注） */
+  currentTagsHitWeak: string[];
+}
+
+/** 同一会话内最近 N 次分析的精简快照（喂给 AI 当上下文） */
+export interface AnalysisHistoryEntry {
+  ts: number;
+  reason: string;
+  /** 仅保留 line + severity + category + 简短 message，体积可控 */
+  issuesSnapshot: Array<{
+    line: number;
+    severity: Severity;
+    category: string;
+    message: string;
+  }>;
+  overallComment?: string;
+}
+
+/** 通过题目后的总结记录 */
+export interface ProblemSummary {
+  knowledgePoints: string[];
+  techniques: string[];
+  complexity: string;
+  extensions: string[];
+  summary: string;
+}
+
+/** AI 服务提供方（仅做记录，所有都走 OpenAI 兼容协议） */
+export type AIProvider =
+  | 'minimax'
+  | 'deepseek'
+  | 'openai'
+  | 'qwen'
+  | 'zhipu'
+  | 'moonshot'
+  | 'ollama'
+  | 'custom';
+
+/** AI 服务配置 */
+export interface AIConfig {
+  provider: AIProvider;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  maxTokens: number;
+  /** 单次请求超时（毫秒）；不填用 client 默认 */
+  timeoutMs?: number;
+  /** 最大重试次数；不填用 client 默认 */
+  maxRetries?: number;
+  /** 温度；不填走每个请求各自的默认 */
+  temperature?: number;
+}
+
+/** 时间状态机的 5 个状态 */
+export type TriggerState = 'CODING' | 'THINKING' | 'STUCK' | 'AWAY' | 'RETURNED';
+
+/** 事件类型 */
+export type CoachEventType =
+  | 'state_change'
+  | 'analysis'
+  | 'manual_analyze'
+  | 'submit'
+  | 'mistake_added'
+  | 'pass_summary'
+  | 'paste_detected'
+  | 'hint_pushed'
+  | 'hint_taken'
+  | 'session_start'
+  | 'session_end'
+  | 'problem_activated';
+
+/** 一条事件日志 */
+export interface CoachEvent {
+  ts: number;
+  sessionId: string;
+  problemId?: string;
+  type: CoachEventType;
+  payload?: Record<string, unknown>;
+}
+
+/** 一次会话 */
+export interface Session {
+  id: string;
+  problemId?: string;
+  problemTitle?: string;
+  startedAt: number;
+  endedAt?: number;
+  effectiveMs: number; // 有效解题时长（不含 AWAY）
+  awayMs: number;      // 离开总时长
+  stuckCount: number;
+  analyzeCount: number;
+  hintCount: number;
+  outcome?: 'pass' | 'mistake' | 'incomplete';
+  language?: Lang;
+  finalCode?: string;
+}
+
+/**
+ * 存储抽象。VS Code 版本用 globalStorage 写 JSON 文件实现。
+ * 未来 Web 版本可以换成 fetch 调用后端 API 的实现，业务代码不用改。
+ */
+export interface CoachStorage {
+  // 题目
+  saveProblem(p: Problem): Promise<void>;
+  getProblem(id: string): Promise<Problem | undefined>;
+  listProblems(): Promise<Problem[]>;
+  deleteProblem(id: string): Promise<void>;
+
+  // 错题
+  saveMistake(m: Mistake): Promise<void>;
+  getMistake(id: string): Promise<Mistake | undefined>;
+  listMistakes(): Promise<Mistake[]>;
+  deleteMistake(id: string): Promise<void>;
+
+  // 会话
+  saveSession(s: Session): Promise<void>;
+  getSession(id: string): Promise<Session | undefined>;
+  listSessions(): Promise<Session[]>;
+  deleteSession(id: string): Promise<void>;
+
+  // 事件（追加写）
+  appendEvent(e: CoachEvent): Promise<void>;
+  listEvents(opts?: { sessionId?: string; sinceTs?: number; limit?: number }): Promise<CoachEvent[]>;
+
+  /** 清空全部数据（题目/错题/会话/事件），不可撤销 */
+  wipeAll(): Promise<void>;
+}

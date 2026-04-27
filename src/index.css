@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  body {
+    background:
+      radial-gradient(ellipse 80% 60% at 20% -10%, rgba(124, 131, 255, 0.18), transparent 60%),
+      radial-gradient(ellipse 60% 50% at 100% 100%, rgba(34, 211, 238, 0.10), transparent 60%),
+      #0a0b14;
+    background-attachment: fixed;
+  }
+  ::selection {
+    background-color: rgba(124, 131, 255, 0.3);
+  }
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(124, 131, 255, 0.18);
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(124, 131, 255, 0.32);
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-bg-elev/70 backdrop-blur-xl border border-line/80;
+  }
+  .glass-card {
+    @apply bg-bg-card/80 backdrop-blur-xl border border-line/60 rounded-xl shadow-soft;
+  }
+  .btn {
+    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium
+           bg-bg-elev2 border border-line text-ink
+           hover:border-accent/60 hover:bg-bg-card hover:text-accent-glow
+           active:scale-[0.98] transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-line;
+  }
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold
+           text-white bg-gradient-to-br from-accent to-accent-deep
+           shadow-glow hover:brightness-110 active:scale-[0.98]
+           transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm
+           text-ink-dim hover:text-ink hover:bg-bg-elev2 transition;
+  }
+  .input {
+    @apply w-full px-3 py-2 bg-bg-elev border border-line rounded-lg text-sm text-ink placeholder:text-ink-mute
+           focus:outline-none focus:border-accent/70 focus:ring-2 focus:ring-accent/20 transition;
+  }
+  .label {
+    @apply text-xs font-semibold text-ink-dim mb-1.5;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium
+           bg-bg-elev2 border border-line text-ink-dim;
+  }
+  .chip-accent {
+    @apply chip bg-accent/15 border-accent/40 text-accent-glow;
+  }
+  .chip-ok {
+    @apply chip bg-ok/10 border-ok/40 text-ok;
+  }
+  .chip-warn {
+    @apply chip bg-warn/10 border-warn/40 text-warn;
+  }
+  .chip-bad {
+    @apply chip bg-bad/10 border-bad/40 text-bad;
+  }
+  .severity-error { @apply text-bad; }
+  .severity-warning { @apply text-warn; }
+  .severity-info { @apply text-cyan; }
+  .severity-hint { @apply text-ink-dim; }
+}
+
+/* Shimmer effect for loading skeletons */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(124, 131, 255, 0.05) 0%,
+    rgba(124, 131, 255, 0.18) 50%,
+    rgba(124, 131, 255, 0.05) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+/* Markdown body */
+.md-body {
+  @apply text-sm text-ink leading-relaxed;
+}
+.md-body h1, .md-body h2, .md-body h3 {
+  @apply font-semibold text-ink mt-3 mb-2;
+}
+.md-body h1 { @apply text-base; }
+.md-body h2 { @apply text-sm; }
+.md-body h3 { @apply text-sm text-ink-dim; }
+.md-body code {
+  @apply font-mono text-[12.5px] px-1.5 py-0.5 rounded bg-bg-elev2 text-cyan border border-line;
+}
+.md-body pre {
+  @apply bg-bg/60 border border-line rounded-lg p-3 my-2 overflow-x-auto;
+}
+.md-body pre code {
+  @apply bg-transparent border-0 p-0 text-ink;
+}
+.md-body ul { @apply list-disc pl-5 space-y-1; }
+.md-body ol { @apply list-decimal pl-5 space-y-1; }
+.md-body strong { @apply text-ink font-semibold; }
+.md-body a { @apply text-accent-glow underline decoration-accent/40; }

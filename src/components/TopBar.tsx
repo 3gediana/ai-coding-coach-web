@@ -1,0 +1,147 @@
+import { motion } from 'framer-motion';
+import { Settings, Sparkles, Plus, Play, BookmarkPlus, CheckCircle2 } from 'lucide-react';
+import { useStore } from '../lib/store';
+import { cn } from '../lib/cn';
+
+export function TopBar() {
+  const aiConfig = useStore((s) => s.aiConfig);
+  const language = useStore((s) => s.language);
+  const setLanguage = useStore((s) => s.setLanguage);
+  const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const setProblemEditorOpen = useStore((s) => s.setProblemEditorOpen);
+  const enqueueAnalyze = useStore((s) => s.enqueueAnalyze);
+  const enqueueSummarize = useStore((s) => s.enqueueSummarize);
+  const activeProblemId = useStore((s) => s.activeProblemId);
+  const problems = useStore((s) => s.problems);
+  const tasksRunning = useStore((s) =>
+    s.tasks.filter((t) => t.status === 'running' || t.status === 'queued').length,
+  );
+
+  const activeProblem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
+  const apiOk = !!aiConfig.apiKey;
+
+  return (
+    <header className="glass border-b border-line h-14 flex items-center px-4 gap-3 z-30">
+      {/* Logo */}
+      <div className="flex items-center gap-2 mr-2">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-cyan flex items-center justify-center shadow-glow">
+          <Sparkles size={18} className="text-bg" strokeWidth={2.5} />
+        </div>
+        <div className="hidden sm:block">
+          <div className="text-sm font-bold leading-none">AI Coding Coach</div>
+          <div className="text-[10px] text-ink-mute leading-none mt-0.5">Web · v0.1</div>
+        </div>
+      </div>
+
+      {/* Active problem badge */}
+      <div className="flex-1 min-w-0 flex items-center gap-2">
+        {activeProblem ? (
+          <motion.div
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-bg-elev2 border border-accent/30 max-w-[480px]"
+          >
+            <div className="w-1.5 h-1.5 rounded-full bg-accent animate-pulseGlow" />
+            <span className="text-sm font-medium text-ink truncate">{activeProblem.title}</span>
+            {activeProblem.difficulty && (
+              <span
+                className={cn(
+                  'chip text-[10px]',
+                  activeProblem.difficulty === 'easy' && 'chip-ok',
+                  activeProblem.difficulty === 'medium' && 'chip-warn',
+                  activeProblem.difficulty === 'hard' && 'chip-bad',
+                )}
+              >
+                {activeProblem.difficulty}
+              </span>
+            )}
+          </motion.div>
+        ) : (
+          <button
+            className="btn-ghost text-ink-dim"
+            onClick={() => setProblemEditorOpen(true)}
+            title="录入题目"
+          >
+            <Plus size={14} />
+            未激活题目（点击录入）
+          </button>
+        )}
+      </div>
+
+      {/* Language switcher */}
+      <div className="flex items-center bg-bg-elev2 rounded-lg p-0.5 border border-line">
+        {(['cpp', 'python', 'c'] as const).map((l) => (
+          <button
+            key={l}
+            onClick={() => setLanguage(l)}
+            className={cn(
+              'px-2.5 py-1 text-xs font-medium rounded-md transition',
+              language === l
+                ? 'bg-accent/20 text-accent-glow'
+                : 'text-ink-dim hover:text-ink',
+            )}
+          >
+            {l === 'cpp' ? 'C++' : l === 'python' ? 'Python' : 'C'}
+          </button>
+        ))}
+      </div>
+
+      <button onClick={() => setProblemEditorOpen(true)} className="btn" title="录入题目">
+        <Plus size={14} />
+        <span className="hidden md:inline">录入题目</span>
+      </button>
+
+      <button
+        onClick={() => enqueueAnalyze({ reason: 'manual' })}
+        className="btn-primary"
+        disabled={!apiOk}
+        title={apiOk ? '触发 AI 分析（异步、流式）' : '请先配置 AI'}
+      >
+        <Play size={14} />
+        分析代码
+        {tasksRunning > 0 && (
+          <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-white/20">
+            {tasksRunning}
+          </span>
+        )}
+      </button>
+
+      {activeProblemId && (
+        <>
+          <button
+            onClick={() => enqueueSummarize(true)}
+            className="btn"
+            disabled={!apiOk}
+            title="加入错题本"
+          >
+            <BookmarkPlus size={14} />
+            <span className="hidden lg:inline">错题</span>
+          </button>
+          <button
+            onClick={() => enqueueSummarize(false)}
+            className="btn"
+            disabled={!apiOk}
+            title="提交并总结"
+          >
+            <CheckCircle2 size={14} />
+            <span className="hidden lg:inline">提交</span>
+          </button>
+        </>
+      )}
+
+      <button
+        onClick={() => setSettingsOpen(true)}
+        className={cn(
+          'btn relative',
+          !apiOk && 'border-warn/60 text-warn hover:border-warn',
+        )}
+        title={apiOk ? 'AI 设置' : 'AI 未配置 — 点击配置'}
+      >
+        <Settings size={14} />
+        {!apiOk && (
+          <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-warn animate-pulseGlow" />
+        )}
+      </button>
+    </header>
+  );
+}
