@@ -216,5 +216,35 @@ await page.waitForTimeout(600);
 console.log('→ 截图：激活题目后整体界面');
 await page.screenshot({ path: `${OUT}/12-active-problem.png`, fullPage: false });
 
+// 13. 模拟"AI 分析中"状态：注入假 apiKey → 点分析 → 请求会失败但能截到任务条
+console.log('→ 截图：模拟 AI 分析任务（任务托盘）');
+await page.evaluate(() => {
+  localStorage.setItem(
+    'aicc.aiConfig.v1',
+    JSON.stringify({
+      provider: 'minimax',
+      baseUrl: 'https://example.invalid/v1/chat/completions',
+      apiKey: 'fake-for-demo',
+      model: 'demo-model',
+      maxTokens: 4000,
+      temperature: 0.3,
+    }),
+  );
+});
+await page.reload({ waitUntil: 'networkidle' });
+await page.waitForTimeout(1200);
+// 点"分析代码"，会失败但能展示任务条 + 重试动画
+const analyzeBtn = page.locator('button:has-text("分析代码")').first();
+await analyzeBtn.click();
+await page.waitForTimeout(800);
+// 任务托盘出现
+console.log('→ 截图：任务托盘（运行中→失败）折叠状态');
+await page.screenshot({ path: `${OUT}/13-task-tray-collapsed.png`, fullPage: false });
+// 展开看详情
+await page.locator('.fixed.bottom-4.right-4 button').first().click();
+await page.waitForTimeout(500);
+console.log('→ 截图：任务托盘展开');
+await page.screenshot({ path: `${OUT}/14-task-tray-expanded.png`, fullPage: false });
+
 await browser.close();
 console.log('✓ 截图完毕，输出目录：' + OUT);
