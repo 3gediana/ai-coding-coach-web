@@ -6,6 +6,8 @@ import { FeedbackPanel } from './components/FeedbackPanel';
 import { TaskTray } from './components/TaskTray';
 import { SettingsModal } from './components/SettingsModal';
 import { ProblemEditorModal } from './components/ProblemEditorModal';
+import { CommandPalette } from './components/CommandPalette';
+import { DiffResultViewer } from './components/DiffResultViewer';
 import { useStore } from './lib/store';
 import { toast } from 'sonner';
 
@@ -42,6 +44,8 @@ export default function App() {
       <TaskTray />
       <SettingsModal />
       <ProblemEditorModal />
+      <CommandPalette />
+      <DiffResultViewer />
     </div>
   );
 }

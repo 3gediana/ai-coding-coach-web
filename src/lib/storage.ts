@@ -4,6 +4,7 @@
  */
 import { openDB, type IDBPDatabase } from 'idb';
 import type {
+  CodeFile,
   CoachEvent,
   CoachStorage,
   Mistake,
@@ -12,13 +13,14 @@ import type {
 } from '../core/types';
 
 const DB_NAME = 'ai-coding-coach';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // v2: 加 files store
 
 interface Schema {
   problems: { key: string; value: Problem };
   mistakes: { key: string; value: Mistake };
   sessions: { key: string; value: Session };
   events: { key: number; value: CoachEvent & { _id?: number } };
+  files: { key: string; value: CodeFile };
 }
 
 let dbPromise: Promise<IDBPDatabase<Schema>> | null = null;
@@ -26,24 +28,33 @@ let dbPromise: Promise<IDBPDatabase<Schema>> | null = null;
 function getDB() {
   if (!dbPromise) {
     dbPromise = openDB<Schema>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        if (!db.objectStoreNames.contains('problems')) {
-          db.createObjectStore('problems', { keyPath: 'id' });
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          if (!db.objectStoreNames.contains('problems')) {
+            db.createObjectStore('problems', { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains('mistakes')) {
+            const m = db.createObjectStore('mistakes', { keyPath: 'id' });
+            m.createIndex('createdAt', 'createdAt');
+            m.createIndex('problemId', 'problemId');
+          }
+          if (!db.objectStoreNames.contains('sessions')) {
+            const s = db.createObjectStore('sessions', { keyPath: 'id' });
+            s.createIndex('startedAt', 'startedAt');
+            s.createIndex('problemId', 'problemId');
+          }
+          if (!db.objectStoreNames.contains('events')) {
+            const e = db.createObjectStore('events', { autoIncrement: true });
+            e.createIndex('sessionId', 'sessionId');
+            e.createIndex('ts', 'ts');
+          }
         }
-        if (!db.objectStoreNames.contains('mistakes')) {
-          const m = db.createObjectStore('mistakes', { keyPath: 'id' });
-          m.createIndex('createdAt', 'createdAt');
-          m.createIndex('problemId', 'problemId');
-        }
-        if (!db.objectStoreNames.contains('sessions')) {
-          const s = db.createObjectStore('sessions', { keyPath: 'id' });
-          s.createIndex('startedAt', 'startedAt');
-          s.createIndex('problemId', 'problemId');
-        }
-        if (!db.objectStoreNames.contains('events')) {
-          const e = db.createObjectStore('events', { autoIncrement: true });
-          e.createIndex('sessionId', 'sessionId');
-          e.createIndex('ts', 'ts');
+        if (oldVersion < 2) {
+          if (!db.objectStoreNames.contains('files')) {
+            const f = db.createObjectStore('files', { keyPath: 'id' });
+            f.createIndex('problemId', 'problemId');
+            f.createIndex('updatedAt', 'updatedAt');
+          }
         }
       },
     });
@@ -132,14 +143,48 @@ export class BrowserStorage implements CoachStorage {
     return events;
   }
 
+  // ===== Files =====
+  async saveFile(f: CodeFile) {
+    const db = await getDB();
+    await db.put('files', f);
+  }
+  async getFile(id: string) {
+    const db = await getDB();
+    return db.get('files', id);
+  }
+  async listFiles(opts: { problemId?: string | null } = {}) {
+    const db = await getDB();
+    let files: CodeFile[];
+    if (opts.problemId !== undefined) {
+      // problemId 可能是 null（草稿），IndexedDB 的索引不能查 null，要全表过滤
+      const all = await db.getAll('files');
+      files = all.filter((f) => f.problemId === opts.problemId);
+    } else {
+      files = await db.getAll('files');
+    }
+    return files.sort((a, b) => {
+      // pinned 优先，然后 updatedAt 倒序
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      return b.updatedAt - a.updatedAt;
+    });
+  }
+  async deleteFile(id: string) {
+    const db = await getDB();
+    await db.delete('files', id);
+  }
+
   async wipeAll() {
     const db = await getDB();
-    const tx = db.transaction(['problems', 'mistakes', 'sessions', 'events'], 'readwrite');
+    const tx = db.transaction(
+      ['problems', 'mistakes', 'sessions', 'events', 'files'],
+      'readwrite',
+    );
     await Promise.all([
       tx.objectStore('problems').clear(),
       tx.objectStore('mistakes').clear(),
       tx.objectStore('sessions').clear(),
       tx.objectStore('events').clear(),
+      tx.objectStore('files').clear(),
     ]);
     await tx.done;
   }

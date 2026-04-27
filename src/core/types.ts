@@ -178,6 +178,28 @@ export interface Session {
 }
 
 /**
+ * 文件类型。每个题目下可以挂多个 CodeFile：
+ * - 多解法：v1-暴力.cpp / v2-哈希.cpp
+ * - 多语言：solution.cpp / solution.py
+ * - 笔记：思路.md / 复杂度推导.md
+ * - 辅助：tests.cpp / brute.cpp（对拍用）
+ */
+export type FileLang = Lang | 'markdown' | 'plaintext';
+
+export interface CodeFile {
+  id: string;
+  /** null 表示草稿区（未关联题目） */
+  problemId: string | null;
+  name: string;
+  language: FileLang;
+  content: string;
+  /** 置顶 tab：题目切回时优先打开 */
+  pinned?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
  * 存储抽象。VS Code 版本用 globalStorage 写 JSON 文件实现。
  * 未来 Web 版本可以换成 fetch 调用后端 API 的实现，业务代码不用改。
  */
@@ -204,6 +226,12 @@ export interface CoachStorage {
   appendEvent(e: CoachEvent): Promise<void>;
   listEvents(opts?: { sessionId?: string; sinceTs?: number; limit?: number }): Promise<CoachEvent[]>;
 
-  /** 清空全部数据（题目/错题/会话/事件），不可撤销 */
+  // 文件（每题挂多个）
+  saveFile(f: CodeFile): Promise<void>;
+  getFile(id: string): Promise<CodeFile | undefined>;
+  listFiles(opts?: { problemId?: string | null }): Promise<CodeFile[]>;
+  deleteFile(id: string): Promise<void>;
+
+  /** 清空全部数据（题目/错题/会话/事件/文件），不可撤销 */
   wipeAll(): Promise<void>;
 }

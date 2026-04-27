@@ -5,20 +5,29 @@ import { cn } from '../lib/cn';
 
 export function TopBar() {
   const aiConfig = useStore((s) => s.aiConfig);
-  const language = useStore((s) => s.language);
-  const setLanguage = useStore((s) => s.setLanguage);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const setProblemEditorOpen = useStore((s) => s.setProblemEditorOpen);
+  const setCmdPaletteOpen = useStore((s) => s.setCmdPaletteOpen);
   const enqueueAnalyze = useStore((s) => s.enqueueAnalyze);
   const enqueueSummarize = useStore((s) => s.enqueueSummarize);
   const activeProblemId = useStore((s) => s.activeProblemId);
   const problems = useStore((s) => s.problems);
+  const filesByScope = useStore((s) => s.filesByScope);
+  const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
   const tasksRunning = useStore((s) =>
     s.tasks.filter((t) => t.status === 'running' || t.status === 'queued').length,
   );
 
   const activeProblem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
   const apiOk = !!aiConfig.apiKey;
+  const scope = activeProblemId ?? '__draft__';
+  const activeFile = (filesByScope[scope] ?? []).find(
+    (f) => f.id === activeFileIdByScope[scope],
+  );
+  const canAnalyze =
+    apiOk &&
+    activeFile &&
+    (activeFile.language === 'cpp' || activeFile.language === 'c' || activeFile.language === 'python');
 
   return (
     <header className="glass border-b border-line h-14 flex items-center px-4 gap-3 z-30">
@@ -68,23 +77,21 @@ export function TopBar() {
         )}
       </div>
 
-      {/* Language switcher */}
-      <div className="flex items-center bg-bg-elev2 rounded-lg p-0.5 border border-line">
-        {(['cpp', 'python', 'c'] as const).map((l) => (
-          <button
-            key={l}
-            onClick={() => setLanguage(l)}
-            className={cn(
-              'px-2.5 py-1 text-xs font-medium rounded-md transition',
-              language === l
-                ? 'bg-accent/20 text-accent-glow'
-                : 'text-ink-dim hover:text-ink',
-            )}
-          >
-            {l === 'cpp' ? 'C++' : l === 'python' ? 'Python' : 'C'}
-          </button>
-        ))}
-      </div>
+      {/* Active file badge */}
+      {activeFile && (
+        <div className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-bg-elev2 border border-line">
+          <span className="text-[10px] font-mono text-ink-dim uppercase">{activeFile.language}</span>
+          <span className="text-xs font-mono text-ink truncate max-w-[140px]">{activeFile.name}</span>
+        </div>
+      )}
+
+      <button
+        onClick={() => setCmdPaletteOpen(true)}
+        className="btn"
+        title="全局搜索（Ctrl+P）"
+      >
+        <kbd className="text-[10px] font-mono bg-bg-elev px-1 rounded">Ctrl P</kbd>
+      </button>
 
       <button onClick={() => setProblemEditorOpen(true)} className="btn" title="录入题目">
         <Plus size={14} />
@@ -94,8 +101,16 @@ export function TopBar() {
       <button
         onClick={() => enqueueAnalyze({ reason: 'manual' })}
         className="btn-primary"
-        disabled={!apiOk}
-        title={apiOk ? '触发 AI 分析（异步、流式）' : '请先配置 AI'}
+        disabled={!canAnalyze}
+        title={
+          !apiOk
+            ? '请先配置 AI'
+            : !activeFile
+              ? '没有活跃文件'
+              : activeFile.language === 'markdown' || activeFile.language === 'plaintext'
+                ? '当前文件不是代码（请切到 .cpp/.py）'
+                : '触发 AI 分析（异步、流式）'
+        }
       >
         <Play size={14} />
         分析代码

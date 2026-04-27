@@ -1,25 +1,39 @@
 import Editor, { OnMount, type Monaco } from '@monaco-editor/react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
-import type { CodeIssue } from '../core/types';
+import type { CodeIssue, FileLang } from '../core/types';
 import { motion } from 'framer-motion';
-import { FileCode } from 'lucide-react';
+import { Eye, Code2 } from 'lucide-react';
+import { cn } from '../lib/cn';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { TabBar } from './TabBar';
+
+const DRAFT_SCOPE = '__draft__';
 
 export function CodeEditor() {
-  const language = useStore((s) => s.language);
-  const codeByProblem = useStore((s) => s.codeByProblem);
   const activeProblemId = useStore((s) => s.activeProblemId);
-  const setCode = useStore((s) => s.setCode);
+  const filesByScope = useStore((s) => s.filesByScope);
+  const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
+  const updateFileContent = useStore((s) => s.updateFileContent);
   const analysisByProblem = useStore((s) => s.analysisByProblem);
 
-  const key = activeProblemId ?? '__draft__';
-  const code = codeByProblem[key] ?? '';
-  const result = analysisByProblem[key];
+  const scope = activeProblemId ?? DRAFT_SCOPE;
+  const files = filesByScope[scope] ?? [];
+  const activeId = activeFileIdByScope[scope];
+  const file = files.find((f) => f.id === activeId);
 
+  const result = analysisByProblem[scope];
+
+  // markdown 预览开关
+  const [mdPreview, setMdPreview] = useState(false);
+  const isMd = file?.language === 'markdown';
+  const showPreview = isMd && mdPreview;
+
+  // Monaco refs
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const decorationIdsRef = useRef<string[]>([]);
-  // 当前活跃的 issues（按行去重；用户改了某行就从这里删）
   const activeIssuesRef = useRef<CodeIssue[]>([]);
 
   const renderDecorations = () => {
@@ -81,7 +95,7 @@ export function CodeEditor() {
     });
     monaco.editor.setTheme('aicc-dark');
 
-    // 用户改某行 -> 移除该行 issue + 行偏移时清掉变更点之后
+    // 用户改某行 -> 移除该行 issue
     editor.onDidChangeModelContent((e: any) => {
       const issues = activeIssuesRef.current;
       if (issues.length === 0) return;
@@ -107,89 +121,120 @@ export function CodeEditor() {
     });
   };
 
-  // 收到新结果 -> 重置 active issues + 渲染
+  // 切文件 / 切题 → 重置 issues + decoration（避免行号错位）
   useEffect(() => {
-    if (!result) {
-      activeIssuesRef.current = [];
-    } else {
+    if (file && (file.language === 'cpp' || file.language === 'c' || file.language === 'python') && result) {
       activeIssuesRef.current = result.issues.slice();
+    } else {
+      activeIssuesRef.current = [];
     }
     renderDecorations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result]);
+  }, [activeId, result]);
 
-  // 切语言 / 切题：清掉旧 decoration（避免行号错位残留）
-  useEffect(() => {
-    activeIssuesRef.current = result ? result.issues.slice() : [];
-    renderDecorations();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeProblemId, language]);
+  if (!file) {
+    return (
+      <div className="flex-1 flex flex-col min-h-0">
+        <TabBar />
+        <div className="flex-1 flex items-center justify-center text-ink-mute text-sm">
+          没有文件，点上方 + 新建
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <div className="h-9 px-4 border-b border-line bg-bg-elev/30 flex items-center gap-2 text-xs text-ink-dim">
-        <FileCode size={14} />
-        <span>{activeProblemId ? '激活题目代码区' : '草稿区（未激活题目）'}</span>
-        <span className="text-ink-mute mx-1">·</span>
-        <span className="font-mono">{language}</span>
-        {result && (
+      <TabBar />
+      {/* 状态栏 */}
+      <div className="h-7 px-3 border-b border-line/60 bg-bg-elev/30 flex items-center gap-2 text-[11px] text-ink-mute shrink-0">
+        <span className="font-mono text-ink-dim">{file.name}</span>
+        <span>·</span>
+        <span className="font-mono">{file.language}</span>
+        {isMd && (
+          <button
+            onClick={() => setMdPreview((v) => !v)}
+            className={cn(
+              'ml-2 px-2 py-0.5 rounded text-[10px] flex items-center gap-1 transition',
+              mdPreview
+                ? 'bg-warn/15 text-warn border border-warn/40'
+                : 'bg-bg-elev2 text-ink-dim hover:text-ink border border-line',
+            )}
+          >
+            {mdPreview ? <Eye size={10} /> : <Code2 size={10} />}
+            {mdPreview ? '预览中' : '预览'}
+          </button>
+        )}
+        {result && file.language !== 'markdown' && file.language !== 'plaintext' && (
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="ml-auto flex items-center gap-3 text-[11px]"
+            className="ml-auto flex items-center gap-2"
           >
-            <span className="text-ink-mute">已分析 ·</span>
+            <span>已分析 ·</span>
             {result.issues.length === 0 ? (
-              <span className="chip-ok">无问题</span>
+              <span className="chip-ok text-[9px] px-1 py-0">无问题</span>
             ) : (
               <>
                 <Counter
                   count={result.issues.filter((i) => i.severity === 'error').length}
                   label="错误"
-                  cls="chip-bad"
+                  cls="chip-bad text-[9px] px-1 py-0"
                 />
                 <Counter
                   count={result.issues.filter((i) => i.severity === 'warning').length}
                   label="警告"
-                  cls="chip-warn"
+                  cls="chip-warn text-[9px] px-1 py-0"
                 />
                 <Counter
                   count={result.issues.filter((i) => i.severity === 'info' || i.severity === 'hint').length}
                   label="提示"
-                  cls="chip-accent"
+                  cls="chip-accent text-[9px] px-1 py-0"
                 />
               </>
             )}
           </motion.div>
         )}
       </div>
-      <div className="flex-1 min-h-0">
-        <Editor
-          height="100%"
-          theme="aicc-dark"
-          language={language === 'cpp' ? 'cpp' : language === 'c' ? 'c' : 'python'}
-          value={code}
-          onChange={(v) => setCode(v ?? '')}
-          onMount={onMount}
-          options={{
-            fontFamily: 'JetBrains Mono, Menlo, monospace',
-            fontSize: 14,
-            fontLigatures: true,
-            minimap: { enabled: false },
-            scrollBeyondLastLine: false,
-            renderLineHighlight: 'all',
-            smoothScrolling: true,
-            cursorSmoothCaretAnimation: 'on',
-            cursorBlinking: 'smooth',
-            padding: { top: 16, bottom: 16 },
-            glyphMargin: true,
-            tabSize: language === 'python' ? 4 : 2,
-            wordWrap: 'on',
-            renderWhitespace: 'selection',
-            stickyScroll: { enabled: false },
-          }}
-        />
+
+      <div className="flex-1 min-h-0 flex">
+        {!showPreview && (
+          <div className={cn('flex-1 min-w-0', isMd && mdPreview && 'border-r border-line')}>
+            <Editor
+              height="100%"
+              theme="aicc-dark"
+              path={file.id}
+              language={monacoLanguage(file.language)}
+              value={file.content}
+              onChange={(v) => updateFileContent(file.id, v ?? '')}
+              onMount={onMount}
+              options={{
+                fontFamily: 'JetBrains Mono, Menlo, monospace',
+                fontSize: 14,
+                fontLigatures: true,
+                minimap: { enabled: false },
+                scrollBeyondLastLine: false,
+                renderLineHighlight: 'all',
+                smoothScrolling: true,
+                cursorSmoothCaretAnimation: 'on',
+                cursorBlinking: 'smooth',
+                padding: { top: 16, bottom: 16 },
+                glyphMargin: file.language !== 'markdown' && file.language !== 'plaintext',
+                tabSize: file.language === 'python' ? 4 : 2,
+                wordWrap: 'on',
+                renderWhitespace: 'selection',
+                stickyScroll: { enabled: false },
+              }}
+            />
+          </div>
+        )}
+        {showPreview && (
+          <div className="flex-1 min-w-0 overflow-y-auto px-6 py-5 md-body bg-bg/40">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{file.content}</ReactMarkdown>
+          </div>
+        )}
       </div>
+
       <style>{`
         .aicc-line-error { background: rgba(248,113,113,0.06); }
         .aicc-line-warning { background: rgba(251,191,36,0.05); }
@@ -218,4 +263,12 @@ function Counter({ count, label, cls }: { count: number; label: string; cls: str
 
 function severityIcon(s: string) {
   return s === 'error' ? '✗' : s === 'warning' ? '⚠' : s === 'info' ? '◇' : '·';
+}
+
+function monacoLanguage(lang: FileLang): string {
+  if (lang === 'cpp') return 'cpp';
+  if (lang === 'c') return 'c';
+  if (lang === 'python') return 'python';
+  if (lang === 'markdown') return 'markdown';
+  return 'plaintext';
 }
