@@ -95,8 +95,11 @@ export function CodeEditor() {
     });
     monaco.editor.setTheme('aicc-dark');
 
-    // 用户改某行 -> 移除该行 issue
+    // 用户改某行 -> 移除该行 issue + 更新 lastEditAt
     editor.onDidChangeModelContent((e: any) => {
+      // 标记编辑活动（卡住检测用）
+      useStore.getState().markEdit();
+
       const issues = activeIssuesRef.current;
       if (issues.length === 0) return;
       const dirty = new Set<number>();
@@ -117,6 +120,29 @@ export function CodeEditor() {
       if (remaining.length !== issues.length) {
         activeIssuesRef.current = remaining;
         renderDecorations();
+      }
+    });
+
+    // 粘贴检测：≥ 30 行触发提示
+    editor.onDidPaste((e: any) => {
+      try {
+        const range = e.range;
+        const lineCount = range.endLineNumber - range.startLineNumber + 1;
+        if (lineCount >= 30) {
+          const model = editor.getModel();
+          if (!model) return;
+          const snippet = model.getValueInRange(range);
+          // 只对代码文件（不是 markdown / plaintext）触发
+          const st = useStore.getState();
+          const scope = st.activeProblemId ?? '__draft__';
+          const fileId = st.activeFileIdByScope[scope];
+          const f = (st.filesByScope[scope] ?? []).find((x) => x.id === fileId);
+          if (!f) return;
+          if (f.language === 'markdown' || f.language === 'plaintext') return;
+          st.setPasteSuggestion({ snippet, lineCount });
+        }
+      } catch {
+        /* ignore */
       }
     });
   };

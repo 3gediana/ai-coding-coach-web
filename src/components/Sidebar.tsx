@@ -3,6 +3,7 @@ import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2 } from 'luci
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { Dashboard } from './Dashboard';
+import { getArea } from '../core/taxonomy';
 
 export function Sidebar() {
   const tab = useStore((s) => s.sidebarTab);
@@ -138,16 +139,55 @@ export function Sidebar() {
                       >
                         <div className="flex items-start justify-between gap-2">
                           <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium truncate">{m.problemTitle}</div>
+                            <div className="flex items-center gap-1.5 mb-0.5">
+                              {m.verdict && (
+                                <span
+                                  className={cn(
+                                    'text-[9px] font-mono font-bold px-1.5 py-0.5 rounded',
+                                    m.verdict === 'WA' && 'bg-bad/15 text-bad',
+                                    m.verdict === 'TLE' && 'bg-warn/15 text-warn',
+                                    m.verdict === 'MLE' && 'bg-warn/15 text-warn',
+                                    m.verdict === 'RE' && 'bg-bad/15 text-bad',
+                                    m.verdict === 'CE' && 'bg-bad/15 text-bad',
+                                    m.verdict === 'OTHER' && 'bg-accent/15 text-accent-glow',
+                                  )}
+                                >
+                                  {m.verdict}
+                                </span>
+                              )}
+                              <div className="text-sm font-medium truncate">{m.problemTitle}</div>
+                            </div>
                             <div className="text-[11px] text-ink-dim mt-0.5">
                               {new Date(m.createdAt).toLocaleString()}
                             </div>
                           </div>
                           <span className="chip-warn text-[10px]">{m.category}</span>
                         </div>
+                        {m.userNote && (
+                          <div className="mt-1.5 px-2 py-1 bg-bg-elev/40 rounded text-[11px] text-ink-dim italic">
+                            "{m.userNote}"
+                          </div>
+                        )}
                         <p className="text-xs text-ink-dim mt-2 line-clamp-2">{m.rootCause}</p>
-                        {m.knowledgePoints?.length > 0 && (
+                        {m.areaCodes && m.areaCodes.length > 0 && (
                           <div className="flex flex-wrap gap-1 mt-2">
+                            {m.areaCodes.map((code) => {
+                              const a = getArea(code);
+                              if (!a) return null;
+                              return (
+                                <span
+                                  key={code}
+                                  className="text-[9px] px-1.5 py-0.5 rounded bg-cyan/15 text-cyan border border-cyan/30 font-mono"
+                                  title={`${a.grade} · ${a.cluster} · ${a.description}`}
+                                >
+                                  {a.grade} · {a.name}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {m.knowledgePoints?.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
                             {m.knowledgePoints.slice(0, 4).map((k) => (
                               <span key={k} className="chip text-[9px] px-1.5 py-0">
                                 {k}

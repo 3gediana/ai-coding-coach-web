@@ -23,12 +23,22 @@ import type {
   Mistake,
   Problem,
   Session,
+  SubmissionVerdict,
 } from '../core/types';
 import { AIClient } from '../core/ai/client';
 import { Coach } from '../core/analyzer';
 import { storage } from './storage';
 import { DEFAULT_AI_CONFIG } from './presets';
 import { buildLearnerProfile } from '../core/utils';
+
+/** 提交结果选项（错题或 AC 总结） */
+export interface SubmitOpts {
+  /** true 入错题本（非 AC），false 仅做通过总结 */
+  isMistake: boolean;
+  verdict?: SubmissionVerdict;
+  /** 用户自述错误现象，可选 */
+  userNote?: string;
+}
 
 const LS_AI_CFG = 'aicc.aiConfig.v1';
 const LS_DEFAULT_LANG = 'aicc.defaultLang.v1';
@@ -38,7 +48,13 @@ const DRAFT_SCOPE = '__draft__';
 
 // ============== Tasks ==============
 
-export type TaskKind = 'parse-problem' | 'analyze-code' | 'summarize-mistake' | 'compare-files';
+export type TaskKind =
+  | 'parse-problem'
+  | 'analyze-code'
+  | 'summarize-mistake'
+  | 'compare-files'
+  | 'stuck-hint'
+  | 'explain-paste';
 export type TaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
 export interface Task {
@@ -102,6 +118,14 @@ interface State {
   settingsOpen: boolean;
   problemEditorOpen: boolean;
   cmdPaletteOpen: boolean;
+  submitModalOpen: boolean;
+
+  // 卡住检测 / 粘贴提示 / 默认开关
+  lastEditAt: number;
+  lastHintAt: number;
+  currentHint: string | null;
+  stuckHintEnabled: boolean;
+  pasteSuggestion: { snippet: string; lineCount: number } | null;
   /** 对拍：选中的两个 fileId */
   diffSelection: string[];
 
@@ -138,7 +162,7 @@ interface State {
 
   enqueueParseProblem: (rawText: string) => string;
   enqueueAnalyze: (opts?: { reason?: string }) => string | null;
-  enqueueSummarize: (isMistake: boolean) => string | null;
+  enqueueSummarize: (arg: boolean | SubmitOpts) => string | null;
   enqueueDiff: () => string | null;
 
   cancelTask: (id: string) => void;
@@ -152,6 +176,15 @@ interface State {
   setSettingsOpen: (v: boolean) => void;
   setProblemEditorOpen: (v: boolean) => void;
   setCmdPaletteOpen: (v: boolean) => void;
+  setSubmitModalOpen: (v: boolean) => void;
+
+  // 卡住检测 / 粘贴
+  markEdit: () => void;
+  setStuckHintEnabled: (v: boolean) => void;
+  dismissHint: () => void;
+  enqueueStuckHint: () => string | null;
+  setPasteSuggestion: (s: { snippet: string; lineCount: number } | null) => void;
+  enqueueExplainPaste: () => string | null;
 }
 
 // ============== 初始化 ==============
@@ -343,6 +376,13 @@ export const useStore = create<State>((set, get) => {
     settingsOpen: false,
     problemEditorOpen: false,
     cmdPaletteOpen: false,
+    submitModalOpen: false,
+
+    lastEditAt: Date.now(),
+    lastHintAt: 0,
+    currentHint: null,
+    stuckHintEnabled: localStorage.getItem('aicc.stuckHint.v1') !== 'off',
+    pasteSuggestion: null,
     diffSelection: [],
 
     setAIConfig: (cfg) => {
@@ -730,7 +770,10 @@ export const useStore = create<State>((set, get) => {
       );
     },
 
-    enqueueSummarize: (isMistake) => {
+    enqueueSummarize: (arg) => {
+      // 兼容旧 boolean 接口：true=入错题本，false=AC 总结
+      const opts: SubmitOpts =
+        typeof arg === 'boolean' ? { isMistake: arg } : arg;
       const st = get();
       if (!st.activeProblemId) {
         toast.error('请先激活一道题目');
@@ -751,15 +794,25 @@ export const useStore = create<State>((set, get) => {
         return null;
       }
 
-      const label = isMistake ? `加入错题本：${problem.title}` : `提交总结：${problem.title}`;
+      const verdictTag = opts.verdict ? `[${opts.verdict}] ` : '';
+      const label = opts.isMistake
+        ? `${verdictTag}入错题：${problem.title}`
+        : `通过总结：${problem.title}`;
       return enqueue('summarize-mistake', label, {
         run: (onChunk, onRetry, signal) =>
           get().coach.summarizeMistake(
-            { problem, code: file.content, language: langOfFile(file.language), isMistake },
+            {
+              problem,
+              code: file.content,
+              language: langOfFile(file.language),
+              isMistake: opts.isMistake,
+              verdict: opts.verdict,
+              userNote: opts.userNote,
+            },
             { onChunk, onRetry, signal },
           ),
         onSuccess: async (result) => {
-          if (isMistake) {
+          if (opts.isMistake) {
             const m = result as Mistake;
             await storage.saveMistake(m);
             await get().refreshMistakes();
@@ -885,6 +938,74 @@ export const useStore = create<State>((set, get) => {
     setSettingsOpen: (v) => set({ settingsOpen: v }),
     setProblemEditorOpen: (v) => set({ problemEditorOpen: v }),
     setCmdPaletteOpen: (v) => set({ cmdPaletteOpen: v }),
+    setSubmitModalOpen: (v) => set({ submitModalOpen: v }),
+
+    // ───── 卡住检测 ─────
+    markEdit: () => set({ lastEditAt: Date.now() }),
+    setStuckHintEnabled: (v) => {
+      localStorage.setItem('aicc.stuckHint.v1', v ? 'on' : 'off');
+      set({ stuckHintEnabled: v });
+    },
+    dismissHint: () => set({ currentHint: null }),
+    enqueueStuckHint: () => {
+      const st = get();
+      if (!st.aiConfig.apiKey || !st.activeProblemId) return null;
+      const problem = st.problems.find((p) => p.id === st.activeProblemId);
+      if (!problem) return null;
+      const fileId = st.activeFileIdByScope[st.activeProblemId];
+      const file = (st.filesByScope[st.activeProblemId] ?? []).find((f) => f.id === fileId);
+      if (!file) return null;
+      // 只对代码文件提示
+      if (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python') return null;
+
+      set({ lastHintAt: Date.now() });
+      return enqueue('stuck-hint', `卡住引导：${problem.title}`, {
+        run: async (onChunk, onRetry, signal) => {
+          const text = await get().coach.getStuckHint(
+            { problem, code: file.content, language: langOfFile(file.language) },
+            { onChunk, onRetry, signal },
+          );
+          return text;
+        },
+        onSuccess: (result) => {
+          const text = (result as string)?.trim();
+          if (text) set({ currentHint: text });
+        },
+      });
+    },
+
+    // ───── 粘贴提示 ─────
+    setPasteSuggestion: (s) => set({ pasteSuggestion: s }),
+    enqueueExplainPaste: () => {
+      const st = get();
+      if (!st.aiConfig.apiKey) {
+        toast.error('请先配置 AI');
+        set({ settingsOpen: true });
+        return null;
+      }
+      const sug = st.pasteSuggestion;
+      if (!sug) return null;
+      const problem = st.activeProblemId
+        ? st.problems.find((p) => p.id === st.activeProblemId)
+        : null;
+      // 取当前活跃文件语言
+      const scope = st.activeProblemId ?? DRAFT_SCOPE;
+      const fileId = st.activeFileIdByScope[scope];
+      const file = (st.filesByScope[scope] ?? []).find((f) => f.id === fileId);
+      const lang: Lang = file ? langOfFile(file.language) : 'cpp';
+
+      set({ pasteSuggestion: null });
+      return enqueue('explain-paste', `解释粘贴段（${sug.lineCount} 行）`, {
+        run: (onChunk, onRetry, signal) =>
+          get().coach.explainPaste(
+            { problem: problem ?? undefined, snippet: sug.snippet, language: lang },
+            { onChunk, onRetry, signal },
+          ),
+        onSuccess: () => {
+          toast.success('粘贴段解释已生成（看任务托盘）');
+        },
+      });
+    },
   };
 });
 
@@ -953,13 +1074,17 @@ function guessLang(code: string): FileLang {
 // 启动时拉取数据 + 迁移
 useStore.getState().refreshAll();
 
-// 测试用：暴露强关所有 modal 的 helper（仅用于 e2e）
+// 测试用：暴露 store + 强关所有 modal 的 helper（仅用于 e2e）
 if (typeof window !== 'undefined') {
+  (window as any).__aicc_useStore__ = useStore;
   (window as any).__aicc_clear__ = () => {
     const s = useStore.getState();
     s.setSettingsOpen(false);
     s.setProblemEditorOpen(false);
     s.setCmdPaletteOpen(false);
+    s.setSubmitModalOpen(false);
+    s.dismissHint();
+    s.setPasteSuggestion(null);
     // 不清 diffSelection，避免 e2e 测试连锁失败
   };
 }

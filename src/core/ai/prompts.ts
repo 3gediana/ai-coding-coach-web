@@ -7,6 +7,7 @@
  * - 调优时主要改这个文件
  */
 import type { AnalysisHistoryEntry, Lang, LearnerProfile, Problem } from '../types';
+import { serializeForPrompt as serializeTaxonomy } from '../taxonomy';
 
 export const SYSTEM_CODING_COACH = `你是一位资深的算法竞赛教练和编程导师，专注于辅导大学生学习 C++ 和 Python。
 
@@ -21,6 +22,79 @@ interface PromptPair {
   system: string;
   user: string;
 }
+
+/**
+ * 卡住引导：苏格拉底式提问，**不直接给答案**。
+ * 输出 1-2 个引导性问题，帮学生意识到自己的卡点。
+ */
+export function buildStuckHintPrompt(args: {
+  problem: Problem;
+  code: string;
+  language: Lang;
+}): PromptPair {
+  return {
+    system: `你是耐心的算法教练。学生卡住了。请用**苏格拉底式提问**引导他自己想，不要直接给答案。
+要求：
+- 输出 1-2 个**问题**，不超过 80 字
+- 问题要具体、可操作（"你想想用什么数据结构"比"再想想"好）
+- 如果代码完全没动 → 问思路；如果代码写到一半 → 问当前在卡哪步
+- 不要废话不要鼓励语
+- 直接输出问题文本（不要 JSON、不要 markdown 标题）`,
+    user: `题目：${args.problem.title}
+${args.problem.statement}
+
+学生当前 ${args.language} 代码：
+\`\`\`${args.language}
+${args.code || '// （还没动笔）'}
+\`\`\`
+
+学生已经停手 2 分钟没改代码了。请用 1-2 个问题引导他。`,
+  };
+}
+
+/**
+ * 解释粘贴段：分析粘贴进来的代码片段
+ * - 这段在做什么
+ * - 是否有潜在 bug / 不适合本题之处
+ * - 建议是否需要修改
+ */
+export function buildExplainPastePrompt(args: {
+  problem?: Problem;
+  snippet: string;
+  language: Lang;
+}): PromptPair {
+  const ctx = args.problem
+    ? `当前题目：${args.problem.title}\n${args.problem.statement}\n\n`
+    : '当前没有激活题目。\n\n';
+  return {
+    system: SYSTEM_CODING_COACH,
+    user: `${ctx}学生粘贴了下面的 ${args.language} 代码片段：
+
+\`\`\`${args.language}
+${args.snippet}
+\`\`\`
+
+请输出 JSON：
+{
+  "summary": "这段代码在做什么（1-2 句）",
+  "fitsContext": true/false,
+  "concerns": ["潜在问题点（最多 3 条）"],
+  "suggestion": "针对当前题目，需要改哪些地方（1 段话）"
+}
+
+直接输出 JSON。`,
+  };
+}
+
+/** 各种判题结果对应的关注点提示，喂给 AI 让它针对性分析 */
+const verdictHintMap: Record<string, string> = {
+  WA: '答案错误，请重点构造能让这份代码出错的最小反例（hack case）',
+  TLE: '超时，重点分析时间复杂度并指出哪段循环/递归过慢',
+  MLE: '内存超限，重点分析空间使用、是否有大数组/递归过深/无意义复制',
+  RE: '运行时错误，重点找崩溃点（数组越界 / 除零 / 栈溢出 / 空指针）',
+  CE: '编译错误，重点指出语法/类型/引用错误',
+  OTHER: '其他错误，请综合判断最可能的根因',
+};
 
 /**
  * 把粘贴的题目原文解析为结构化 JSON。
@@ -163,9 +237,16 @@ export function buildSummarizePrompt(args: {
   code: string;
   language: Lang;
   isMistake: boolean;
+  /** 评判结果：WA / TLE / RE / MLE / CE / OTHER */
+  verdict?: string;
+  /** 用户自己描述的错误现象 */
+  userNote?: string;
   errorContext?: string;
 }): PromptPair {
   if (args.isMistake) {
+    const verdictHint = args.verdict
+      ? verdictHintMap[args.verdict] ?? `提交结果：${args.verdict}`
+      : '';
     return {
       system: SYSTEM_CODING_COACH,
       user: `学生在以下题目上出错了，请输出错题分析。
@@ -177,16 +258,25 @@ export function buildSummarizePrompt(args: {
 \`\`\`${args.language}
 ${args.code}
 \`\`\`
+${args.verdict ? `\n判题结果：**${args.verdict}**${verdictHint ? ' — ' + verdictHint : ''}` : ''}
+${args.userNote ? `\n学生自述错误现象：${args.userNote}` : ''}
+${args.errorContext ? `\n错误信息：\n${args.errorContext}` : ''}
 
-${args.errorContext ? '错误信息：\n' + args.errorContext : ''}
+请**针对判题结果**给出有针对性的分析（例如 TLE 必须分析复杂度，WA 必须构造 hack 样例，RE 必须找到崩溃点）。
+
+参考下面的知识点分类体系（按年级组织），从中选 1-2 个最贴合的 code 填到 areaCodes：
+
+${serializeTaxonomy()}
 
 输出 JSON：
 {
   "rootCause": "错因分析（一段话，说清楚学生在哪一步想错或写错）",
-  "category": "错误分类（如：边界条件 / 贪心思路错 / 复杂度不对 / 语言陷阱 / 数组越界）",
-  "knowledgePoints": ["涉及的知识点"],
+  "category": "错误分类（短标签，如：边界条件 / 贪心思路错 / 复杂度不对 / 语言陷阱 / 数组越界 / 整数溢出）",
+  "areaCodes": ["从上述体系中选 1-2 个最贴合的 code，例如 Y2.ds.tree"],
+  "knowledgePoints": ["涉及的知识点（具体短词）"],
   "reviewTips": ["复习要点（最多 3 条）"],
-  "correctSketch": "正确思路的简要描述（关键步骤，不写完整代码）"
+  "correctSketch": "正确思路的简要描述（关键步骤，不写完整代码）",
+  "hackCase": "（仅 WA 时填）能让这份代码 WA 的最小反例，越短越好；其他情况留空字符串"
 }
 
 直接输出 JSON。`,

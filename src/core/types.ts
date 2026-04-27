@@ -50,6 +50,9 @@ export interface AnalysisResult {
 }
 
 /** 错题本里的一条记录 */
+/** 提交评判结果 */
+export type SubmissionVerdict = 'AC' | 'WA' | 'TLE' | 'MLE' | 'RE' | 'CE' | 'OTHER';
+
 export interface Mistake {
   id: string;
   problemId?: string;
@@ -65,6 +68,12 @@ export interface Mistake {
   createdAt: number;
   reviewedAt?: number;
   reviewCount: number;
+  /** 提交时的评判结果（WA/TLE/...），AC 时不入错题本 */
+  verdict?: SubmissionVerdict;
+  /** 用户自己描述的错误现象（如 "n=10 时输出多了一个 0"） */
+  userNote?: string;
+  /** 命中的知识点分类 code（来自 taxonomy.ts），最多 2 个 */
+  areaCodes?: string[];
 }
 
 /**

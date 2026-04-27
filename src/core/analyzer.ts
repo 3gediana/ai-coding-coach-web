@@ -6,7 +6,9 @@
 import { AIClient } from './ai/client';
 import {
   buildAnalyzeCodePrompt,
+  buildExplainPastePrompt,
   buildParseProblemPrompt,
+  buildStuckHintPrompt,
   buildSummarizePrompt,
 } from './ai/prompts';
 import type {
@@ -18,6 +20,7 @@ import type {
   Mistake,
   Problem,
   ProblemSummary,
+  SubmissionVerdict,
 } from './types';
 
 interface StreamOpts {
@@ -121,6 +124,8 @@ export class Coach {
       code: string;
       language: Lang;
       isMistake: boolean;
+      verdict?: SubmissionVerdict;
+      userNote?: string;
     },
     opts: StreamOpts = {},
   ): Promise<Mistake | ProblemSummary> {
@@ -135,6 +140,17 @@ export class Coach {
     });
 
     if (args.isMistake) {
+      const hackCase = (data.hackCase as string | undefined)?.trim();
+      const reviewTips: string[] = [...(data.reviewTips ?? [])];
+      if (hackCase) reviewTips.unshift(`Hack case：${hackCase}`);
+      // 验证 areaCodes：只保留在 taxonomy 里有效的 code
+      const rawAreas: unknown = data.areaCodes;
+      const areaCodes: string[] = Array.isArray(rawAreas)
+        ? (rawAreas as unknown[])
+            .filter((x): x is string => typeof x === 'string')
+            .filter((c) => /^Y[1-4]\.[a-z]+\.[a-z_]+$/.test(c))
+            .slice(0, 2)
+        : [];
       return {
         id: shortId(),
         problemId: args.problem.id,
@@ -144,8 +160,11 @@ export class Coach {
         rootCause: data.rootCause ?? '',
         category: data.category ?? '其他',
         knowledgePoints: data.knowledgePoints ?? [],
-        reviewTips: data.reviewTips ?? [],
+        reviewTips,
         correctSketch: data.correctSketch,
+        verdict: args.verdict,
+        userNote: args.userNote,
+        areaCodes,
         createdAt: Date.now(),
         reviewCount: 0,
       } as Mistake;
@@ -156,6 +175,56 @@ export class Coach {
       complexity: data.complexity ?? '',
       extensions: data.extensions ?? [],
       summary: data.summary ?? '',
+    } as ProblemSummary;
+  }
+
+  /**
+   * 卡住引导：苏格拉底式提问。
+   * 输出纯文本 1-2 个问题，不超过 80 字。轻量、便宜。
+   */
+  async getStuckHint(
+    args: { problem: Problem; code: string; language: Lang },
+    opts: StreamOpts = {},
+  ): Promise<string> {
+    const { system, user } = buildStuckHintPrompt(args);
+    const text = await this.ai.chat({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      maxTokens: 200,
+      temperature: 0.7,
+      ...opts,
+    });
+    return text.trim();
+  }
+
+  /**
+   * 解释粘贴段：JSON 输出。
+   */
+  async explainPaste(
+    args: { problem?: Problem; snippet: string; language: Lang },
+    opts: StreamOpts = {},
+  ): Promise<{
+    summary: string;
+    fitsContext: boolean;
+    concerns: string[];
+    suggestion: string;
+  }> {
+    const { system, user } = buildExplainPastePrompt(args);
+    const data = await this.ai.chatJsonStream<any>({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      maxTokens: 1500,
+      ...opts,
+    });
+    return {
+      summary: data.summary ?? '',
+      fitsContext: !!data.fitsContext,
+      concerns: data.concerns ?? [],
+      suggestion: data.suggestion ?? '',
     };
   }
 }

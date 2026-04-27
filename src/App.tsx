@@ -8,6 +8,9 @@ import { SettingsModal } from './components/SettingsModal';
 import { ProblemEditorModal } from './components/ProblemEditorModal';
 import { CommandPalette } from './components/CommandPalette';
 import { DiffResultViewer } from './components/DiffResultViewer';
+import { SubmitResultModal } from './components/SubmitResultModal';
+import { StuckHintCard } from './components/StuckHintCard';
+import { PasteSuggestionChip } from './components/PasteSuggestionChip';
 import { useStore } from './lib/store';
 import { toast } from 'sonner';
 
@@ -46,6 +49,9 @@ export default function App() {
       <ProblemEditorModal />
       <CommandPalette />
       <DiffResultViewer />
+      <SubmitResultModal />
+      <StuckHintCard />
+      <PasteSuggestionChip />
     </div>
   );
 }

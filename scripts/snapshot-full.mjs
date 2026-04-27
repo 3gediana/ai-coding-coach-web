@@ -536,6 +536,128 @@ int main(){
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 三刀新增：提交结果 / 卡住引导 / 粘贴提示
+// ═══════════════════════════════════════════════════════════════════════
+if (hasApiKey) {
+  await step('第一刀：提交按钮 → SubmitResultModal → 选 WA + 入错题', async (tag) => {
+    // 确保题目激活（前序 step 22 通过 Ctrl+P 可能切到了草稿区）
+    await page.evaluate(() => {
+      const w = window;
+      const s = w.__aicc_useStore__.getState();
+      const p = s.problems.find((x) => /两数之和|Two Sum/.test(x.title));
+      if (p) s.setActiveProblem(p.id);
+    });
+    await page.waitForTimeout(800);
+    await page.locator('header button:has-text("提交")').click();
+    await page.waitForTimeout(500);
+    await shot(tag, 'submit-modal');
+    // 选 WA
+    await page.locator('button:has-text("WA")').first().click();
+    await page.waitForTimeout(300);
+    // SubmitModal 内的 textarea，用 modal class scope
+    await page.locator('div.glass-card textarea').first().fill('n=5 时输出 8 但应该是 9');
+    await shot(tag, 'submit-wa-filled');
+    // 取消顺便分析（避免太慢）
+    await page.locator('input[type="checkbox"]').uncheck().catch(() => {});
+    await page.locator('button:has-text("入错题本")').click();
+    await page.waitForTimeout(2000);
+    await shot(tag, 'submit-task-running');
+    // 等错题入库 ~60s（直接读 store）
+    let inMistakes = false;
+    for (let i = 0; i < 60; i++) {
+      await page.waitForTimeout(1000);
+      const got = await page.evaluate(() => {
+        const w = window;
+        const ms = w.__aicc_useStore__.getState().mistakes;
+        return ms.length > 0 ? ms[0] : null;
+      });
+      if (got) {
+        inMistakes = true;
+        // 切到错题本展示
+        const sidebarBtns = page.locator('div.w-14 > button');
+        await sidebarBtns.nth(1).click();
+        await page.waitForTimeout(600);
+        await shot(tag, 'mistake-with-verdict');
+        // 校验 verdict + areaCodes
+        if (got.verdict !== 'WA') throw new Error(`verdict 不是 WA: ${got.verdict}`);
+        if (!Array.isArray(got.areaCodes) || got.areaCodes.length === 0) {
+          console.log('  ⚠ areaCodes 为空，AI 没成功归类');
+        } else {
+          console.log(`  ✓ areaCodes: ${got.areaCodes.join(', ')}`);
+        }
+        break;
+      }
+    }
+    if (!inMistakes) throw new Error('60s 内错题没入库');
+  });
+}
+
+// 第二刀：卡住引导（手动触发，不真等 2 分钟）
+if (hasApiKey) {
+  await step('第二刀：卡住引导（手动触发 enqueueStuckHint）', async (tag) => {
+    // 确保题目激活 + 切回题目库
+    await page.evaluate(() => {
+      const w = window;
+      const s = w.__aicc_useStore__.getState();
+      const p = s.problems.find((x) => /两数之和|Two Sum/.test(x.title));
+      if (p) s.setActiveProblem(p.id);
+    });
+    await page.waitForTimeout(800);
+    const sidebarBtns = page.locator('div.w-14 > button');
+    await sidebarBtns.nth(0).click();
+    await page.waitForTimeout(400);
+    // 直接调 store action 触发
+    const enqueued = await page.evaluate(() => {
+      const w = window;
+      const id = w.__aicc_useStore__.getState().enqueueStuckHint();
+      return id;
+    });
+    if (!enqueued) throw new Error('enqueueStuckHint 返回 null（可能 active 题目/file 未满足）');
+    // 等 hint 出现 ~30s
+    let hinted = false;
+    for (let i = 0; i < 40; i++) {
+      await page.waitForTimeout(1000);
+      const cnt = await page.locator('text=教练想问你').count();
+      if (cnt > 0) {
+        hinted = true;
+        break;
+      }
+    }
+    if (!hinted) throw new Error('40s 内 hint 卡片没出现');
+    await shot(tag, 'stuck-hint-card');
+    // 关掉
+    await page.locator('button[title="关闭"]').last().click().catch(() => {});
+    await page.waitForTimeout(300);
+  });
+}
+
+// 第三刀：粘贴 30+ 行触发 chip
+await step('第三刀：粘贴 ≥ 30 行 → PasteSuggestionChip 出现', async (tag) => {
+  // 切到 main.cpp
+  await page.keyboard.press('Control+P');
+  await page.waitForTimeout(500);
+  await page.keyboard.type('main.cpp');
+  await page.waitForTimeout(400);
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(800);
+  // 模拟粘贴：直接调 monaco 的 trigger paste 比较麻烦，我们直接调 store action 触发
+  await page.evaluate(() => {
+    const w = window;
+    if (w.__aicc_useStore__) {
+      const lines = Array(35).fill('  cout << i << endl;').join('\n');
+      w.__aicc_useStore__.getState().setPasteSuggestion({
+        snippet: lines,
+        lineCount: 35,
+      });
+    }
+  });
+  await page.waitForTimeout(500);
+  await shot(tag, 'paste-chip');
+  const chip = await page.locator('text=检测到大段粘贴').count();
+  if (chip === 0) throw new Error('粘贴 chip 没出现');
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // 19. 删除文件确认对话框
 // ═══════════════════════════════════════════════════════════════════════
 await step('右键 brute.cpp → 删除（取消）', async (tag) => {

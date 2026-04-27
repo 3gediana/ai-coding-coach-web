@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { Settings, Sparkles, Plus, Play, BookmarkPlus, CheckCircle2 } from 'lucide-react';
+import { Settings, Sparkles, Plus, Play, CheckCircle2 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 
@@ -8,8 +8,8 @@ export function TopBar() {
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const setProblemEditorOpen = useStore((s) => s.setProblemEditorOpen);
   const setCmdPaletteOpen = useStore((s) => s.setCmdPaletteOpen);
+  const setSubmitModalOpen = useStore((s) => s.setSubmitModalOpen);
   const enqueueAnalyze = useStore((s) => s.enqueueAnalyze);
-  const enqueueSummarize = useStore((s) => s.enqueueSummarize);
   const activeProblemId = useStore((s) => s.activeProblemId);
   const problems = useStore((s) => s.problems);
   const filesByScope = useStore((s) => s.filesByScope);
@@ -122,26 +122,15 @@ export function TopBar() {
       </button>
 
       {activeProblemId && (
-        <>
-          <button
-            onClick={() => enqueueSummarize(true)}
-            className="btn"
-            disabled={!apiOk}
-            title="加入错题本"
-          >
-            <BookmarkPlus size={14} />
-            <span className="hidden lg:inline">错题</span>
-          </button>
-          <button
-            onClick={() => enqueueSummarize(false)}
-            className="btn"
-            disabled={!apiOk}
-            title="提交并总结"
-          >
-            <CheckCircle2 size={14} />
-            <span className="hidden lg:inline">提交</span>
-          </button>
-        </>
+        <button
+          onClick={() => setSubmitModalOpen(true)}
+          className="btn"
+          disabled={!apiOk}
+          title="登记提交结果（AC/WA/TLE/...）→ AI 针对性分析"
+        >
+          <CheckCircle2 size={14} />
+          <span className="hidden lg:inline">提交</span>
+        </button>
       )}
 
       <button
