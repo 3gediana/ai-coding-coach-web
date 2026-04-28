@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.4
+// @version      0.2.5
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -83,8 +83,12 @@
 
   /** 校内 OJ 提取 */
   async function extractSchoolOJ() {
-    const main = document.querySelector('main.main-container .el-card__body');
-    if (!main) throw new Error('未找到题目主容器（.main-container .el-card__body）');
+    // mainContainer = main.main-container (整个题目区域，含样例/编辑器多个 el-card)
+    const mainContainer = document.querySelector('main.main-container');
+    if (!mainContainer) throw new Error('未找到题目区域（main.main-container）');
+    // 题目描述卡片（含 title / 题面 / 代码块）
+    const main = mainContainer.querySelector('.el-card__body') || mainContainer;
+    if (!main) throw new Error('未找到题目卡片（.el-card__body）');
 
     const fullText = main.innerText.trim();
 
@@ -129,28 +133,32 @@
       return { lang, text: pre.innerText.trim() };
     });
 
-    // 抽样例：先尝试 el-tabs__content，再点击所有 tab item 触发懒加载
-    const sampleTabs = await harvestSchoolOJSamples(main);
+    // 抽样例：扩大到 mainContainer (含外层 el-card 和样例区域)
+    const sampleTabs = await harvestSchoolOJSamples(mainContainer);
 
-    // 诊断：抓所有可能含样例的元素，方便定位
+    // 诊断：在 mainContainer 全范围搜索 tab/pane/sample 元素
     const schoolOJDebug = {
-      hasElTabs: main.querySelectorAll('.el-tabs').length,
-      hasElTabPane: main.querySelectorAll('.el-tab-pane').length,
-      hasElTabsItem: main.querySelectorAll('.el-tabs__item').length,
-      tabItemTexts: [...main.querySelectorAll('.el-tabs__item')].map((e) => e.innerText.trim().slice(0, 40)),
-      preCount: main.querySelectorAll('pre').length,
-      preList: [...main.querySelectorAll('pre')].map((e) => ({
+      hasElTabs: mainContainer.querySelectorAll('.el-tabs').length,
+      hasElTabPane: mainContainer.querySelectorAll('.el-tab-pane').length,
+      hasElTabsItem: mainContainer.querySelectorAll('.el-tabs__item').length,
+      tabItemTexts: [...mainContainer.querySelectorAll('.el-tabs__item')].map((e) => e.innerText.trim().slice(0, 40)),
+      preCount: mainContainer.querySelectorAll('pre').length,
+      preList: [...mainContainer.querySelectorAll('pre')].map((e) => ({
         cls: e.className.slice(0, 60),
         text: e.innerText.slice(0, 80),
       })),
+      // el-card 数量（题目通常有多张卡：题面 / 样例 / 编辑器）
+      elCardCount: mainContainer.querySelectorAll('.el-card').length,
+      elCardClasses: [...mainContainer.querySelectorAll('.el-card')].map((e) => e.className.slice(0, 80)),
       sampleSelectors: [
         '[class*="sample"]',
         '[class*="example"]',
         '[class*="case"]',
+        '[class*="测试"]',
       ].map((sel) => ({
         sel,
-        count: main.querySelectorAll(sel).length,
-        first: main.querySelector(sel)?.className?.slice(0, 60) || '',
+        count: mainContainer.querySelectorAll(sel).length,
+        first: mainContainer.querySelector(sel)?.className?.slice(0, 80) || '',
       })),
     };
 
