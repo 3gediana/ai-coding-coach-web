@@ -14,6 +14,7 @@ import { StuckHintCard } from './components/StuckHintCard';
 import { RuntimePane } from './components/RuntimePane';
 import { OnboardingOverlay } from './components/OnboardingOverlay';
 import { useStore } from './lib/store';
+import { startImportReceiver, stopImportReceiver } from './lib/importReceiver';
 import { toast } from 'sonner';
 
 export default function App() {
@@ -41,6 +42,12 @@ export default function App() {
       return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 启动 TM 推送的 SSE 订阅（仅 dev）
+  useEffect(() => {
+    startImportReceiver();
+    return () => stopImportReceiver();
   }, []);
 
   return (

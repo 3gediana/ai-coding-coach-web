@@ -283,6 +283,10 @@ interface State {
   dismissLearningCard: () => void;
   /** 把内置题库的题加到 problems（学生点 "新题" 行动卡时调用） */
   addBankProblem: (bankId: string) => Promise<string | null>;
+
+  // 外部导入（Tampermonkey 推送）
+  /** 接收 TM 推送的 payload，去重 / 调 sam 多模态 / parseProblem / 入库 / 激活 */
+  handleImportPayload: (payload: import('./importReceiver').ImportPayload) => Promise<void>;
 }
 
 // ============== 初始化 ==============
@@ -1395,6 +1399,95 @@ int main() {
       set({ learningCardDismissedDate: t });
     },
 
+    handleImportPayload: async (payload) => {
+      const st = get();
+      // 1. 生成稳定 ID（按 url 去重）
+      const id = 'import-' + payload.url.replace(/[^a-zA-Z0-9]/g, '_').slice(-50);
+      const existing = st.problems.find((p) => p.id === id);
+      if (existing) {
+        toast.info(`已存在：${existing.title}`, { description: '直接激活' });
+        await get().setActiveProblem(existing.id);
+        return;
+      }
+
+      // 2. 构造 markdown 题面（图片用 placeholder 占位，待 sam 识别后替换）
+      let statement = payload.rawText || '';
+      const placeholders: Array<{ marker: string; img: { src: string; base64?: string; alt?: string } }> = [];
+      if (payload.images?.length) {
+        statement += '\n\n---\n\n📷 **题目含 ' + payload.images.length + ' 张图片**\n\n';
+        payload.images.forEach((img, i) => {
+          const marker = `[[IMG_${i + 1}]]`;
+          statement += `### 图 ${i + 1}${img.alt ? ` (${img.alt})` : ''}\n${marker}\n_(等待 sam 多模态识别...)_\n\n`;
+          placeholders.push({ marker, img });
+        });
+      }
+
+      // 3. AI 解析（如已配置）
+      let problem: Problem;
+      if (st.aiConfig.apiKey && payload.rawText) {
+        try {
+          const parsed = await get().coach.parseProblem(statement);
+          problem = {
+            ...parsed,
+            id,
+            title: payload.title || parsed.title || '导入的题目',
+            statement: parsed.statement || statement,
+            createdAt: Date.now(),
+          };
+        } catch (err: any) {
+          console.warn('[handleImportPayload] parseProblem 失败，回退到原文', err);
+          problem = {
+            id,
+            title: payload.title || '导入的题目',
+            statement,
+            tags: [],
+            createdAt: Date.now(),
+          };
+        }
+      } else {
+        problem = {
+          id,
+          title: payload.title || '导入的题目',
+          statement,
+          tags: [],
+          createdAt: Date.now(),
+        };
+      }
+
+      // 4. 入库 + 编辑文件
+      await storage.saveProblem(problem);
+      const lang: FileLang = (payload.language === 'python' ? 'python' : payload.language === 'c' ? 'c' : 'cpp');
+      const fileId = 'file-' + Date.now();
+      const fileName = lang === 'cpp' ? 'main.cpp' : lang === 'c' ? 'main.c' : 'main.py';
+      const file: CodeFile = {
+        id: fileId,
+        problemId: problem.id,
+        name: fileName,
+        language: lang,
+        content: payload.initialCode || '',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      await storage.saveFile(file);
+
+      set((s) => ({
+        problems: [problem, ...s.problems],
+        filesByScope: { ...s.filesByScope, [problem.id]: [file] },
+        activeFileIdByScope: { ...s.activeFileIdByScope, [problem.id]: fileId },
+      }));
+
+      // 5. 激活
+      await get().setActiveProblem(problem.id);
+      toast.success(`📥 已导入：${problem.title}`, {
+        description: `来自 ${payload.source} · ${placeholders.length} 张图${placeholders.length > 0 ? '（识别中...）' : ''}`,
+      });
+
+      // 6. 异步：sam 多模态识图（不阻塞用户）
+      if (placeholders.length > 0) {
+        void identifyImagesAndUpdate(problem.id, placeholders, get, set);
+      }
+    },
+
     addBankProblem: async (bankId) => {
       const bank = PROBLEM_BANK.find((b) => b.id === bankId);
       if (!bank) return null;
@@ -1425,6 +1518,95 @@ int main() {
 });
 
 // ============== helpers ==============
+
+/**
+ * 用 sam 多模态模型识别图片，识完后**就地替换** statement 里的 placeholder 标记。
+ * 这样保持上下文连贯：图在题面里的位置 → 由文字描述替代。
+ *
+ * 用 ollama native API (/api/chat) 走 fastLane 的 ai-proxy（绕 CORS）。
+ * fastLane 必须 enabled 且模型有 vision capability（如 sam:latest）。
+ */
+async function identifyImagesAndUpdate(
+  problemId: string,
+  placeholders: Array<{ marker: string; img: { src: string; base64?: string; alt?: string } }>,
+  get: () => State,
+  set: (
+    partial: State | Partial<State> | ((s: State) => State | Partial<State>),
+  ) => void,
+): Promise<void> {
+  const cfg = get().aiConfig;
+  const fl = cfg.fastLane;
+  if (!fl?.enabled || !fl.baseUrl || !fl.model) {
+    console.warn('[identifyImages] fastLane 未配置，跳过识图');
+    return;
+  }
+  const baseUrl = fl.baseUrl.replace(/\/$/, '');
+  const ollamaUrl = `${baseUrl}/api/chat`;
+  const proxyUrl = `/ai-proxy/${encodeURIComponent(ollamaUrl)}`;
+
+  let okCount = 0;
+  for (let i = 0; i < placeholders.length; i++) {
+    const { marker, img } = placeholders[i];
+    // base64 优先；如 src 是 data URI 也支持
+    let b64 = img.base64;
+    if (!b64 && img.src?.startsWith('data:')) {
+      b64 = img.src.split(',')[1];
+    }
+    if (!b64) {
+      console.warn(`[identifyImages] 图 ${i + 1} 无 base64，跳过`);
+      continue;
+    }
+    try {
+      const resp = await fetch(proxyUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: fl.model,
+          messages: [
+            {
+              role: 'user',
+              content:
+                '请简要描述这张图的内容。' +
+                '如果是文字截图（题面/样例/公式）请逐字识别原文；' +
+                '如果是流程图/算法图请描述结构和关键节点；' +
+                '如果是数据示例请给出文字版本。' +
+                '不要超过 200 字。',
+              images: [b64],
+            },
+          ],
+          stream: false,
+          options: { temperature: 0.2 },
+        }),
+      });
+      if (!resp.ok) {
+        console.warn(`[identifyImages] 图 ${i + 1} HTTP ${resp.status}`);
+        continue;
+      }
+      const data = await resp.json();
+      const description = String(data.message?.content || '').trim();
+      if (!description) continue;
+
+      // 就地替换 marker + 占位提示
+      const st = get();
+      const p = st.problems.find((x) => x.id === problemId);
+      if (!p) return;
+      const replaceFrom = `${marker}\n_(等待 sam 多模态识别...)_`;
+      const replaceTo = `**[图 ${i + 1} 识别]** ${description}`;
+      const newStatement = p.statement.replace(replaceFrom, replaceTo);
+      const updated: Problem = { ...p, statement: newStatement };
+      await storage.saveProblem(updated);
+      set((s) => ({
+        problems: s.problems.map((x) => (x.id === problemId ? updated : x)),
+      }));
+      okCount++;
+    } catch (err: any) {
+      console.warn(`[identifyImages] 图 ${i + 1} 异常`, err);
+    }
+  }
+  if (okCount > 0) {
+    toast.success(`🖼️ sam 已识别 ${okCount}/${placeholders.length} 张图`);
+  }
+}
 
 function findScopeOfFile(st: State, fileId: string): string | null {
   for (const [scope, files] of Object.entries(st.filesByScope)) {

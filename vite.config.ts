@@ -2,6 +2,8 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { resolve as pathResolve } from 'node:path';
 
 /**
  * Dev 时通过自定义中间件转发到真实 AI endpoint，绕开 CORS。
@@ -271,6 +273,129 @@ export default defineConfig({
             res.setHeader('content-type', 'application/json');
             res.end(JSON.stringify({ error: String(e?.message || e) }));
           }
+        });
+      },
+    },
+    {
+      // ========== Tampermonkey 题目导入接收端 ==========
+      // 流程：
+      //   TM 脚本（在 educoder/校内 OJ 页面）抓题面 → POST /__import → JSON
+      //   AI Coach 前端订阅 GET /__import-sse → 收到 → 调用 store.handleImport
+      //
+      // 跨域：CORS 全开（仅 dev 环境，不暴露到 production）
+      // 队列：SSE 未连时入队，连接后批量推。最多保留 50 条避免内存泄漏
+      name: 'aicc-import-receiver',
+      configureServer(server) {
+        type ImportPayload = {
+          source: string;
+          url: string;
+          title?: string;
+          rawText?: string;
+          images?: Array<{ src: string; base64?: string; alt?: string }>;
+          initialCode?: string;
+          language?: string;
+          meta?: Record<string, unknown>;
+        };
+        const queue: ImportPayload[] = [];
+        const sseClients = new Set<import('http').ServerResponse>();
+
+        // POST /__import → 入队 + 推送给 SSE 客户端
+        server.middlewares.use('/__import', (req, res) => {
+          // CORS
+          res.setHeader('access-control-allow-origin', '*');
+          res.setHeader('access-control-allow-methods', 'POST, OPTIONS');
+          res.setHeader('access-control-allow-headers', 'content-type');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          req.on('data', (c: Buffer) => chunks.push(c));
+          req.on('end', () => {
+            try {
+              const text = Buffer.concat(chunks).toString('utf8');
+              const payload = JSON.parse(text) as ImportPayload;
+              if (!payload.url || !payload.source) {
+                res.statusCode = 400;
+                res.setHeader('content-type', 'application/json');
+                res.end(JSON.stringify({ error: 'missing url/source' }));
+                return;
+              }
+              // 1. 落盘：永远写一份到 logs/imports/，方便测试 / debug / 重放
+              let savedPath: string | null = null;
+              try {
+                const dir = pathResolve(process.cwd(), 'logs', 'imports');
+                mkdirSync(dir, { recursive: true });
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                const safeSource = String(payload.source).replace(/[^\w-]/g, '_');
+                const fname = `${ts}_${safeSource}.json`;
+                savedPath = pathResolve(dir, fname);
+                writeFileSync(savedPath, JSON.stringify(payload, null, 2), 'utf8');
+              } catch (err: any) {
+                console.warn(`\x1b[31m[aicc-import]\x1b[0m 落盘失败: ${err?.message}`);
+              }
+              // 2. 推送给所有在线客户端
+              const msg = `data: ${JSON.stringify(payload)}\n\n`;
+              let pushed = 0;
+              for (const c of sseClients) {
+                try { c.write(msg); pushed++; } catch { /* ignore */ }
+              }
+              // 没在线客户端 → 入队（下次连接时一次性推）
+              if (pushed === 0) {
+                queue.push(payload);
+                if (queue.length > 50) queue.shift();
+              }
+              const sizeKB = (text.length / 1024).toFixed(1);
+              const imgN = payload.images?.length ?? 0;
+              console.log(
+                `\x1b[36m[aicc-import]\x1b[0m ${payload.source} ${payload.title?.slice(0, 30) ?? '(无标题)'} (${sizeKB} KB, ${imgN} 图) → ${pushed > 0 ? `推送 ${pushed}` : '入队'}${savedPath ? ` · 落盘 ${savedPath.split(/[\\\/]/).pop()}` : ''}`,
+              );
+              res.statusCode = 200;
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify({ ok: true, pushed, queued: queue.length }));
+            } catch (e: any) {
+              res.statusCode = 400;
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify({ error: String(e?.message || e) }));
+            }
+          });
+        });
+
+        // GET /__import-sse → 前端订阅
+        server.middlewares.use('/__import-sse', (req, res) => {
+          if (req.method !== 'GET') {
+            res.statusCode = 405;
+            res.end();
+            return;
+          }
+          res.setHeader('content-type', 'text/event-stream');
+          res.setHeader('cache-control', 'no-cache');
+          res.setHeader('connection', 'keep-alive');
+          res.setHeader('access-control-allow-origin', '*');
+          (res as any).flushHeaders?.();
+          // 心跳 & 立即写一行避免某些代理缓冲
+          res.write(': connected\n\n');
+          sseClients.add(res);
+          // 推送队列里未消费的
+          while (queue.length > 0) {
+            const p = queue.shift()!;
+            res.write(`data: ${JSON.stringify(p)}\n\n`);
+          }
+          // 30s 心跳保活
+          const ping = setInterval(() => {
+            try { res.write(': ping\n\n'); } catch { /* ignore */ }
+          }, 30_000);
+          req.on('close', () => {
+            clearInterval(ping);
+            sseClients.delete(res);
+          });
         });
       },
     },
