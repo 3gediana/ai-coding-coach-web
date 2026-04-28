@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.8
+// @version      0.2.9
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -240,17 +240,17 @@
     });
 
     // 收集 sampleRoot 内所有数据候选元素（按 DOM 顺序）
+    // 只接受 textarea + 排除 language-* 的 pre（题面代码块不是样例数据）
     const allDataEls = [];
     {
       const walker = document.createTreeWalker(sampleRoot, NodeFilter.SHOW_ELEMENT, null);
       let node = walker.nextNode();
       while (node) {
         const tag = node.tagName;
-        const cls = node.className || '';
+        const cls = typeof node.className === 'string' ? node.className : '';
         const isCandidate =
           tag === 'TEXTAREA' ||
-          tag === 'PRE' ||
-          (typeof cls === 'string' && /content|data/i.test(cls));
+          (tag === 'PRE' && !/language-/.test(cls));
         if (isCandidate) {
           const txt = (node.value || node.innerText || '').replace(/\u200B/g, '').trim();
           if (txt && txt.length < 2000 && !/输入样例|输出样例|样例查看/.test(txt)) {
@@ -261,16 +261,24 @@
       }
     }
 
-    // 按顺序与 headers 一一配对（headers[i] ↔ allDataEls[i]）
-    for (let i = 0; i < headerEls.length; i++) {
-      const header = headerEls[i];
-      const labelMatch = (header.firstChild?.nodeType === 3 ? header.firstChild.textContent : header.textContent).trim().match(/^(输入|输出)样例\s*\d+/);
-      const label = labelMatch ? labelMatch[0] : header.textContent.trim().slice(0, 20);
+    // headers 按 label 去重（DOM 里可能有 outer / inner 嵌套都通过 leaf 判断）
+    const uniqueHeaders = [];
+    const seenLabels = new Set();
+    for (const header of headerEls) {
+      const directText = (header.firstChild?.nodeType === 3 ? header.firstChild.textContent : header.textContent).trim();
+      const m = directText.match(/^(输入|输出)样例\s*\d+/);
+      if (!m) continue;
+      if (seenLabels.has(m[0])) continue;
+      seenLabels.add(m[0]);
+      uniqueHeaders.push({ el: header, label: m[0] });
+    }
+
+    // 按顺序配对（headers[i] ↔ allDataEls[i]）
+    for (let i = 0; i < uniqueHeaders.length && i < allDataEls.length; i++) {
+      const { label } = uniqueHeaders[i];
       const dataEl = allDataEls[i];
-      if (dataEl) {
-        const text = (dataEl.value || dataEl.innerText || '').replace(/\u200B/g, '').trim();
-        if (text) samples.push({ label, text });
-      }
+      const text = (dataEl.value || dataEl.innerText || '').replace(/\u200B/g, '').trim();
+      if (text) samples.push({ label, text });
     }
     return samples;
   }
