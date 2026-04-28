@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.6
+// @version      0.2.7
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -133,24 +133,29 @@
       return { lang, text: pre.innerText.trim() };
     });
 
-    // 校内 OJ 用第二张 el-card 显示样例 + 编辑器
-    // 第一张卡 = 题面，第二张卡 = 样例 + 编辑器
-    const sampleTabs = harvestSchoolOJSamplesByText(mainContainer);
+    // 样例区可能在 main.main-container **之外**，扩到 document.body
+    const sampleTabs = harvestSchoolOJSamplesByText(document.body);
 
-    // 诊断：保留各卡内容快照
-    const allCards = [...mainContainer.querySelectorAll('.el-card__body')];
+    // 诊断：含「样例查看模式」字眼的容器（样例区根容器）
+    const sampleRoot = findSampleRoot(document.body);
+    const allCards = [...document.body.querySelectorAll('.el-card__body')];
     const schoolOJDebug = {
       elCardCount: allCards.length,
       elCardTexts: allCards.map((c, i) => ({
         i,
         len: c.innerText.length,
-        head: c.innerText.slice(0, 100).replace(/\n/g, '|'),
-        tail: c.innerText.slice(-100).replace(/\n/g, '|'),
+        head: c.innerText.slice(0, 80).replace(/\n/g, '|'),
+        tail: c.innerText.slice(-80).replace(/\n/g, '|'),
       })),
-      preList: [...mainContainer.querySelectorAll('pre')].map((e) => ({
-        cls: e.className.slice(0, 60),
-        text: e.innerText.slice(0, 80),
-      })),
+      sampleRootFound: !!sampleRoot,
+      sampleRootClass: sampleRoot?.className?.slice(0, 100) || '',
+      sampleRootTag: sampleRoot?.tagName || '',
+      sampleRootInsideMain: !!sampleRoot && mainContainer.contains(sampleRoot),
+      sampleRootText: sampleRoot?.innerText?.slice(0, 600).replace(/\n/g, '|') || '',
+      bodyTextSlice: document.body.innerText.slice(
+        Math.max(0, document.body.innerText.indexOf('输入样例1') - 50),
+        Math.max(0, document.body.innerText.indexOf('输入样例1') + 600),
+      ).replace(/\n/g, '|'),
     };
 
     // url 加题号，避免同一 contest 多道题被去重覆盖
@@ -185,45 +190,81 @@
     };
   }
 
+  /** 找含「样例查看模式」字眼的容器（样例区根） */
+  function findSampleRoot(root) {
+    const all = [...root.querySelectorAll('div, section, aside')];
+    let best = null;
+    let bestSize = Infinity;
+    for (const el of all) {
+      if (el.innerText?.includes('样例查看模式') && el.innerText?.includes('输入样例')) {
+        // 选最小的（最贴近样例区，不是父级巨型容器）
+        const size = el.innerText.length;
+        if (size < bestSize) {
+          bestSize = size;
+          best = el;
+        }
+      }
+    }
+    return best;
+  }
+
   /**
-   * 校内 OJ 样例 (基于 DOM 结构 + 文本规则):
-   * 第二张 el-card 里有 div 含「输入样例N」/「输出样例N」当 header，紧跟 pre/div 是数据
-   * 找所有「输入样例N」「输出样例N」label 元素 → 找最近兄弟/父级里的 pre 取数据
+   * 校内 OJ 样例提取：
+   * 1. 用 findSampleRoot 定位样例区
+   * 2. 在样例区内找 leaf 元素，textContent 起始为「输入样例N」/「输出样例N」
+   * 3. 向父级回溯找含 pre/[class*="line"]/textarea 的容器拿数据
    */
-  function harvestSchoolOJSamplesByText(mainContainer) {
+  function harvestSchoolOJSamplesByText(root) {
     const samples = [];
-    // 找所有含「输入样例N」/「输出样例N」字眼的元素（精确到 leaf 节点）
-    const all = [...mainContainer.querySelectorAll('div, span, h3, h4, label, p')];
+    const sampleRoot = findSampleRoot(root) || root;
+
+    // 找 leaf 元素（textContent 不超过 30 字 + 起始正则匹配）
+    const all = [...sampleRoot.querySelectorAll('div, span, h3, h4, label, p, b, strong')];
     const headerEls = all.filter((el) => {
-      const t = el.innerText?.trim() || '';
-      // 不能太长（label 应短），不能含 pre 子元素（不是 leaf）
-      return t.length < 50 && /^(输入|输出)样例\s*\d+/.test(t) && el.querySelector('pre, .CodeMirror, [class*="line"]') === null;
+      // 文本节点优先（避免拿到嵌套 textContent）
+      const directText = (el.firstChild?.nodeType === 3 ? el.firstChild.textContent : el.textContent).trim();
+      if (directText.length > 30 || directText.length < 5) return false;
+      if (!/^(输入|输出)样例\s*\d+/.test(directText)) return false;
+      // 排除嵌套 (子元素 > 5 个的肯定不是 label)
+      if (el.querySelectorAll('div, pre, textarea').length > 3) return false;
+      return true;
     });
 
     for (const header of headerEls) {
-      const label = header.innerText.trim();
-      // 在 header 父级或兄弟中找最近 pre / div.line / textarea
-      // 1) 先看父元素的下一个兄弟
+      const labelMatch = (header.firstChild?.nodeType === 3 ? header.firstChild.textContent : header.textContent).trim().match(/^(输入|输出)样例\s*\d+/);
+      const label = labelMatch ? labelMatch[0] : header.textContent.trim().slice(0, 20);
+
+      // 找数据：向父级回溯，每层在父级下查找 pre/CodeMirror-line/textarea/[class*="样例"]
       let dataEl = null;
-      let cursor = header;
-      // 向父级回溯找包含 header + 数据的容器
-      for (let depth = 0; depth < 4 && cursor; depth++) {
-        const candidates = cursor.querySelectorAll('pre, .CodeMirror-code, [class*="content"], textarea');
-        for (const c of candidates) {
-          if (c !== header && !header.contains(c) && c.innerText?.trim() && c.innerText.length < 5000) {
+      let cursor = header.parentElement;
+      for (let depth = 0; depth < 5 && cursor && !dataEl; depth++) {
+        // 在 cursor 内查找数据元素（排除 header 自己及其子树）
+        const cands = [
+          ...cursor.querySelectorAll('pre, textarea, [class*="content"], [class*="data"]'),
+        ];
+        for (const c of cands) {
+          if (header.contains(c) || c.contains(header)) continue;
+          const txt = (c.value || c.innerText || '').replace(/\u200B/g, '').trim();
+          // 数据应该不包含「输入样例」字眼（否则又匹到 label 区）
+          if (txt && txt.length < 2000 && !/输入样例|输出样例|样例查看/.test(txt)) {
             dataEl = c;
             break;
           }
         }
-        if (dataEl) break;
         cursor = cursor.parentElement;
       }
       if (dataEl) {
-        const text = dataEl.innerText.replace(/\u200B/g, '').trim();
-        if (text) samples.push({ label, text });
+        const text = (dataEl.value || dataEl.innerText || '').replace(/\u200B/g, '').trim();
+        samples.push({ label, text });
       }
     }
-    return samples;
+    // 去重（同 label 取最长）
+    const map = new Map();
+    for (const s of samples) {
+      const cur = map.get(s.label);
+      if (!cur || s.text.length > cur.text.length) map.set(s.label, s);
+    }
+    return [...map.values()];
   }
 
   function buildSchoolOJMarkdown({ title, problemId, fullText, codeBlocks, sampleTabs }) {
