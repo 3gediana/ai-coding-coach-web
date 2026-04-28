@@ -1,29 +1,10 @@
-﻿refactor(import): move sam vision to Node-side processor (file-driven pipeline)
+﻿fix(pusher): v0.2.1 头歌 Monaco 选主代码区 (修 initialCode 截断 bug)
 
-按用户要求：先落盘文件，再对文件统一处理；不依赖前端 fastLane 配置
+之前 initialCode 抓到的内容只有 282/388 字（缺末尾两段 elif/else）
 
-新增 scripts/server/importProcessor.mjs (Node ESM 纯服务端):
-- processImportFile(rawPath): 读 raw payload → 调 ollama sam → 替换 [[IMG_N]] → 写 processed
-- finally 块 keep_alive: 0 卸载模型释放显存
-- CLI 用法 (node scripts/server/importProcessor.mjs <file>) + --watch 监听目录
-- 不依赖浏览器，可独立测试 / 重放
+原因: 头歌页面有多个 Monaco editor (评论框/参考答案/主代码区)
+旧逻辑用「第一个非空」可能命中错误的 editor
 
-vite.config.ts plugin 重构:
-- POST /__import 落盘 raw.json + 立即响应 200 (不等处理)
-- 异步调 processImportFile → 完成后 SSE 推 processed payload
-- 失败也推 raw 给前端有反馈
-
-src/lib/store.ts 简化:
-- handleImportPayload 不再调 sam (后端已做)
-- 删整个 identifyImagesAndUpdate helper (死代码)
-- 不再依赖 aiConfig.fastLane (尊重用户配置语义)
-- 已存在题 + 新 rawText → 更新 statement (重新推送可刷新识别结果)
-- toast 显示「N/M 张图已识别」基于 imageRecognitions 字段
-
-测试 (scripts/import-test/e2e-vision.mjs):
-- POST 立即响应 200 ✅
-- raw 文件立即落盘 ✅
-- processed 文件 24.2s 后落盘 (sam 识图) ✅
-- SSE 推 processed payload 24.7s ✅
-- statement 含「图 N 识别」标记 ✅
-- ollama 自动卸载 sam ✅
+修复:
+1. 优先选 .my-monaco-editor / .code-area-container___ 容器里的 editor (主代码区)
+2. fallback: 选 getValue().length 最长的 editor

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.0
+// @version      0.2.1
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -212,15 +212,35 @@
       if (stageName && stageName.length > 3) title = stageName;
     }
 
-    // Monaco 编辑器现有代码（多种访问方式兜底）
+    // Monaco 编辑器现有代码（多种 editor，选「主代码区」）
+    // 头歌页面通常有多个 Monaco：评论框、答案查看、主编辑器
+    // 策略：优先选 .my-monaco-editor 里的（主代码区容器），否则选**内容最长**的
     let initialCode = '';
     if (window.monaco?.editor?.getEditors) {
       const editors = window.monaco.editor.getEditors();
       if (editors?.length) {
-        // 第一个非空编辑器
+        // 1) 找到 DOM 在 .my-monaco-editor 容器里的 editor（主代码区）
+        let mainEditor = null;
         for (const ed of editors) {
-          const v = ed.getValue();
-          if (v && v.trim()) { initialCode = v; break; }
+          const node = ed.getDomNode?.();
+          if (node && node.closest('.my-monaco-editor, .code-area-container___bjERn')) {
+            mainEditor = ed;
+            break;
+          }
+        }
+        // 2) 否则取内容最长的（第一关时主编辑器内容多于评论框等）
+        if (!mainEditor) {
+          let bestLen = 0;
+          for (const ed of editors) {
+            const v = ed.getValue?.() || '';
+            if (v.length > bestLen) {
+              bestLen = v.length;
+              mainEditor = ed;
+            }
+          }
+        }
+        if (mainEditor) {
+          initialCode = mainEditor.getValue?.() || '';
         }
       }
     }
