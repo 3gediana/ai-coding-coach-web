@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.2
+// @version      0.2.3
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -212,52 +212,37 @@
       if (stageName && stageName.length > 3) title = stageName;
     }
 
-    // Monaco 编辑器现有代码（多种 editor，选「主代码区」）
-    // 头歌页面通常有多个 Monaco：评论框、答案查看、主编辑器
+    // Monaco 编辑器代码：头歌封了 window.monaco，必须用 DOM 滚动抓 view-line
     let initialCode = '';
-    const editorsDebug = []; // 诊断：把所有 editor 的状态推过去，方便定位选错问题
+    const editorsDebug = [];
 
+    // 1) 优先：window.monaco.editor.getEditors()（万一暴露了）
     if (window.monaco?.editor?.getEditors) {
       const editors = window.monaco.editor.getEditors();
-      // 收集每个 editor 的诊断信息
       for (const ed of editors) {
         const node = ed.getDomNode?.();
         const v = ed.getValue?.() || '';
-        editorsDebug.push({
-          len: v.length,
-          firstLine: v.split('\n')[0]?.slice(0, 60),
-          containerClass: node?.parentElement?.parentElement?.className?.slice(0, 100) || '',
-          ancestor: ['my-monaco-editor', 'code-area-container', 'monaco-editor-container'].find((c) =>
-            node?.closest(`[class*="${c}"]`),
-          ) || null,
-        });
+        editorsDebug.push({ len: v.length, firstLine: v.split('\n')[0]?.slice(0, 60), source: 'monaco-api' });
+        if (v.length > initialCode.length) initialCode = v;
       }
-      // 选主编辑器：优先 .my-monaco-editor / code-area-container 容器
-      let mainEditor = null;
-      for (const ed of editors) {
-        const node = ed.getDomNode?.();
-        if (node?.closest('[class*="my-monaco-editor"], [class*="code-area-container"]')) {
-          mainEditor = ed;
-          break;
-        }
-      }
-      // 兜底：选内容最长的
-      if (!mainEditor && editors.length) {
-        let bestLen = 0;
-        for (const ed of editors) {
-          const v = ed.getValue?.() || '';
-          if (v.length > bestLen) {
-            bestLen = v.length;
-            mainEditor = ed;
-          }
-        }
-      }
-      if (mainEditor) initialCode = mainEditor.getValue?.() || '';
     }
-    // 兜底：textarea
+
+    // 2) DOM 兜底：滚动 + view-line 拼接（最可靠，不依赖任何内部 API）
+    if (!initialCode) {
+      const codeText = await harvestMonacoByScroll();
+      if (codeText) {
+        editorsDebug.push({ len: codeText.length, firstLine: codeText.split('\n')[0]?.slice(0, 60), source: 'view-line-scroll' });
+        initialCode = codeText;
+      }
+    }
+
+    // 3) textarea 最后兜底
     if (!initialCode) {
       const ta = document.querySelector('[class*="my-monaco-editor"] textarea, .monaco-editor textarea');
-      if (ta?.value) initialCode = ta.value;
+      if (ta?.value) {
+        initialCode = ta.value;
+        editorsDebug.push({ len: ta.value.length, source: 'textarea-fallback' });
+      }
     }
 
     const images = await collectImages(leftPanel);
@@ -301,6 +286,62 @@
         editorsDebug,
       },
     };
+  }
+
+  /**
+   * 头歌 monaco 没暴露 window.monaco：用 DOM 滚动 + view-line 拼接
+   * Monaco 虚拟滚动 → 不可见的行不在 DOM。需要主动滚动让所有行都被 render。
+   * 用 top 像素位置做 key 去重，最终按 top 排序拼接。
+   */
+  async function harvestMonacoByScroll() {
+    const mainContainer =
+      document.querySelector('[class*="my-monaco-editor"]') ||
+      document.querySelector('[class*="code-area-container"]');
+    if (!mainContainer) return '';
+    const editor = mainContainer.querySelector('.monaco-editor');
+    if (!editor) return '';
+    // Monaco 实际滚动容器（v0.30+）
+    const scrollable =
+      editor.querySelector('.overflow-guard > .monaco-scrollable-element') ||
+      editor.querySelector('.monaco-scrollable-element');
+    if (!scrollable) return '';
+
+    /** @type {Map<number, string>} */
+    const lines = new Map();
+    const harvest = () => {
+      for (const l of editor.querySelectorAll('.view-line')) {
+        const top = parseFloat(l.style.top || '0');
+        // \u00A0 是 monaco 渲染空格的非断行空格
+        lines.set(top, l.innerText.replace(/\u00A0/g, ' '));
+      }
+    };
+
+    const origScroll = scrollable.scrollTop;
+    // 滚到顶
+    scrollable.scrollTop = 0;
+    await new Promise((r) => setTimeout(r, 80));
+    harvest();
+
+    // 步进滚到底
+    let lastTop = -1;
+    let safety = 50; // 防死循环
+    while (safety-- > 0) {
+      const before = scrollable.scrollTop;
+      if (before === lastTop) break;
+      lastTop = before;
+      scrollable.scrollTop += 200;
+      await new Promise((r) => setTimeout(r, 60));
+      harvest();
+      if (scrollable.scrollTop >= scrollable.scrollHeight - scrollable.clientHeight - 1) {
+        harvest();
+        break;
+      }
+    }
+    // 恢复原滚动位置
+    scrollable.scrollTop = origScroll;
+
+    // top 排序拼接
+    return [...lines.entries()].sort((a, b) => a[0] - b[0]).map(([, t]) => t).join('\n');
   }
 
   function buildEducoderMarkdown({ title, fullText, codeBlocks }) {
