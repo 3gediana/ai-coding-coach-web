@@ -87,7 +87,17 @@ if (problem) {
 }
 
 const screenshot = `logs/imports/_real-view-${Date.now()}.png`;
-await page.screenshot({ path: screenshot, fullPage: true });
+await page.screenshot({ path: screenshot, fullPage: false });
 console.log(`\n📸 ${screenshot}`);
+
+// 滚动右栏 200px 看 sticky header 效果
+const scrolled = `logs/imports/_real-view-${Date.now()}-scrolled.png`;
+await page.evaluate(() => {
+  const sa = document.querySelector('aside .overflow-y-auto');
+  if (sa) sa.scrollTop = 250;
+});
+await page.waitForTimeout(300);
+await page.screenshot({ path: scrolled, fullPage: false });
+console.log(`📸 ${scrolled} (滚动后)`);
 
 await browser.close();

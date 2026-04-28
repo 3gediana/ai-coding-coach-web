@@ -8,11 +8,13 @@ import {
   ScrollText,
   ExternalLink,
   MessageCircle,
+  ChevronDown,
 } from 'lucide-react';
 import { MathMarkdown } from './MathMarkdown';
 import { QAPanel } from './QAPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
+import { useState } from 'react';
 
 export function FeedbackPanel() {
   const [width, setWidth] = usePersistedWidth('aicc.layout.feedbackWidth', 400, 280, 900);
@@ -83,16 +85,14 @@ export function FeedbackPanel() {
         <div className="flex-1" />
       </div>
 
-      {/* 题目摘要：永久顶部显示，两个 tab 都能参考 */}
-      {problem && tab === 'analyze' && (
-        <ProblemSummary problem={problem} />
-      )}
-
-      {/* Tab 内容 */}
+      {/* Tab 内容（题目摘要 + 实时流 + 历史结果共用滚动容器，避免长题目顶死） */}
       {tab === 'ask' ? (
         <QAPanel />
       ) : (
         <div className="flex-1 overflow-y-auto min-h-0">
+          {/* 题目摘要（放进滚动容器，长题目可滚 + 可折叠） */}
+          {problem && <ProblemSummary problem={problem} />}
+
           {/* 实时流（如果在跑） */}
           <AnimatePresence>
             {runningAnalysis && (
@@ -131,20 +131,35 @@ export function FeedbackPanel() {
 
 /** 题目摘要：去嵌套卡片，靠标题 + 字距分隔。学生主要时间看代码不看摘要，紧凑优先 */
 function ProblemSummary({ problem }: { problem: import('../core/types').Problem }) {
+  const [open, setOpen] = useState(true);
   return (
-    <details className="border-b border-line/60" open>
-      <summary className="cursor-pointer px-4 py-2.5 hover:bg-bg-elev2/50 text-sm font-medium flex items-center gap-2">
-        <ScrollText size={14} className="text-ink-dim" />
-        <span className="truncate">{problem.title}</span>
+    <div className="border-b border-line/60 bg-bg">
+      {/* sticky header：滚动到下方时标题仍然可见，便于折叠 */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full sticky top-0 z-10 bg-bg cursor-pointer px-4 py-2.5 hover:bg-bg-elev2/50 text-sm font-medium flex items-center gap-2 border-b border-line/40"
+        aria-expanded={open}
+      >
+        <ChevronDown
+          size={14}
+          className={cn(
+            'text-ink-mute transition-transform duration-150 shrink-0',
+            open ? 'rotate-0' : '-rotate-90',
+          )}
+        />
+        <ScrollText size={14} className="text-ink-dim shrink-0" />
+        <span className="truncate flex-1 text-left">{problem.title}</span>
         {problem.tags && problem.tags.length > 0 && (
-          <span className="ml-auto flex gap-1 shrink-0">
+          <span className="flex gap-1 shrink-0">
             {problem.tags.slice(0, 2).map((t) => (
               <span key={t} className="chip text-[9px] px-1.5 py-0">{t}</span>
             ))}
           </span>
         )}
-      </summary>
-      <div className="px-4 pb-3 text-xs text-ink-dim space-y-3">
+      </button>
+      {open && (
+      <div className="px-4 py-3 text-xs text-ink-dim space-y-3">
         <MathMarkdown compact className="leading-relaxed">
           {problem.statement}
         </MathMarkdown>
@@ -187,7 +202,8 @@ function ProblemSummary({ problem }: { problem: import('../core/types').Problem 
           </a>
         )}
       </div>
-    </details>
+      )}
+    </div>
   );
 }
 
