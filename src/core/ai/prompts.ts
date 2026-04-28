@@ -214,22 +214,30 @@ export function buildAskQuestionPrompt(args: {
 export function buildParseProblemPrompt(rawText: string): PromptPair {
   return {
     system:
-      '你是一个题目结构化解析助手。把用户提供的题目文本解析为 JSON。直接输出 JSON，不要任何代码块标记或解释。',
-    user: `把下面的题目解析为如下 JSON 结构：
+      '你是题目结构化解析助手。直接输出 JSON 对象（不要代码块包裹、不要解释）。statement 字段必须是 Markdown 格式：要求/规则用列表项分行、段落用空行分隔、不要写成连续大段文字。',
+    user: `解析为 JSON：
 {
   "title": "题目标题",
-  "statement": "题面描述（去除示例和约束）",
-  "inputFormat": "输入格式说明",
-  "outputFormat": "输出格式说明",
-  "constraints": "数据范围 / 时间空间限制",
+  "statement": "Markdown 格式的题面（去除示例/约束/UI杂讯）",
+  "inputFormat": "输入格式",
+  "outputFormat": "输出格式",
+  "constraints": "数据范围/时空限制",
   "examples": [{"input": "...", "output": "...", "explanation": "..."}],
-  "tags": ["可能涉及的算法/数据结构知识点"],
+  "tags": ["算法/数据结构知识点"],
   "difficulty": "easy | medium | hard"
 }
 
-如果某字段无法识别，置为空字符串或空数组。直接输出 JSON。
+statement 关键要求：
+- 多条要求一定分行写成列表，例如：
+  - 时分秒固定 2 位，不足补 0
+  - 年份固定 4 位
+- 不要保留「1、」「2、」中文编号
+- 不要保留 UI 文字（"样例查看模式"/"正常显示"/"复制"等）
+- 段落之间空一行
 
-题目原文：
+字段缺失置空字符串或空数组。
+
+原文：
 """
 ${rawText}
 """`,

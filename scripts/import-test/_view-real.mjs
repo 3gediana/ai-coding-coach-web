@@ -17,7 +17,8 @@ const CFG = {
   fastLane: { enabled: false, baseUrl: 'http://127.0.0.1:11434', model: 'sam:latest', numCtx: 8192 },
 };
 
-const realProcessed = JSON.parse(readFileSync('logs/imports/2026-04-28T12-47-25_educoder.processed.json', 'utf8'));
+const PROCESSED_PATH = process.argv[2] || 'logs/imports/2026-04-28T12-47-25_educoder.processed.json';
+const realProcessed = JSON.parse(readFileSync(PROCESSED_PATH, 'utf8'));
 
 const browser = await chromium.launch({
   executablePath: 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -35,14 +36,21 @@ page.on('pageerror', (e) => process.stdout.write(`  💥 ${e.message}\n`));
 
 await page.goto(VITE, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(800);
-await page.evaluate((cfg) => {
+await page.evaluate(async (cfg) => {
   localStorage.setItem('aicc.aiConfig.v1', JSON.stringify(cfg));
   localStorage.setItem('aicc.onboarding.v1', 'done');
   localStorage.setItem('aicc.learning.dismissed.v1', new Date().toISOString().slice(0, 10));
-  indexedDB.deleteDatabase('aicc');
+  // 等 indexedDB 删完
+  await new Promise((resolve) => {
+    const req = indexedDB.deleteDatabase('aicc');
+    req.onsuccess = () => resolve();
+    req.onerror = () => resolve();
+    req.onblocked = () => resolve();
+    setTimeout(resolve, 2000);
+  });
 }, CFG);
 await page.reload({ waitUntil: 'domcontentloaded' });
-await page.waitForTimeout(2000);
+await page.waitForTimeout(2500);
 
 console.log('━━━ 真实 educoder Python 分支题 → minimax parseProblem ━━━\n');
 console.log(`title: ${realProcessed.title}`);
