@@ -1405,8 +1405,20 @@ int main() {
       const id = 'import-' + payload.url.replace(/[^a-zA-Z0-9]/g, '_').slice(-50);
       const existing = st.problems.find((p) => p.id === id);
       if (existing) {
-        toast.info(`已存在：${existing.title}`, { description: '直接激活' });
-        await get().setActiveProblem(existing.id);
+        // 已存在但还卡在「等待 sam 识图」→ 重新触发识图（用 payload 里最新的 base64）
+        const stuck = existing.statement.includes('等待 sam 多模态识别');
+        if (stuck && payload.images?.length) {
+          toast.info(`🔄 重新触发识图：${existing.title}`);
+          const placeholders = payload.images.map((img, i) => ({
+            marker: `[[IMG_${i + 1}]]`,
+            img,
+          }));
+          await get().setActiveProblem(existing.id);
+          void identifyImagesAndUpdate(existing.id, placeholders, get, set);
+        } else {
+          toast.info(`已存在：${existing.title}`, { description: '直接激活' });
+          await get().setActiveProblem(existing.id);
+        }
         return;
       }
 
@@ -1525,6 +1537,10 @@ int main() {
  *
  * 用 ollama native API (/api/chat) 走 fastLane 的 ai-proxy（绕 CORS）。
  * fastLane 必须 enabled 且模型有 vision capability（如 sam:latest）。
+ *
+ * 资源管理：
+ * - 多图调用之间 keep_alive: '5m' 复用模型权重（不每次重载）
+ * - 全部识完（含 finally）后显式 POST `keep_alive: 0` 卸载，释放显存
  */
 async function identifyImagesAndUpdate(
   problemId: string,
@@ -1536,75 +1552,108 @@ async function identifyImagesAndUpdate(
 ): Promise<void> {
   const cfg = get().aiConfig;
   const fl = cfg.fastLane;
+  console.log('[identifyImages] 开始识图', {
+    problemId,
+    imageCount: placeholders.length,
+    fastLane: fl ? { enabled: fl.enabled, baseUrl: fl.baseUrl, model: fl.model } : null,
+  });
   if (!fl?.enabled || !fl.baseUrl || !fl.model) {
     console.warn('[identifyImages] fastLane 未配置，跳过识图');
+    toast.warning('🖼️ 图片识别已跳过', {
+      description: 'fastLane 未启用 / 未配置 model（设置 → fastLane → sam:latest）',
+      duration: 6000,
+    });
     return;
   }
   const baseUrl = fl.baseUrl.replace(/\/$/, '');
-  const ollamaUrl = `${baseUrl}/api/chat`;
-  const proxyUrl = `/ai-proxy/${encodeURIComponent(ollamaUrl)}`;
+  const chatUrl = `${baseUrl}/api/chat`;
+  const generateUrl = `${baseUrl}/api/generate`;
+  const chatProxy = `/ai-proxy/${encodeURIComponent(chatUrl)}`;
+  const generateProxy = `/ai-proxy/${encodeURIComponent(generateUrl)}`;
+
+  toast.info(`🖼️ sam 识图中... (${placeholders.length} 张)`, { duration: 4000 });
 
   let okCount = 0;
-  for (let i = 0; i < placeholders.length; i++) {
-    const { marker, img } = placeholders[i];
-    // base64 优先；如 src 是 data URI 也支持
-    let b64 = img.base64;
-    if (!b64 && img.src?.startsWith('data:')) {
-      b64 = img.src.split(',')[1];
+  try {
+    for (let i = 0; i < placeholders.length; i++) {
+      const { marker, img } = placeholders[i];
+      // base64 优先；如 src 是 data URI 也支持
+      let b64 = img.base64;
+      if (!b64 && img.src?.startsWith('data:')) {
+        b64 = img.src.split(',')[1];
+      }
+      if (!b64) {
+        console.warn(`[identifyImages] 图 ${i + 1} 无 base64，跳过`);
+        continue;
+      }
+      try {
+        const resp = await fetch(chatProxy, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: fl.model,
+            messages: [
+              {
+                role: 'user',
+                content:
+                  '请简要描述这张图的内容。' +
+                  '如果是文字截图（题面/样例/公式）请逐字识别原文；' +
+                  '如果是流程图/算法图请描述结构和关键节点；' +
+                  '如果是数据示例请给出文字版本。' +
+                  '不要超过 200 字。',
+                images: [b64],
+              },
+            ],
+            stream: false,
+            options: { temperature: 0.2 },
+            // 多张图复用模型，循环结束后 finally 块统一卸载
+            keep_alive: '5m',
+          }),
+        });
+        if (!resp.ok) {
+          console.warn(`[identifyImages] 图 ${i + 1} HTTP ${resp.status}`);
+          continue;
+        }
+        const data = await resp.json();
+        const description = String(data.message?.content || '').trim();
+        if (!description) continue;
+
+        // 就地替换 marker + 占位提示
+        const st = get();
+        const p = st.problems.find((x) => x.id === problemId);
+        if (!p) return;
+        const replaceFrom = `${marker}\n_(等待 sam 多模态识别...)_`;
+        const replaceTo = `**[图 ${i + 1} 识别]** ${description}`;
+        const newStatement = p.statement.replace(replaceFrom, replaceTo);
+        const updated: Problem = { ...p, statement: newStatement };
+        await storage.saveProblem(updated);
+        set((s) => ({
+          problems: s.problems.map((x) => (x.id === problemId ? updated : x)),
+        }));
+        okCount++;
+      } catch (err: any) {
+        console.warn(`[identifyImages] 图 ${i + 1} 异常`, err);
+      }
     }
-    if (!b64) {
-      console.warn(`[identifyImages] 图 ${i + 1} 无 base64，跳过`);
-      continue;
+    if (okCount > 0) {
+      toast.success(`🖼️ sam 已识别 ${okCount}/${placeholders.length} 张图`);
     }
+  } finally {
+    // 卸载模型释放显存（不阻塞 UI；失败也不报错）
     try {
-      const resp = await fetch(proxyUrl, {
+      await fetch(generateProxy, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           model: fl.model,
-          messages: [
-            {
-              role: 'user',
-              content:
-                '请简要描述这张图的内容。' +
-                '如果是文字截图（题面/样例/公式）请逐字识别原文；' +
-                '如果是流程图/算法图请描述结构和关键节点；' +
-                '如果是数据示例请给出文字版本。' +
-                '不要超过 200 字。',
-              images: [b64],
-            },
-          ],
-          stream: false,
-          options: { temperature: 0.2 },
+          prompt: '',
+          keep_alive: 0,
         }),
       });
-      if (!resp.ok) {
-        console.warn(`[identifyImages] 图 ${i + 1} HTTP ${resp.status}`);
-        continue;
-      }
-      const data = await resp.json();
-      const description = String(data.message?.content || '').trim();
-      if (!description) continue;
-
-      // 就地替换 marker + 占位提示
-      const st = get();
-      const p = st.problems.find((x) => x.id === problemId);
-      if (!p) return;
-      const replaceFrom = `${marker}\n_(等待 sam 多模态识别...)_`;
-      const replaceTo = `**[图 ${i + 1} 识别]** ${description}`;
-      const newStatement = p.statement.replace(replaceFrom, replaceTo);
-      const updated: Problem = { ...p, statement: newStatement };
-      await storage.saveProblem(updated);
-      set((s) => ({
-        problems: s.problems.map((x) => (x.id === problemId ? updated : x)),
-      }));
-      okCount++;
+      console.log('[identifyImages] 已卸载模型', fl.model);
     } catch (err: any) {
-      console.warn(`[identifyImages] 图 ${i + 1} 异常`, err);
+      console.warn('[identifyImages] 卸载模型失败（可忽略）', err?.message || err);
     }
-  }
-  if (okCount > 0) {
-    toast.success(`🖼️ sam 已识别 ${okCount}/${placeholders.length} 张图`);
   }
 }
 
