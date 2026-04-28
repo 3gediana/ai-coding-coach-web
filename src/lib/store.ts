@@ -32,6 +32,21 @@ import { storage } from './storage';
 import { DEFAULT_AI_CONFIG } from './presets';
 import { isLocalOllamaUrl } from './ollama';
 import { buildLearnerProfile, codeHash } from '../core/utils';
+import {
+  buildLearningEngine,
+  type BankProblem,
+  type LearningCard,
+  type ProgressOverview,
+} from '../core/recommend';
+import bankData from '../data/problemBank.json';
+
+const PROBLEM_BANK = bankData as BankProblem[];
+
+/** 今天日期 YYYY-MM-DD（本地时区） */
+function today(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 /**
  * 从主 cfg 派生 fastLane 的 AIConfig：
@@ -179,6 +194,11 @@ interface State {
   feedbackTab: 'analyze' | 'ask';
   /** Onboarding 当前步骤 */
   onboardingStep: OnboardingStep;
+  /** Learning engine（学习引擎）输出：进度 + 行动卡 */
+  learningOverview: ProgressOverview | null;
+  learningCards: LearningCard[];
+  /** 学习卡片今天是否被关闭过 */
+  learningCardDismissedDate: string | null;
   /** 对拍：选中的两个 fileId */
   diffSelection: string[];
 
@@ -255,6 +275,14 @@ interface State {
   advanceOnboarding: (to: OnboardingStep) => void;
   /** 用户跳过 / 完成 → idle 并标记 done 到 localStorage */
   finishOnboarding: () => void;
+
+  // Learning engine actions
+  /** 重新计算学习概览 + 行动卡（错题 / 已做题变化时调用） */
+  refreshLearningEngine: () => void;
+  /** 用户关闭今天的学习卡片（跨天会重新出现） */
+  dismissLearningCard: () => void;
+  /** 把内置题库的题加到 problems（学生点 "新题" 行动卡时调用） */
+  addBankProblem: (bankId: string) => Promise<string | null>;
 }
 
 // ============== 初始化 ==============
@@ -478,6 +506,9 @@ export const useStore = create<State>((set, get) => {
     feedbackTab: 'analyze',
     // Onboarding：localStorage 已标记完成 → idle；否则 wait-analyze 状态会在 App 启动时由触发器决定是否进 inject
     onboardingStep: localStorage.getItem('aicc.onboarding.v1') === 'done' ? 'idle' : 'idle',
+    learningOverview: null,
+    learningCards: [],
+    learningCardDismissedDate: localStorage.getItem('aicc.learning.dismissed.v1'),
     diffSelection: [],
 
     setAIConfig: (cfg) => {
@@ -1320,6 +1351,51 @@ int main() {
     finishOnboarding: () => {
       localStorage.setItem('aicc.onboarding.v1', 'done');
       set({ onboardingStep: 'idle' });
+    },
+
+    // ───── Learning Engine ─────
+    refreshLearningEngine: () => {
+      const st = get();
+      const { overview, cards } = buildLearningEngine({
+        mistakes: st.mistakes,
+        problems: st.problems,
+        sessions: st.sessions,
+        bank: PROBLEM_BANK,
+      });
+      set({ learningOverview: overview, learningCards: cards });
+    },
+
+    dismissLearningCard: () => {
+      const t = today();
+      localStorage.setItem('aicc.learning.dismissed.v1', t);
+      set({ learningCardDismissedDate: t });
+    },
+
+    addBankProblem: async (bankId) => {
+      const bank = PROBLEM_BANK.find((b) => b.id === bankId);
+      if (!bank) return null;
+      // 已添加过则直接激活
+      const existing = get().problems.find((p) => p.id === bankId);
+      if (existing) {
+        await get().setActiveProblem(bankId);
+        return bankId;
+      }
+      const newProblem: Problem = {
+        id: bank.id,
+        title: bank.title,
+        statement: bank.statement,
+        constraints: bank.constraints,
+        examples: bank.examples,
+        tags: bank.tags,
+        difficulty: bank.difficulty,
+        createdAt: Date.now(),
+      };
+      await storage.saveProblem(newProblem);
+      set((s) => ({ problems: [newProblem, ...s.problems] }));
+      await get().setActiveProblem(bankId);
+      // 同时刷新引擎（避免反复推荐已添加的）
+      get().refreshLearningEngine();
+      return bankId;
     },
   };
 });

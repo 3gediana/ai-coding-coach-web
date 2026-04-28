@@ -1,0 +1,311 @@
+/**
+ * 学习引擎：根据学生数据（错题 / 已做题 / 内置题库）生成
+ *   1. 进度概览（数字 + 文字）
+ *   2. 推荐行动卡（1-4 张）
+ *
+ * 设计哲学：
+ * - **错题复习优先**于推新题（学生对错题最有"认知亏欠"）
+ * - **状态自适应**：没错题时不强推、刷完时不重复
+ * - **可关闭**（DailyEngineCard UI 处理）
+ *
+ * 纯函数：易测试，无副作用
+ */
+import type { Mistake, Problem, Session } from './types';
+
+/** 内置题库的题目 schema（src/data/problemBank.json） */
+export interface BankProblem {
+  id: string;
+  title: string;
+  statement: string;
+  constraints?: string;
+  examples?: Array<{ input: string; output: string; explanation?: string }>;
+  tags: string[];
+  difficulty: 'easy' | 'medium' | 'hard';
+  /** 题目涉及的核心主题（用于和 Mistake.category 模糊匹配） */
+  themes?: string[];
+}
+
+/** 行动卡片类型 */
+export type LearningCardKind =
+  | 'review-mistakes'      // 复习未复习的错题
+  | 'new-similar'          // 跟错题主题相似的新题（来自内置题库）
+  | 'level-up'             // 难度递增挑战
+  | 'concept-recall'       // 错点回顾：上次错的「类别」翻新
+  | 'first-step'           // 没错题时：试试入门题
+  | 'browse-mistakes';     // 浏览错题本
+
+export interface LearningCard {
+  kind: LearningCardKind;
+  icon: string;
+  title: string;
+  subtitle: string;
+  /** 主推卡片（高亮渲染） */
+  primary?: boolean;
+  /** 点击后的动作 */
+  action:
+    | { type: 'open-problem'; problemId: string }
+    | { type: 'open-mistakes' }
+    | { type: 'add-bank'; bankId: string };
+}
+
+/** 学习画像（顶部数据可视化） */
+export interface ProgressOverview {
+  /** 已建过的题数（含错题） */
+  problemsTotal: number;
+  /** 错题总数 */
+  mistakesTotal: number;
+  /** 错题复习率（已复习 / 总数） */
+  reviewedRate: number;
+  /** 本周新增的"已做题"数 */
+  weekActivity: number;
+  /** 错题最常见的 category（如"边界处理"） */
+  topMistakeCategory?: string;
+  /** 错题最常见的 tag（如"DP"） */
+  topMistakeTag?: string;
+  /** 引导文案（一句话总结状态） */
+  hint: string;
+}
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * 主入口：根据数据构建学习引擎输出（概览 + 卡片）
+ */
+export function buildLearningEngine(args: {
+  mistakes: Mistake[];
+  problems: Problem[];
+  sessions: Session[];
+  bank: BankProblem[];
+}): { overview: ProgressOverview; cards: LearningCard[] } {
+  const overview = buildOverview(args);
+  const cards = buildCards({ ...args, overview });
+  return { overview, cards };
+}
+
+// ─────────── 进度概览 ───────────
+
+function buildOverview(args: {
+  mistakes: Mistake[];
+  problems: Problem[];
+  sessions: Session[];
+}): ProgressOverview {
+  const { mistakes, problems, sessions } = args;
+  const now = Date.now();
+
+  // 复习率：reviewedAt 存在 → 已复习
+  const reviewed = mistakes.filter((m) => !!m.reviewedAt).length;
+  const reviewedRate = mistakes.length > 0 ? reviewed / mistakes.length : 0;
+
+  // 本周做的题：sessions 里 7 天内有过活动的题数
+  const weekProblemIds = new Set<string>();
+  for (const s of sessions) {
+    if (now - s.startedAt < WEEK_MS && s.problemId) {
+      weekProblemIds.add(s.problemId);
+    }
+  }
+
+  // 错题最常 category / tag
+  const catCount = new Map<string, number>();
+  const tagCount = new Map<string, number>();
+  for (const m of mistakes) {
+    if (m.category) catCount.set(m.category, (catCount.get(m.category) ?? 0) + 1);
+    for (const t of m.knowledgePoints ?? []) {
+      tagCount.set(t, (tagCount.get(t) ?? 0) + 1);
+    }
+  }
+  const topCategory = topKey(catCount);
+  const topTag = topKey(tagCount);
+
+  // 状态文案
+  let hint = '';
+  if (mistakes.length === 0 && problems.length === 0) {
+    hint = '从一道经典题开始吧';
+  } else if (mistakes.length === 0) {
+    hint = '还没有错题，状态不错';
+  } else if (reviewedRate < 0.4) {
+    hint = `${mistakes.length} 道错题，复习率 ${(reviewedRate * 100).toFixed(0)}%，建议先回看`;
+  } else if (reviewedRate < 1) {
+    hint = `${mistakes.length} 道错题，已复习 ${reviewed} 道`;
+  } else {
+    hint = `${mistakes.length} 道错题都复习过了，可挑战新题`;
+  }
+
+  return {
+    problemsTotal: problems.length,
+    mistakesTotal: mistakes.length,
+    reviewedRate,
+    weekActivity: weekProblemIds.size,
+    topMistakeCategory: topCategory,
+    topMistakeTag: topTag,
+    hint,
+  };
+}
+
+// ─────────── 行动卡片 ───────────
+
+function buildCards(args: {
+  mistakes: Mistake[];
+  problems: Problem[];
+  bank: BankProblem[];
+  overview: ProgressOverview;
+}): LearningCard[] {
+  const { mistakes, problems, bank, overview } = args;
+  const cards: LearningCard[] = [];
+  const seenProblemIds = new Set(problems.map((p) => p.id));
+
+  // 1) 「复习错题」：未复习的错题（最近 5 道）
+  const unreviewed = mistakes
+    .filter((m) => !m.reviewedAt)
+    .sort((a, b) => b.createdAt - a.createdAt);
+  if (unreviewed.length > 0) {
+    const top = unreviewed[0];
+    cards.push({
+      kind: 'review-mistakes',
+      icon: '📝',
+      title: '复习错题',
+      subtitle:
+        unreviewed.length === 1
+          ? `《${truncate(top.problemTitle, 16)}》`
+          : `${unreviewed.length} 道未复习 · 最近：${truncate(top.problemTitle, 12)}`,
+      primary: true,
+      action: top.problemId
+        ? { type: 'open-problem', problemId: top.problemId }
+        : { type: 'open-mistakes' },
+    });
+  }
+
+  // 2) 「同主题新题」：根据错题 top tag 找题库里没做过的题
+  if (overview.topMistakeTag) {
+    const tag = overview.topMistakeTag;
+    const candidate = bank.find(
+      (b) => b.tags.includes(tag) && !seenProblemIds.has(b.id),
+    );
+    if (candidate) {
+      cards.push({
+        kind: 'new-similar',
+        icon: '🎯',
+        title: `${tag} 巩固题`,
+        subtitle: `《${candidate.title}》${diffEmoji(candidate.difficulty)}`,
+        action: { type: 'add-bank', bankId: candidate.id },
+      });
+    }
+  }
+
+  // 3) 「错点回顾」：找跟最常错 category 相似主题的题
+  if (overview.topMistakeCategory && cards.length < 3) {
+    const cat = overview.topMistakeCategory;
+    const candidate = bank.find(
+      (b) => !seenProblemIds.has(b.id) && (b.themes ?? []).some((t) => fuzzyMatch(t, cat)),
+    );
+    if (candidate) {
+      cards.push({
+        kind: 'concept-recall',
+        icon: '💡',
+        title: '错点回顾',
+        subtitle: `《${candidate.title}》— ${cat}`,
+        action: { type: 'add-bank', bankId: candidate.id },
+      });
+    }
+  }
+
+  // 4) 「难度递增」：完成过的最难题难度 + 1 的新题
+  const doneMaxDifficulty = maxDifficulty(problems);
+  const nextLevel = nextDifficulty(doneMaxDifficulty);
+  if (nextLevel && cards.length < 3) {
+    const candidate = bank.find(
+      (b) => b.difficulty === nextLevel && !seenProblemIds.has(b.id),
+    );
+    if (candidate) {
+      cards.push({
+        kind: 'level-up',
+        icon: '🔥',
+        title: '难度递增',
+        subtitle: `《${candidate.title}》${diffEmoji(candidate.difficulty)}`,
+        action: { type: 'add-bank', bankId: candidate.id },
+      });
+    }
+  }
+
+  // 5) 没错题 + 没做过题 → 推 1 道入门题
+  if (mistakes.length === 0 && problems.length === 0 && cards.length === 0) {
+    const easy = bank.find((b) => b.difficulty === 'easy');
+    if (easy) {
+      cards.push({
+        kind: 'first-step',
+        icon: '🚀',
+        title: '从这道题开始',
+        subtitle: `《${easy.title}》`,
+        primary: true,
+        action: { type: 'add-bank', bankId: easy.id },
+      });
+    }
+  }
+
+  // 6) 错题已全复习且没新卡片 → 浏览错题本
+  if (
+    cards.length === 0 &&
+    mistakes.length > 0 &&
+    overview.reviewedRate >= 1
+  ) {
+    cards.push({
+      kind: 'browse-mistakes',
+      icon: '📚',
+      title: '浏览错题本',
+      subtitle: `${mistakes.length} 道历史错题`,
+      action: { type: 'open-mistakes' },
+    });
+  }
+
+  return cards.slice(0, 4);
+}
+
+// ─────────── helpers ───────────
+
+function topKey(m: Map<string, number>): string | undefined {
+  let best: { k: string; v: number } | null = null;
+  for (const [k, v] of m) {
+    if (!best || v > best.v) best = { k, v };
+  }
+  return best?.k;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+function diffEmoji(d: 'easy' | 'medium' | 'hard'): string {
+  return d === 'easy' ? '🟢' : d === 'medium' ? '🟡' : '🔴';
+}
+
+function maxDifficulty(problems: Problem[]): 'easy' | 'medium' | 'hard' | null {
+  let best: 'easy' | 'medium' | 'hard' | null = null;
+  const rank = (d?: string): number => (d === 'hard' ? 3 : d === 'medium' ? 2 : d === 'easy' ? 1 : 0);
+  for (const p of problems) {
+    const d = p.difficulty;
+    if (d && rank(d) > rank(best ?? undefined)) {
+      best = d;
+    }
+  }
+  return best;
+}
+
+function nextDifficulty(d: 'easy' | 'medium' | 'hard' | null): 'easy' | 'medium' | 'hard' | null {
+  // 没做过题 → 不推 level-up（让 first-step 兜底）
+  if (d === null) return null;
+  if (d === 'easy') return 'medium';
+  if (d === 'medium') return 'hard';
+  return null; // 已 hard，没有更高
+}
+
+/** 模糊匹配两个字符串：包含 / 子字符串 / 部分重叠 */
+function fuzzyMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const lowerA = a.toLowerCase();
+  const lowerB = b.toLowerCase();
+  if (lowerA.includes(lowerB) || lowerB.includes(lowerA)) return true;
+  // 中文短词部分重叠（≥ 2 字符共同）
+  for (let i = 0; i < lowerA.length - 1; i++) {
+    if (lowerB.includes(lowerA.slice(i, i + 2))) return true;
+  }
+  return false;
+}

@@ -25,6 +25,7 @@ import {
   BookOpen, Sparkles, Award, BarChart3,
 } from 'lucide-react';
 import { LearningHeatmap } from './LearningHeatmap';
+import { LearningEngineCard } from './LearningEngineCard';
 import { cn } from '../lib/cn';
 
 const SITE_LABEL: Record<string, string> = {
@@ -61,6 +62,9 @@ export function Dashboard() {
 
   return (
     <div className="p-3 space-y-3">
+      {/* ────── 0. 学习引擎卡片：错题驱动推荐（killer feature） ────── */}
+      <LearningEngineCard />
+
       {/* ────── 1. 顶部统计行 ────── */}
       <div className="grid grid-cols-3 gap-2">
         <Stat
