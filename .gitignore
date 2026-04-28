@@ -14,3 +14,4 @@ bench-results/
 tsconfig.tsbuildinfo
 scripts/_tmp-*.mjs
 scripts/_tmp-*.mts
+_commit_msg.tmp

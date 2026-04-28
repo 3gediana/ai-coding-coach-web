@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.1.0
+// @version      0.2.0
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -90,31 +90,109 @@
 
     // 标题：第一个 div 含 "【id:xx】【xx分】题名"
     let title = '导入的题目';
-    const titleMatch = fullText.match(/【id:[^】]+】【[^】]+】\s*([^\n]+)/);
-    if (titleMatch) title = titleMatch[1].trim();
+    let problemId = '';
+    const headerMatch = fullText.match(/【id:(\d+)】【[^】]+】\s*([^\n]+)/);
+    if (headerMatch) {
+      problemId = headerMatch[1];
+      title = headerMatch[2].trim();
+    }
 
-    // 编辑器现有代码（CodeMirror）
+    // 编辑器现有代码（CodeMirror）— 多种访问方式兜底
     let initialCode = '';
-    const cm = document.querySelector('.CodeMirror');
-    if (cm && cm.CodeMirror) {
-      initialCode = cm.CodeMirror.getValue();
+    const cmEls = document.querySelectorAll('.CodeMirror');
+    for (const cm of cmEls) {
+      // element 上的 CodeMirror 实例（v5 风格）
+      if (cm.CodeMirror?.getValue) {
+        initialCode = cm.CodeMirror.getValue();
+        if (initialCode) break;
+      }
+    }
+    // 兜底：抓 textarea 里的内容
+    if (!initialCode) {
+      const ta = document.querySelector('.vue-codemirror-wrap textarea');
+      if (ta?.value) initialCode = ta.value;
+    }
+    // 再兜底：抓渲染出的 .CodeMirror-line（高亮过的代码行）
+    if (!initialCode) {
+      const lines = document.querySelectorAll('.CodeMirror-code .CodeMirror-line');
+      if (lines.length > 0) {
+        initialCode = [...lines].map((l) => l.innerText).join('\n');
+      }
     }
 
     const images = await collectImages(main);
 
+    // 把题面里的 <pre.language-*> 单独抽出来包成 markdown ```
+    const codeBlocks = [...main.querySelectorAll('pre[class*="language-"]')].map((pre) => {
+      const langMatch = pre.className.match(/language-(\w+)/);
+      const lang = langMatch ? langMatch[1] : '';
+      return { lang, text: pre.innerText.trim() };
+    });
+
+    // 抽样例：el-tabs 结构（每个 tab-pane 的内容都拼起来）
+    // 校内 OJ 样例位于 .el-tabs__content > .el-tab-pane（即使 hidden 也在 DOM）
+    const sampleTabs = [...main.querySelectorAll('.el-tabs__content .el-tab-pane')].map((pane) => {
+      // pane 标题对应的 tab item
+      const idx = [...pane.parentElement.children].indexOf(pane);
+      const tabItem = main.querySelectorAll('.el-tabs__item')[idx];
+      const label = tabItem?.innerText?.trim() || `样例${idx + 1}`;
+      return { label, text: pane.innerText.trim() };
+    });
+
+    // url 加题号，避免同一 contest 多道题被去重覆盖
+    const url = problemId ? `${location.href}#problem-${problemId}` : location.href;
+
+    // 构造结构化 markdown rawText（把 pre 包成 ``` 代码块 + 样例分块列出）
+    const markdown = buildSchoolOJMarkdown({
+      title,
+      problemId,
+      fullText,
+      codeBlocks,
+      sampleTabs,
+    });
+
     return {
       source: 'school-oj',
-      url: location.href,
+      url,
       title,
-      rawText: fullText,
+      rawText: markdown,
       images,
       initialCode,
       language: 'cpp',
       meta: {
         domain: location.hostname,
         contestId: location.hash.match(/#\/contest\/(\d+)/)?.[1],
+        problemId,
+        rawInnerText: fullText,
+        codeBlocks,
+        sampleTabs,
       },
     };
+  }
+
+  function buildSchoolOJMarkdown({ title, problemId, fullText, codeBlocks, sampleTabs }) {
+    let md = `# ${title}\n\n`;
+    if (problemId) md += `_题号 ${problemId}_\n\n`;
+
+    // 把题面里 <pre> 节点的内容替换为 ``` 围栏代码块
+    // innerText 把 pre 节点内容也并到 fullText 里，在 fullText 里找到 pre.text 然后替换
+    let body = fullText;
+    for (const cb of codeBlocks) {
+      if (cb.text && body.includes(cb.text)) {
+        body = body.replace(cb.text, `\n\`\`\`${cb.lang}\n${cb.text}\n\`\`\`\n`);
+      }
+    }
+    md += body + '\n';
+
+    // 样例（el-tabs 抓出来的 pane 内容）
+    if (sampleTabs.length > 0) {
+      md += '\n---\n\n## 样例\n\n';
+      for (const t of sampleTabs) {
+        if (!t.text) continue;
+        md += `### ${t.label}\n\n\`\`\`\n${t.text}\n\`\`\`\n\n`;
+      }
+    }
+    return md;
   }
 
   /** 头歌 educoder 提取 */
@@ -125,30 +203,85 @@
     const fullText = leftPanel.innerText.trim();
     const titleEl = document.querySelector('h2.shixun-info');
     let title = titleEl?.innerText?.trim() || document.title;
-    // 去除 "实验总用时" 等噪音
+    // 去除 "实验总用时 00:00:10" 这类噪音
     title = title.replace(/实验总用时[：:]\s*[\d:]+/g, '').trim();
+    // 去除 "第N关：" 前缀，但保留题名
+    const stageNameEl = document.querySelector('.task-name, [class*="task-name"]');
+    if (stageNameEl?.innerText) {
+      const stageName = stageNameEl.innerText.trim().replace(/^第\d+关[：:]\s*/, '');
+      if (stageName && stageName.length > 3) title = stageName;
+    }
 
-    // Monaco 编辑器现有代码
+    // Monaco 编辑器现有代码（多种访问方式兜底）
     let initialCode = '';
-    if (window.monaco) {
+    if (window.monaco?.editor?.getEditors) {
       const editors = window.monaco.editor.getEditors();
-      if (editors?.length) initialCode = editors[0].getValue();
+      if (editors?.length) {
+        // 第一个非空编辑器
+        for (const ed of editors) {
+          const v = ed.getValue();
+          if (v && v.trim()) { initialCode = v; break; }
+        }
+      }
+    }
+    // 兜底：textarea
+    if (!initialCode) {
+      const ta = document.querySelector('.my-monaco-editor textarea, .monaco-editor textarea');
+      if (ta?.value) initialCode = ta.value;
     }
 
     const images = await collectImages(leftPanel);
+
+    // 抓代码块（头歌用 prettyprint）
+    const codeBlocks = [...leftPanel.querySelectorAll('pre.prettyprint, pre.linenums, pre[class*="lang-"]')].map((pre) => {
+      const langMatch = pre.className.match(/lang-(\w+)/);
+      return { lang: langMatch ? langMatch[1] : '', text: pre.innerText.trim() };
+    });
+
+    // 头歌的 tab 切换：学习内容 / 参考答案 / 记录 / 评论
+    // 默认抓「学习内容」tab；不主动切换 tab（避免 React state 错乱）
+    // 当前 tab 内容 = leftPanel innerText
+
+    // task-id 等元数据
+    const pathParts = location.pathname.split('/').filter(Boolean);
+    const taskId = pathParts[2];
+    const stageId = pathParts[3];
+
+    // 构造结构化 markdown
+    const markdown = buildEducoderMarkdown({
+      title,
+      fullText,
+      codeBlocks,
+    });
 
     return {
       source: 'educoder',
       url: location.href,
       title,
-      rawText: fullText,
+      rawText: markdown,
       images,
       initialCode,
       language: detectEducoderLang(initialCode, fullText),
       meta: {
         domain: location.hostname,
+        taskId,
+        stageId,
+        rawInnerText: fullText,
+        codeBlocks,
       },
     };
+  }
+
+  function buildEducoderMarkdown({ title, fullText, codeBlocks }) {
+    let md = `# ${title}\n\n`;
+    let body = fullText;
+    for (const cb of codeBlocks) {
+      if (cb.text && body.includes(cb.text)) {
+        body = body.replace(cb.text, `\n\`\`\`${cb.lang}\n${cb.text}\n\`\`\`\n`);
+      }
+    }
+    md += body + '\n';
+    return md;
   }
 
   function detectEducoderLang(code, text) {
