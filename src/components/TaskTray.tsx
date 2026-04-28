@@ -111,7 +111,7 @@ export function TaskTray() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setPreviewId(null)}
-            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-8"
+            className="fixed inset-0 z-50 modal-overlay flex items-center justify-center p-8"
           >
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}

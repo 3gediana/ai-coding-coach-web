@@ -6,11 +6,13 @@
 import { AIClient } from './ai/client';
 import {
   buildAnalyzeCodePrompt,
+  buildAskQuestionPrompt,
   buildExplainPastePrompt,
   buildParseProblemPrompt,
   buildStuckHintPrompt,
   buildSummarizePrompt,
 } from './ai/prompts';
+import { pickRoute, type RouteHints, type RouteDecision, type RouterHints } from './ai/router';
 import type {
   AnalysisHistoryEntry,
   AnalysisResult,
@@ -32,10 +34,50 @@ interface StreamOpts {
 }
 
 export class Coach {
-  constructor(private readonly ai: AIClient) {}
+  /**
+   * @param ai 主 AIClient（云端，做录题/错题归档/对拍等"高质量后台"任务）
+   * @param aiFast 可选的 fastLane 客户端（本地 ollama，做实时前台 analyze/stuck/explain）
+   *               未提供时所有任务回落到 ai
+   */
+  constructor(
+    private readonly ai: AIClient,
+    private readonly aiFast?: AIClient,
+    /** 用户在 Settings 自定义的路由阈值，未传走 DEFAULT_ROUTER_HINTS */
+    private routerHints?: RouterHints,
+  ) {}
 
   updateClient(client: AIClient) {
     (this as any).ai = client;
+  }
+
+  updateFastClient(client: AIClient | undefined) {
+    (this as any).aiFast = client;
+  }
+
+  /** 用户改了路由阈值时调用 */
+  updateRouterHints(hints: RouterHints | undefined) {
+    this.routerHints = hints;
+  }
+
+  /** 实时前台任务用这个客户端（fastLane 启用且配好时走本地，否则回落主 client） */
+  private get realtimeClient(): AIClient {
+    return this.aiFast ?? this.ai;
+  }
+
+  /**
+   * 根据任务信号路由到 fastLane 或主 client。
+   * 把决策对象返回方便上层把 reason 透传给 UI。
+   */
+  private pick(hints: RouteHints): { client: AIClient; decision: RouteDecision } {
+    const decision = pickRoute(hints, !!this.aiFast, this.routerHints);
+    const client = decision.useFast ? this.aiFast! : this.ai;
+    // dev 日志：能在 console 看到每次路由决策
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        `[AI Router] ${hints.taskKind} → ${decision.label}（${decision.reason}）`,
+      );
+    }
+    return { client, decision };
   }
 
   /** 把粘贴的题目原文 -> 结构化 Problem（流式） */
@@ -87,7 +129,14 @@ export class Coach {
     opts: StreamOpts = {},
   ): Promise<AnalysisResult> {
     const { system, user } = buildAnalyzeCodePrompt(args);
-    const data = await this.ai.chatJsonStream<{
+    // 路由：根据代码长度 + 题目复杂度选 fast / main
+    const { client, decision } = this.pick({
+      taskKind: 'analyze',
+      problem: args.problem,
+      codeLength: args.code.length,
+      codeLineCount: args.code.split('\n').length,
+    });
+    const data = await client.chatJsonStream<{
       issues?: Array<Partial<CodeIssue>>;
       complexitySummary?: string;
       overallComment?: string;
@@ -100,23 +149,91 @@ export class Coach {
       ...opts,
     });
 
-    const issues: CodeIssue[] = (data.issues ?? [])
-      .filter((i): i is CodeIssue => typeof i.line === 'number' && !!i.message)
-      .map((i) => ({
-        line: i.line,
+    // 计算合法行号范围（用于 clamp AI 可能数错的 line）
+    const totalLines = Math.max(1, args.code.split('\n').length);
+
+    // 1) 基础校验：line 是数字、message 非空
+    const raw = (data.issues ?? []).filter(
+      (i): i is CodeIssue => typeof i.line === 'number' && !!i.message,
+    );
+
+    // 2) clamp line 到 [1, totalLines]，把超界的拉回最后一行（不丢，但标记可能行号不准）
+    const clamped = raw.map((i) => {
+      const inRange = i.line >= 1 && i.line <= totalLines;
+      const line = inRange ? i.line : Math.min(Math.max(1, Math.round(i.line)), totalLines);
+      return {
+        line,
         endLine: i.endLine,
         severity: (i.severity ?? 'info') as CodeIssue['severity'],
-        category: (i.category ?? 'style') as CodeIssue['category'],
+        category: (i.category ?? 'readability') as CodeIssue['category'],
         message: i.message,
         suggestion: i.suggestion,
-      }))
-      .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+      };
+    });
+
+    // 3) 同一 (line, severity) + message 前 30 字 重复时合并（AI 偶尔重复输出）
+    const seen = new Map<string, CodeIssue>();
+    for (const it of clamped) {
+      const key = `${it.line}|${it.severity}|${(it.message ?? '').slice(0, 30)}`;
+      if (!seen.has(key)) seen.set(key, it);
+    }
+
+    // 4) 按 severity 严重度排序
+    const issues: CodeIssue[] = Array.from(seen.values()).sort(
+      (a, b) => severityRank(b.severity) - severityRank(a.severity) || a.line - b.line,
+    );
 
     return {
       issues,
       complexitySummary: data.complexitySummary,
       overallComment: data.overallComment,
+      routeInfo: {
+        useFast: decision.useFast,
+        label: decision.label,
+        reason: decision.reason,
+      },
     };
+  }
+
+  /**
+   * 学生在做题时问问题 → 流式回答。
+   * 跟 analyze 不同：返回纯文本 markdown 而不是 JSON。
+   * 通过 onChunk 回调让 UI 实时渲染。
+   */
+  async askQuestion(
+    args: {
+      problem?: Problem;
+      code?: string;
+      language?: Lang;
+      question: string;
+      history?: { role: 'user' | 'assistant'; content: string }[];
+    },
+    opts: StreamOpts = {},
+  ): Promise<string> {
+    const { messages } = buildAskQuestionPrompt(args);
+    // 路由：长问题 / 复杂题 → 主云端
+    const { client } = this.pick({
+      taskKind: 'ask',
+      problem: args.problem,
+      codeLength: args.code?.length,
+      codeLineCount: args.code?.split('\n').length,
+      questionLength: args.question.length,
+    });
+    let acc = '';
+    for await (const _ of client.chatStream({
+      messages,
+      // 200 字中文 ≈ 400 token，给 800 留 markdown 语法 + 短代码片段空间
+      maxTokens: 800,
+      temperature: 0.4,
+      ...opts,
+      onChunk: (delta, accumulated) => {
+        acc = accumulated;
+        opts.onChunk?.(delta, accumulated);
+      },
+    })) {
+      // 仅迭代消费，文本累积在 acc 里
+    }
+    return acc;
   }
 
   /** 错题总结（流式） */
@@ -189,7 +306,14 @@ export class Coach {
     opts: StreamOpts = {},
   ): Promise<string> {
     const { system, user } = buildStuckHintPrompt(args);
-    const text = await this.ai.chat({
+    // 路由：stuck-hint 极短反馈，几乎一定走 fast
+    const { client } = this.pick({
+      taskKind: 'stuck',
+      problem: args.problem,
+      codeLength: args.code.length,
+      codeLineCount: args.code.split('\n').length,
+    });
+    const text = await client.chat({
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
@@ -214,7 +338,14 @@ export class Coach {
     suggestion: string;
   }> {
     const { system, user } = buildExplainPastePrompt(args);
-    const data = await this.ai.chatJsonStream<any>({
+    // 路由：explain-paste 短代码片段优先本地，超长（>2000）走主
+    const { client } = this.pick({
+      taskKind: 'explain',
+      problem: args.problem,
+      codeLength: args.snippet.length,
+      codeLineCount: args.snippet.split('\n').length,
+    });
+    const data = await client.chatJsonStream<any>({
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },

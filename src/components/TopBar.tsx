@@ -1,9 +1,10 @@
 import { motion } from 'framer-motion';
 import { useEffect } from 'react';
-import { Settings, Sparkles, Plus, Play, CheckCircle2, PlayCircle } from 'lucide-react';
+import { Settings, Sparkles, Plus, Play, CheckCircle2, PlayCircle, Library } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { isRuntimeSupported } from '../lib/runtime';
+import { ThemeSwitcher } from './ThemeSwitcher';
 
 /** 展开终端 + 触发 RuntimePane 内的运行按钮 */
 function triggerRun(setOpen: (v: boolean) => void) {
@@ -21,6 +22,7 @@ export function TopBar() {
   const aiConfig = useStore((s) => s.aiConfig);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const setProblemEditorOpen = useStore((s) => s.setProblemEditorOpen);
+  const setProblemBrowserOpen = useStore((s) => s.setProblemBrowserOpen);
   const setCmdPaletteOpen = useStore((s) => s.setCmdPaletteOpen);
   const setSubmitModalOpen = useStore((s) => s.setSubmitModalOpen);
   const setRuntimePaneOpen = useStore((s) => s.setRuntimePaneOpen);
@@ -34,7 +36,8 @@ export function TopBar() {
   );
 
   const activeProblem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
-  const apiOk = !!aiConfig.apiKey;
+  // ollama 等本地服务不需要 apiKey；其它都要
+  const apiOk = aiConfig.provider === 'ollama' ? !!aiConfig.baseUrl : !!aiConfig.apiKey;
   const scope = activeProblemId ?? '__draft__';
   const activeFile = (filesByScope[scope] ?? []).find(
     (f) => f.id === activeFileIdByScope[scope],
@@ -94,14 +97,7 @@ export function TopBar() {
             )}
           </motion.div>
         ) : (
-          <button
-            className="btn-ghost text-ink-dim"
-            onClick={() => setProblemEditorOpen(true)}
-            title="录入题目"
-          >
-            <Plus size={14} />
-            未激活题目（点击录入）
-          </button>
+          <span className="text-sm text-ink-mute italic">未激活题目</span>
         )}
       </div>
 
@@ -113,29 +109,28 @@ export function TopBar() {
         </div>
       )}
 
-      <button
-        onClick={() => setCmdPaletteOpen(true)}
-        className="btn"
-        title="全局搜索（Ctrl+P）"
-      >
-        <kbd className="text-[10px] font-mono bg-bg-elev px-1 rounded">Ctrl P</kbd>
+      {/* 题目相关：低频，icon-only ghost（不抢主视觉） */}
+      <button onClick={() => setProblemBrowserOpen(true)} className="btn-ghost" title="OJ 题库（洛谷 / AtCoder / POJ / HDU）">
+        <Library size={15} />
+      </button>
+      <button onClick={() => setProblemEditorOpen(true)} className="btn-ghost" title="手动录入 / 贴题面">
+        <Plus size={15} />
       </button>
 
-      <button onClick={() => setProblemEditorOpen(true)} className="btn" title="录入题目">
-        <Plus size={14} />
-        <span className="hidden md:inline">录入题目</span>
-      </button>
+      {/* 分隔线：分组 */}
+      <div className="w-px h-5 bg-line/60" />
 
+      {/* 运行：次高频 */}
       <button
         onClick={() => triggerRun(setRuntimePaneOpen)}
-        className="btn"
+        className="btn-ghost"
         disabled={!canRun}
-        title={canRun ? '运行（Ctrl+Enter）' : '当前文件不支持运行'}
+        title={canRun ? '运行 (Ctrl+Enter)' : '当前文件不支持运行'}
       >
-        <PlayCircle size={14} />
-        <span className="hidden md:inline">运行</span>
+        <PlayCircle size={15} />
       </button>
 
+      {/* 主操作：分析代码（唯一 primary，视觉焦点） */}
       <button
         onClick={() => enqueueAnalyze({ reason: 'manual' })}
         className="btn-primary"
@@ -151,7 +146,7 @@ export function TopBar() {
         }
       >
         <Play size={14} />
-        分析代码
+        <span className="hidden md:inline">分析代码</span>
         {tasksRunning > 0 && (
           <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-white/20">
             {tasksRunning}
@@ -162,20 +157,23 @@ export function TopBar() {
       {activeProblemId && (
         <button
           onClick={() => setSubmitModalOpen(true)}
-          className="btn"
+          className="btn-ghost"
           disabled={!apiOk}
-          title="登记提交结果（AC/WA/TLE/...）→ AI 针对性分析"
+          title="登记提交结果 (AC/WA/TLE/...) → AI 针对性分析"
         >
-          <CheckCircle2 size={14} />
-          <span className="hidden lg:inline">提交</span>
+          <CheckCircle2 size={15} />
         </button>
       )}
+
+      <div className="w-px h-5 bg-line/60" />
+
+      <ThemeSwitcher />
 
       <button
         onClick={() => setSettingsOpen(true)}
         className={cn(
-          'btn relative',
-          !apiOk && 'border-warn/60 text-warn hover:border-warn',
+          'btn-ghost relative',
+          !apiOk && '!text-warn hover:!text-warn',
         )}
         title={apiOk ? 'AI 设置' : 'AI 未配置 — 点击配置'}
       >

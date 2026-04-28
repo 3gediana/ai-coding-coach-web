@@ -29,9 +29,48 @@ import { AIClient } from '../core/ai/client';
 import { Coach } from '../core/analyzer';
 import { storage } from './storage';
 import { DEFAULT_AI_CONFIG } from './presets';
-import { buildLearnerProfile } from '../core/utils';
+import { isLocalOllamaUrl } from './ollama';
+import { buildLearnerProfile, codeHash } from '../core/utils';
+
+/**
+ * 从主 cfg 派生 fastLane 的 AIConfig：
+ *   - fastLane 必须 enabled
+ *   - baseUrl 必须是本地（localhost / 127.* / RFC1918）
+ *   - 否则返回 null（Coach 会回落到主 client）
+ */
+function deriveFastConfig(cfg: AIConfig): AIConfig | null {
+  const fl = cfg.fastLane;
+  if (!fl?.enabled || !fl.baseUrl?.trim() || !fl.model?.trim()) return null;
+  if (!isLocalOllamaUrl(fl.baseUrl)) return null;
+  return {
+    provider: 'ollama',
+    baseUrl: fl.baseUrl.trim(),
+    apiKey: '',
+    model: fl.model.trim(),
+    // 兜底默认值。注意：analyzer.ts 的每个任务（analyzeCode / stuckHint / explainPaste）
+    // 都会显式传 maxTokens 覆盖此值，所以这里只在调用方未传时生效。
+    maxTokens: 2048,
+    temperature: 0.3,
+    timeoutMs: 60_000,
+    maxRetries: 1,
+    // 用户在 fastLane 区域配置的 num_ctx；不填走 client.ts 默认 20480
+    numCtx: fl.numCtx,
+  };
+}
 
 /** 提交结果选项（错题或 AC 总结） */
+/** 学生提问历史一条消息：用户问 / AI 答（流式时 streaming=true） */
+export interface QAMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  ts: number;
+  /** assistant 消息流式中标记，结束后置 false。用户消息无此字段 */
+  streaming?: boolean;
+  /** 失败时的错误（仅 assistant 消息可能有） */
+  error?: string;
+}
+
 export interface SubmitOpts {
   /** true 入错题本（非 AC），false 仅做通过总结 */
   isMistake: boolean;
@@ -111,12 +150,18 @@ interface State {
   analysisByProblem: Record<string, AnalysisResult>;
   streamPreviewById: Record<string, string>;
 
+  // 学生提问历史（按 problemId 隔离），实时流式更新
+  qaByProblem: Record<string, QAMessage[]>;
+  /** 当前正在流式回答的 problemId（同一时间只有一个 ask in flight） */
+  qaPendingProblemId: string | null;
+
   tasks: Task[];
 
   // UI
   sidebarTab: 'problems' | 'mistakes' | 'sessions' | 'dashboard' | null;
   settingsOpen: boolean;
   problemEditorOpen: boolean;
+  problemBrowserOpen: boolean;
   cmdPaletteOpen: boolean;
   submitModalOpen: boolean;
   /** 底部运行时面板是否展开 */
@@ -173,10 +218,18 @@ interface State {
 
   deleteProblem: (id: string) => Promise<void>;
   deleteMistake: (id: string) => Promise<void>;
+  /** 标记错题已复习（更新 reviewedAt + reviewCount++） */
+  markMistakeReviewed: (id: string) => Promise<void>;
 
   setSidebarTab: (t: State['sidebarTab']) => void;
   setSettingsOpen: (v: boolean) => void;
   setProblemEditorOpen: (v: boolean) => void;
+  setProblemBrowserOpen: (v: boolean) => void;
+
+  /** 学生在做题时问问题：流式回答到 qaByProblem[scope] */
+  askQuestion: (question: string) => Promise<void>;
+  /** 清空当前 scope 的提问历史 */
+  clearQA: (scope: string) => void;
   setCmdPaletteOpen: (v: boolean) => void;
   setSubmitModalOpen: (v: boolean) => void;
   setRuntimePaneOpen: (v: boolean) => void;
@@ -195,7 +248,15 @@ interface State {
 const initialAIConfig: AIConfig = (() => {
   try {
     const raw = localStorage.getItem(LS_AI_CFG);
-    if (raw) return { ...DEFAULT_AI_CONFIG, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // 浅合并 + fastLane 嵌套兜底（老用户 localStorage 里没 fastLane 字段时用默认值预填）
+      return {
+        ...DEFAULT_AI_CONFIG,
+        ...parsed,
+        fastLane: { ...DEFAULT_AI_CONFIG.fastLane!, ...(parsed.fastLane ?? {}) },
+      };
+    }
   } catch {
     /* ignore */
   }
@@ -248,7 +309,10 @@ export function defaultFileName(lang: FileLang, existing: string[]): string {
 
 export const useStore = create<State>((set, get) => {
   const ai = new AIClient(initialAIConfig);
-  const coach = new Coach(ai);
+  // fastLane: 本地 ollama 客户端，专做实时前台任务
+  const fastCfg = deriveFastConfig(initialAIConfig);
+  const aiFast = fastCfg ? new AIClient(fastCfg) : undefined;
+  const coach = new Coach(ai, aiFast, initialAIConfig.routerHints);
 
   // ---- 任务队列 ----
 
@@ -373,11 +437,15 @@ export const useStore = create<State>((set, get) => {
     analysisByProblem: {},
     streamPreviewById: {},
 
+    qaByProblem: {},
+    qaPendingProblemId: null,
+
     tasks: [],
 
     sidebarTab: 'problems',
     settingsOpen: false,
     problemEditorOpen: false,
+    problemBrowserOpen: false,
     cmdPaletteOpen: false,
     submitModalOpen: false,
     runtimePaneOpen: localStorage.getItem('aicc.runtimePane.v1') === 'on',
@@ -396,6 +464,21 @@ export const useStore = create<State>((set, get) => {
         /* ignore */
       }
       get().ai.updateConfig(cfg);
+      // 同步 fastLane：根据新 cfg 派生本地 client
+      const newFastCfg = deriveFastConfig(cfg);
+      if (newFastCfg) {
+        // 已有 fast client → updateConfig；没有 → 新建并塞给 coach
+        const existing: AIClient | undefined = (get().coach as any).aiFast;
+        if (existing) {
+          existing.updateConfig(newFastCfg);
+        } else {
+          get().coach.updateFastClient(new AIClient(newFastCfg));
+        }
+      } else {
+        get().coach.updateFastClient(undefined);
+      }
+      // 同步路由阈值
+      get().coach.updateRouterHints(cfg.routerHints);
       set({ aiConfig: cfg });
     },
 
@@ -669,8 +752,15 @@ export const useStore = create<State>((set, get) => {
 
     enqueueAnalyze: (opts) => {
       const st = get();
-      if (!st.aiConfig.apiKey) {
+      // ollama 等本地服务不需要 apiKey
+      const needsKey = st.aiConfig.provider !== 'ollama';
+      if (needsKey && !st.aiConfig.apiKey) {
         toast.error('请先在设置里填 API Key');
+        set({ settingsOpen: true });
+        return null;
+      }
+      if (!st.aiConfig.baseUrl) {
+        toast.error('请先在设置里配 Base URL');
         set({ settingsOpen: true });
         return null;
       }
@@ -686,9 +776,23 @@ export const useStore = create<State>((set, get) => {
         toast.error(`${file.language} 文件不能直接分析（请切到代码文件）`);
         return null;
       }
-      if (file.content.trim().length === 0) {
-        toast.error('文件内容为空');
+      // 阈值：少于 3 行非空代码或 < 30 字符 → 没什么可分析
+      const nonEmptyLines = file.content.split('\n').filter((l) => l.trim().length > 0).length;
+      if (file.content.trim().length < 30 || nonEmptyLines < 3) {
+        toast.warning('代码太短了', { description: '至少写 3 行实质代码再触发分析（节省 AI 调用）' });
         return null;
+      }
+      // 重复触发防护：同一文件已有未完成的分析任务在跑/排队 → 复用旧 task，不创建新的
+      const existing = st.tasks.find(
+        (t) =>
+          t.kind === 'analyze-code' &&
+          (t.status === 'running' || t.status === 'queued') &&
+          // task label 含文件名（"分析：xxx · main.cpp"），用 endsWith 匹配文件名
+          t.label.endsWith(`· ${file.name}`),
+      );
+      if (existing) {
+        toast.info('已有分析在跑，请等当前结果', { duration: 1500 });
+        return existing.id;
       }
       const problem = st.activeProblemId
         ? st.problems.find((p) => p.id === st.activeProblemId)
@@ -725,6 +829,8 @@ export const useStore = create<State>((set, get) => {
                   reason: p?.reason ?? 'auto',
                   issuesSnapshot: p?.issuesSnapshot ?? [],
                   overallComment: p?.overallComment,
+                  codeHash: p?.codeHash,
+                  codeLineCount: p?.codeLineCount,
                 };
               })
               .filter((h) => h.issuesSnapshot.length > 0 || h.overallComment);
@@ -770,6 +876,8 @@ export const useStore = create<State>((set, get) => {
                   message: i.message.slice(0, 120),
                 })),
                 overallComment: r.overallComment?.slice(0, 200),
+                codeHash: codeHash(file.content),
+                codeLineCount: file.content.split('\n').length,
               },
             });
             toast.success(
@@ -944,10 +1052,130 @@ export const useStore = create<State>((set, get) => {
       await storage.deleteMistake(id);
       await get().refreshMistakes();
     },
+    markMistakeReviewed: async (id) => {
+      const m = await storage.getMistake(id);
+      if (!m) return;
+      m.reviewedAt = Date.now();
+      m.reviewCount = (m.reviewCount ?? 0) + 1;
+      await storage.saveMistake(m);
+      await get().refreshMistakes();
+    },
 
     setSidebarTab: (t) => set({ sidebarTab: t }),
     setSettingsOpen: (v) => set({ settingsOpen: v }),
     setProblemEditorOpen: (v) => set({ problemEditorOpen: v }),
+    setProblemBrowserOpen: (v) => set({ problemBrowserOpen: v }),
+
+    askQuestion: async (question) => {
+      const trimmed = question.trim();
+      if (!trimmed) return;
+      const s = get();
+      if (!s.aiConfig.apiKey) {
+        toast.error('请先配置 AI 服务（baseUrl + apiKey + model）');
+        s.setSettingsOpen(true);
+        return;
+      }
+      // scope: 当前激活题目 id，否则用 DRAFT_SCOPE
+      const scope = s.activeProblemId ?? DRAFT_SCOPE;
+      const problem = s.activeProblemId
+        ? s.problems.find((p) => p.id === s.activeProblemId)
+        : undefined;
+      const files = s.filesByScope[scope] ?? [];
+      const activeFileId = s.activeFileIdByScope[scope];
+      const file = files.find((f) => f.id === activeFileId) ?? files[0];
+      const code = file?.content ?? '';
+      const language: Lang = langOfFile(file?.language ?? 'cpp');
+
+      const userMsg: QAMessage = {
+        id: nanoid(),
+        role: 'user',
+        content: trimmed,
+        ts: Date.now(),
+      };
+      const assistMsg: QAMessage = {
+        id: nanoid(),
+        role: 'assistant',
+        content: '',
+        ts: Date.now(),
+        streaming: true,
+      };
+
+      set((st) => ({
+        qaByProblem: {
+          ...st.qaByProblem,
+          [scope]: [...(st.qaByProblem[scope] ?? []), userMsg, assistMsg],
+        },
+        qaPendingProblemId: scope,
+      }));
+
+      // 发起流式调用
+      const history = (get().qaByProblem[scope] ?? [])
+        .slice(0, -2)  // 排除刚塞进去的 userMsg + assistMsg
+        .map((m) => ({ role: m.role, content: m.content }));
+
+      try {
+        await get().coach.askQuestion(
+          {
+            problem,
+            code,
+            language,
+            question: trimmed,
+            history,
+          },
+          {
+            onChunk: (_delta, accumulated) => {
+              set((st) => {
+                const list = st.qaByProblem[scope] ?? [];
+                const idx = list.findIndex((m) => m.id === assistMsg.id);
+                if (idx < 0) return st;
+                const next = list.slice();
+                next[idx] = { ...next[idx], content: accumulated };
+                return { qaByProblem: { ...st.qaByProblem, [scope]: next } };
+              });
+            },
+          },
+        );
+        // 完成：清除 streaming 标记
+        set((st) => {
+          const list = st.qaByProblem[scope] ?? [];
+          const idx = list.findIndex((m) => m.id === assistMsg.id);
+          if (idx < 0) return st;
+          const next = list.slice();
+          next[idx] = { ...next[idx], streaming: false };
+          return {
+            qaByProblem: { ...st.qaByProblem, [scope]: next },
+            qaPendingProblemId: null,
+          };
+        });
+      } catch (e: any) {
+        const msg = String(e?.message ?? e);
+        set((st) => {
+          const list = st.qaByProblem[scope] ?? [];
+          const idx = list.findIndex((m) => m.id === assistMsg.id);
+          if (idx < 0) return st;
+          const next = list.slice();
+          next[idx] = {
+            ...next[idx],
+            streaming: false,
+            error: msg,
+            content: next[idx].content || '（AI 调用失败）',
+          };
+          return {
+            qaByProblem: { ...st.qaByProblem, [scope]: next },
+            qaPendingProblemId: null,
+          };
+        });
+        toast.error('AI 提问失败', { description: msg });
+      }
+    },
+
+    clearQA: (scope) => {
+      set((st) => {
+        const next = { ...st.qaByProblem };
+        delete next[scope];
+        return { qaByProblem: next };
+      });
+    },
     setCmdPaletteOpen: (v) => set({ cmdPaletteOpen: v }),
     setSubmitModalOpen: (v) => set({ submitModalOpen: v }),
     setRuntimePaneOpen: (v) => {
@@ -1102,4 +1330,9 @@ if (typeof window !== 'undefined') {
     s.setPasteSuggestion(null);
     // 不清 diffSelection，避免 e2e 测试连锁失败
   };
+}
+
+// dev 模式：把 store 暴露到 window 便于 e2e 测试 / debugging
+if (typeof window !== 'undefined' && import.meta.env?.DEV) {
+  (window as any).__aiccStore = useStore;
 }

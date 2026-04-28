@@ -7,3 +7,10 @@ test-output*.log
 
 .env.local
 
+# 实验产物 / 临时数据
+logs/
+screenshots-*/
+bench-results/
+tsconfig.tsbuildinfo
+scripts/_tmp-*.mjs
+scripts/_tmp-*.mts

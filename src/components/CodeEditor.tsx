@@ -10,6 +10,17 @@ import remarkGfm from 'remark-gfm';
 import { TabBar } from './TabBar';
 import { registerSnippets } from '../lib/editor-snippets';
 
+/** 根据 <html data-theme> 当前值，把对应的 monaco 主题应用上 */
+function applyMonacoTheme(monaco: Monaco) {
+  const t = document.documentElement.getAttribute('data-theme') || 'parchment';
+  const map: Record<string, string> = {
+    parchment: 'aicc-parchment',
+    'vscode-dark': 'aicc-dark',
+    'aicc-classic': 'aicc-classic',
+  };
+  monaco.editor.setTheme(map[t] ?? 'aicc-parchment');
+}
+
 const DRAFT_SCOPE = '__draft__';
 
 export function CodeEditor() {
@@ -35,6 +46,7 @@ export function CodeEditor() {
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const decorationIdsRef = useRef<string[]>([]);
+  const contentWidgetsRef = useRef<any[]>([]);
   const activeIssuesRef = useRef<CodeIssue[]>([]);
 
   const renderDecorations = () => {
@@ -42,36 +54,115 @@ export function CodeEditor() {
     const monaco = monacoRef.current;
     if (!editor || !monaco) return;
     const issues = activeIssuesRef.current;
+
+    // 先清旧 widget
+    for (const w of contentWidgetsRef.current) {
+      try { editor.removeContentWidget(w); } catch {}
+    }
+    contentWidgetsRef.current = [];
+
     if (issues.length === 0) {
       decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, []);
       return;
     }
-    const decorations = issues.map((iss) => ({
-      range: new monaco.Range(iss.line, 1, iss.line, 1),
-      options: {
-        isWholeLine: true,
-        className: `aicc-line-${iss.severity}`,
-        glyphMarginClassName: `aicc-glyph-${iss.severity}`,
-        glyphMarginHoverMessage: {
-          value: `**[${iss.severity.toUpperCase()}/${iss.category}]** ${iss.message}\n\n${iss.suggestion ?? ''}`,
+
+    // ① 整行 tint + glyph margin 图标（用 deltaDecorations）
+    const decorations = issues.map((iss) => {
+      const fullHover = {
+        value: `**[${iss.severity.toUpperCase()}/${iss.category}]** ${iss.message}\n\n${iss.suggestion ?? ''}`,
+      };
+      return {
+        range: new monaco.Range(iss.line, 1, iss.line, 1),
+        options: {
+          isWholeLine: true,
+          className: `aicc-line-${iss.severity}`,
+          glyphMarginClassName: `aicc-glyph-${iss.severity}`,
+          glyphMarginHoverMessage: fullHover,
+          hoverMessage: fullHover,
         },
-        after: {
-          content: `   ${severityIcon(iss.severity)} ${iss.message.slice(0, 60)}${iss.message.length > 60 ? '…' : ''}`,
-          inlineClassName: `aicc-after-${iss.severity}`,
-          margin: '4em',
-        },
-        hoverMessage: {
-          value: `**${iss.message}**\n\n${iss.suggestion ?? ''}`,
-        },
-      },
-    }));
+      };
+    });
     decorationIdsRef.current = editor.deltaDecorations(decorationIdsRef.current, decorations);
+
+    // ② 行末追加批注文字（用 ContentWidget，比 after.content 兼容性更好）
+    const model = editor.getModel();
+    if (!model) return;
+    issues.forEach((iss, idx) => {
+      const lineMaxCol = model.getLineMaxColumn(iss.line);
+      const shortMsg =
+        iss.message.slice(0, 80) + (iss.message.length > 80 ? '…' : '');
+      const node = document.createElement('span');
+      node.className = `aicc-after-${iss.severity}`;
+      node.textContent = `  // ${severityIcon(iss.severity)} ${shortMsg}`;
+      node.title = `${iss.message}${iss.suggestion ? '\n建议：' + iss.suggestion : ''}`;
+      const widget = {
+        getId: () => `aicc-annot-${idx}-${iss.line}`,
+        getDomNode: () => node,
+        getPosition: () => ({
+          position: { lineNumber: iss.line, column: lineMaxCol },
+          preference: [
+            monaco.editor.ContentWidgetPositionPreference.EXACT,
+          ],
+        }),
+      };
+      editor.addContentWidget(widget);
+      contentWidgetsRef.current.push(widget);
+    });
   };
 
   const onMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
+    // Parchment 米黄主题（默认）
+    monaco.editor.defineTheme('aicc-parchment', {
+      base: 'vs',
+      inherit: true,
+      rules: [
+        { token: 'comment', foreground: '6e6041', fontStyle: 'italic' },
+        { token: 'keyword', foreground: '8b6914', fontStyle: 'bold' },
+        { token: 'string', foreground: '556b2f' },
+        { token: 'number', foreground: '4682b4' },
+        { token: 'type', foreground: '9a341c' },
+      ],
+      colors: {
+        'editor.background': '#faf4e2',
+        'editor.lineHighlightBackground': '#f3eacc',
+        'editorLineNumber.foreground': '#b8a575',
+        'editorLineNumber.activeForeground': '#6e6041',
+        'editorCursor.foreground': '#8b6914',
+        'editor.selectionBackground': '#8b691433',
+        'editorIndentGuide.background1': '#eadebb',
+        'editorWidget.background': '#fef9e8',
+        'editorWidget.border': '#d4c499',
+        'editorSuggestWidget.background': '#fef9e8',
+        'editorSuggestWidget.border': '#d4c499',
+      },
+    });
+    // VS Code Dark
     monaco.editor.defineTheme('aicc-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'comment', foreground: '6a9955', fontStyle: 'italic' },
+        { token: 'keyword', foreground: '569cd6' },
+        { token: 'string', foreground: 'ce9178' },
+        { token: 'number', foreground: 'b5cea8' },
+      ],
+      colors: {
+        'editor.background': '#1e1e1e',
+        'editor.lineHighlightBackground': '#252526',
+        'editorLineNumber.foreground': '#858585',
+        'editorLineNumber.activeForeground': '#cccccc',
+        'editorCursor.foreground': '#aeafad',
+        'editorIndentGuide.background1': '#404040',
+        'editorWidget.background': '#252526',
+        'editorWidget.border': '#3c3c3c',
+        'editorSuggestWidget.background': '#252526',
+        'editorSuggestWidget.border': '#3c3c3c',
+      },
+    });
+    // 经典紫
+    monaco.editor.defineTheme('aicc-classic', {
       base: 'vs-dark',
       inherit: true,
       rules: [
@@ -94,7 +185,14 @@ export function CodeEditor() {
         'editorSuggestWidget.border': '#262b3d',
       },
     });
-    monaco.editor.setTheme('aicc-dark');
+    applyMonacoTheme(monaco);
+
+    // 监听 data-theme 变化（用户切换主题时同步切 Monaco）
+    const obs = new MutationObserver(() => applyMonacoTheme(monaco));
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    // 编辑器 unmount 时清理（onMount 没 cleanup，但 effect 不在这里跑）
+    (editor as any)._aiccObserver?.disconnect();
+    (editor as any)._aiccObserver = obs;
 
     // 注册 cpp/c/python 常用 snippet（学生级最常用）
     registerSnippets(monaco);
@@ -232,7 +330,6 @@ export function CodeEditor() {
           <div className={cn('flex-1 min-w-0', isMd && mdPreview && 'border-r border-line')}>
             <Editor
               height="100%"
-              theme="aicc-dark"
               path={file.id}
               language={monacoLanguage(file.language)}
               value={file.content}

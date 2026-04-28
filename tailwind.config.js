@@ -5,33 +5,55 @@ export default {
   theme: {
     extend: {
       colors: {
+        // 所有颜色用 CSS variable 取值，主题切换只改 :root 上的变量
         bg: {
-          DEFAULT: '#0a0b14',
-          elev: '#11131e',
-          elev2: '#161a28',
-          card: '#1a1f30',
+          DEFAULT: 'rgb(var(--c-bg) / <alpha-value>)',
+          elev: 'rgb(var(--c-bg-elev) / <alpha-value>)',
+          elev2: 'rgb(var(--c-bg-elev2) / <alpha-value>)',
+          card: 'rgb(var(--c-bg-card) / <alpha-value>)',
         },
-        line: '#262b3d',
+        line: 'rgb(var(--c-line) / <alpha-value>)',
+        'line-strong': 'rgb(var(--c-line-strong) / <alpha-value>)',
         ink: {
-          DEFAULT: '#e7eaf3',
-          dim: '#9aa3b8',
-          mute: '#5f6884',
+          DEFAULT: 'rgb(var(--c-ink) / <alpha-value>)',
+          dim: 'rgb(var(--c-ink-dim) / <alpha-value>)',
+          mute: 'rgb(var(--c-ink-mute) / <alpha-value>)',
         },
         accent: {
-          DEFAULT: '#7c83ff',
-          glow: '#9aa0ff',
-          deep: '#5158d8',
+          DEFAULT: 'rgb(var(--c-accent) / <alpha-value>)',
+          glow: 'rgb(var(--c-accent-glow) / <alpha-value>)',
+          deep: 'rgb(var(--c-accent-deep) / <alpha-value>)',
         },
         cyan: {
-          DEFAULT: '#22d3ee',
+          DEFAULT: 'rgb(var(--c-cyan) / <alpha-value>)',
         },
-        ok: '#34d399',
-        warn: '#fbbf24',
-        bad: '#f87171',
+        ok: 'rgb(var(--c-ok) / <alpha-value>)',
+        warn: 'rgb(var(--c-warn) / <alpha-value>)',
+        bad: 'rgb(var(--c-bad) / <alpha-value>)',
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['JetBrains Mono', 'Menlo', 'monospace'],
+        // 西文 Manrope（圆润现代）+ 中文系统圆体堆栈：
+        //   PingFang SC (macOS/iOS) / HarmonyOS Sans SC (鸿蒙) / Microsoft YaHei UI (Win10+)
+        sans: [
+          'Manrope',
+          'PingFang SC',
+          'HarmonyOS Sans SC',
+          'Source Han Sans CN',
+          'Noto Sans SC',
+          'Microsoft YaHei UI',
+          'Microsoft YaHei',
+          'system-ui',
+          'sans-serif',
+        ],
+        // 等宽 Fira Code（圆润 + ligature）
+        mono: [
+          'Fira Code',
+          'JetBrains Mono',
+          'Cascadia Code',
+          'Menlo',
+          'Consolas',
+          'monospace',
+        ],
       },
       boxShadow: {
         glow: '0 0 24px -4px rgb(124 131 255 / 0.5)',

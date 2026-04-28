@@ -122,7 +122,7 @@ export function RuntimePane() {
     return (
       <button
         onClick={() => setOpen(true)}
-        className="h-7 border-t border-line bg-bg-elev/60 hover:bg-bg-elev2 flex items-center gap-2 px-4 text-xs text-ink-dim w-full"
+        className="h-7 border-t border-line bg-bg-elev hover:bg-bg-elev2 flex items-center gap-2 px-4 text-xs text-ink-dim w-full"
         title="展开终端"
       >
         <TerminalIcon size={12} />
@@ -137,10 +137,10 @@ export function RuntimePane() {
       initial={{ height: 0 }}
       animate={{ height: 280 }}
       exit={{ height: 0 }}
-      className="border-t border-line bg-bg/95 flex flex-col overflow-hidden"
+      className="border-t border-line bg-bg flex flex-col overflow-hidden"
     >
       {/* Header */}
-      <div className="h-9 border-b border-line bg-bg-elev/40 flex items-center px-3 gap-2 shrink-0">
+      <div className="h-9 border-b border-line bg-bg-elev flex items-center px-3 gap-2 shrink-0">
         <TerminalIcon size={13} className="text-ink-dim" />
         <span className="text-xs font-semibold text-ink-dim">终端</span>
         {file && (
@@ -206,7 +206,7 @@ export function RuntimePane() {
             value={stdin}
             onChange={(e) => setStdin(e.target.value)}
             placeholder={'每行一个输入，例如:\n5\n1 2 3 4 5'}
-            className="flex-1 bg-bg/40 px-2 py-1.5 text-[12px] font-mono text-ink resize-none outline-none placeholder:text-ink-mute"
+            className="flex-1 bg-bg px-2 py-1.5 text-[12px] font-mono text-ink resize-none outline-none placeholder:text-ink-mute"
             spellCheck={false}
           />
         </div>
@@ -216,7 +216,7 @@ export function RuntimePane() {
           </div>
           <div
             ref={outputRef}
-            className="flex-1 bg-bg/60 px-3 py-1.5 overflow-y-auto font-mono text-[12px] leading-relaxed"
+            className="flex-1 bg-bg px-3 py-1.5 overflow-y-auto font-mono text-[12px] leading-relaxed"
           >
             {output.length === 0 && (
               <div className="text-ink-mute italic">点 ▶ 运行 让程序跑起来</div>

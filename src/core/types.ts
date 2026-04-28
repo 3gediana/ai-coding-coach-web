@@ -47,6 +47,15 @@ export interface AnalysisResult {
   issues: CodeIssue[];
   complexitySummary?: string;
   overallComment?: string;
+  /** 路由决策信息（用于 UI 展示"用了哪个模型"） */
+  routeInfo?: {
+    /** 是否走 fastLane */
+    useFast: boolean;
+    /** 简短标签（"⚡ 本地" / "☁ 云端"） */
+    label: string;
+    /** 完整理由（用户 hover 时显示） */
+    reason: string;
+  };
 }
 
 /** 错题本里的一条记录 */
@@ -91,6 +100,16 @@ export interface LearnerProfile {
   topMistakeCategories: Array<{ category: string; count: number }>;
   /** 当前题的 tags 中，哪些是该学生的薄弱项（命中即重点关注） */
   currentTagsHitWeak: string[];
+  /** 连续学习天数（活跃度信号） */
+  streakDays?: number;
+  /** 待复习错题数（>3 天没看的） */
+  pendingReviewCount?: number;
+  /** 近 7 天通过题数（学习强度） */
+  last7DaysProblems?: number;
+  /** 独立解题率（0..1，越高越不依赖 AI hint） */
+  independentRate?: number;
+  /** 最近最常见的 verdict（错误类型分布特征） */
+  topVerdict?: string;
 }
 
 /** 同一会话内最近 N 次分析的精简快照（喂给 AI 当上下文） */
@@ -105,6 +124,10 @@ export interface AnalysisHistoryEntry {
     message: string;
   }>;
   overallComment?: string;
+  /** 当时的代码哈希（让 AI 知道"代码改了"还是"没改") */
+  codeHash?: string;
+  /** 当时的代码行数（让 AI 知道结构改了多少） */
+  codeLineCount?: number;
 }
 
 /** 通过题目后的总结记录 */
@@ -121,6 +144,8 @@ export type AIProvider =
   | 'minimax'
   | 'deepseek'
   | 'openai'
+  | 'anthropic'
+  | 'google'
   | 'qwen'
   | 'zhipu'
   | 'moonshot'
@@ -140,6 +165,43 @@ export interface AIConfig {
   maxRetries?: number;
   /** 温度；不填走每个请求各自的默认 */
   temperature?: number;
+  /**
+   * Ollama 上下文窗口大小（num_ctx，仅 provider=ollama 时生效）
+   * - 越大幻觉越少（占比低），但 KV cache 越大可能 CPU offload 导致掉速
+   * - 不填默认 20480（实测 GPU 安全上限，参考 bench-results/longctx-ceiling）
+   * - 显存小的机器建议 8192–16384；大显存（≥12GB）可拉到 32768
+   */
+  numCtx?: number;
+  /**
+   * 本地快车道（local fast lane）：
+   * 启用后，"前台实时类"任务（analyze-code / stuck-hint / explain-paste）改走本地 ollama，
+   * 其余后台慢任务（parse-problem / summarize-mistake / compare-files）继续用主配置（云端）。
+   *
+   * 设计动机：
+   *   - 本地模型免费、低延迟（< 500ms TTFT），适合实时反馈
+   *   - 云端模型更准、更稳，适合录题/归档/对拍这类一次性高质量任务
+   */
+  fastLane?: {
+    enabled: boolean;
+    /** 本地 ollama endpoint（baseUrl 必须是 localhost / 127.* / 局域网） */
+    baseUrl: string;
+    /** ollama 模型名，例如 'sam:latest' */
+    model: string;
+    /** ollama 上下文窗口（num_ctx），不填默认 20480 */
+    numCtx?: number;
+  };
+  /**
+   * 路由阈值（仅 fastLane 启用后生效）。
+   * 命中其一 → 跳主云端；都不命中 → 走 fastLane。
+   * 字段未填走 router.ts 里 DEFAULT_ROUTER_HINTS。
+   */
+  routerHints?: {
+    codeCharLimit?: number;
+    codeLineLimit?: number;
+    questionCharLimit?: number;
+    pasteCharLimit?: number;
+    heavyTags?: string[];
+  };
 }
 
 /** 时间状态机的 5 个状态 */

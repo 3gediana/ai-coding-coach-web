@@ -1,9 +1,14 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2 } from 'lucide-react';
+import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { Dashboard } from './Dashboard';
 import { getArea } from '../core/taxonomy';
+import { useMemo, useState } from 'react';
+
+type MistakeSort = 'recent' | 'review-due' | 'unreviewed';
+
+const REVIEW_DAYS_THRESHOLD = 3;
 
 export function Sidebar() {
   const tab = useStore((s) => s.sidebarTab);
@@ -15,6 +20,49 @@ export function Sidebar() {
   const setActiveProblem = useStore((s) => s.setActiveProblem);
   const deleteProblem = useStore((s) => s.deleteProblem);
   const deleteMistake = useStore((s) => s.deleteMistake);
+  const markMistakeReviewed = useStore((s) => s.markMistakeReviewed);
+
+  const [mistakeSort, setMistakeSort] = useState<MistakeSort>('recent');
+
+  // 错题 stats + 排序
+  const mistakeStats = useMemo(() => {
+    const now = Date.now();
+    let reviewed = 0;
+    let pending = 0;
+    for (const m of mistakes) {
+      if (m.reviewedAt) reviewed++;
+      else if (now - m.createdAt > REVIEW_DAYS_THRESHOLD * 86_400_000) pending++;
+    }
+    return {
+      total: mistakes.length,
+      reviewed,
+      pending,
+      reviewRate: mistakes.length > 0 ? reviewed / mistakes.length : 0,
+    };
+  }, [mistakes]);
+
+  const sortedMistakes = useMemo(() => {
+    const arr = mistakes.slice();
+    const now = Date.now();
+    if (mistakeSort === 'review-due') {
+      // 待复习优先：未复习且创建越久越靠前
+      arr.sort((a, b) => {
+        const aDays = a.reviewedAt ? -Infinity : (now - a.createdAt) / 86_400_000;
+        const bDays = b.reviewedAt ? -Infinity : (now - b.createdAt) / 86_400_000;
+        return bDays - aDays;
+      });
+    } else if (mistakeSort === 'unreviewed') {
+      arr.sort((a, b) => {
+        const aR = a.reviewedAt ? 1 : 0;
+        const bR = b.reviewedAt ? 1 : 0;
+        if (aR !== bR) return aR - bR; // 未复习在前
+        return b.createdAt - a.createdAt;
+      });
+    } else {
+      arr.sort((a, b) => b.createdAt - a.createdAt);
+    }
+    return arr;
+  }, [mistakes, mistakeSort]);
 
   const items = [
     { id: 'problems' as const, icon: Library, label: '题目库', count: problems.length },
@@ -26,7 +74,7 @@ export function Sidebar() {
   return (
     <div className="flex border-r border-line">
       {/* Rail */}
-      <div className="w-14 bg-bg-elev/50 flex flex-col items-center py-3 gap-1.5 border-r border-line">
+      <div className="w-14 bg-bg-elev flex flex-col items-center py-3 gap-1.5 border-r border-line">
         {items.map((it) => {
           const active = tab === it.id;
           return (
@@ -43,8 +91,15 @@ export function Sidebar() {
             >
               <it.icon size={18} />
               {it.count !== undefined && it.count > 0 && (
-                <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-accent text-[9px] font-bold text-white flex items-center justify-center">
-                  {it.count}
+                // 用 bad/warn 色（高饱和），保证米黄 rail 上一眼可见
+                <span
+                  className={cn(
+                    'absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold text-white flex items-center justify-center shadow-sm',
+                    it.id === 'mistakes' ? 'bg-bad' : 'bg-cyan',
+                  )}
+                  style={{ boxShadow: '0 0 0 1.5px rgb(var(--c-bg-elev))' }}
+                >
+                  {it.count > 99 ? '99+' : it.count}
                 </span>
               )}
             </button>
@@ -61,7 +116,7 @@ export function Sidebar() {
             animate={{ width: 320, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
-            className="bg-bg-elev/40 border-r border-line overflow-hidden"
+            className="bg-bg border-r border-line overflow-hidden"
           >
             <div className="w-[320px] h-full flex flex-col">
               <div className="h-12 flex items-center justify-between px-4 border-b border-line">
@@ -132,7 +187,73 @@ export function Sidebar() {
                 {tab === 'mistakes' && (
                   <ul className="space-y-2">
                     {mistakes.length === 0 && <Empty text="错题本还是空的，提交错误代码会自动加" />}
-                    {mistakes.map((m) => (
+                    {mistakes.length > 0 && (
+                      <>
+                        {/* 复习状态总览 */}
+                        <li className="glass-card p-2.5 mb-2">
+                          <div className="flex items-center gap-2 text-[10px] mb-1.5">
+                            <span className="text-ink-mute">复习进度</span>
+                            <span className="font-mono font-bold text-ink">
+                              {mistakeStats.reviewed} / {mistakeStats.total}
+                            </span>
+                            <span className="ml-auto text-ink-mute">
+                              {Math.round(mistakeStats.reviewRate * 100)}%
+                            </span>
+                          </div>
+                          <div className="h-1.5 bg-bg-elev2/50 rounded-full overflow-hidden">
+                            <div
+                              className="h-full bg-ok/60 rounded-full transition-all"
+                              style={{ width: `${mistakeStats.reviewRate * 100}%` }}
+                            />
+                          </div>
+                          {mistakeStats.pending > 0 && (
+                            <div className="flex items-center gap-1 mt-1.5 text-[10px] text-warn">
+                              <Clock size={10} />
+                              <span>{mistakeStats.pending} 道错题超过 {REVIEW_DAYS_THRESHOLD} 天未复习</span>
+                            </div>
+                          )}
+                        </li>
+                        {/* 排序 + 导出 */}
+                        <li className="flex items-center gap-1 text-[10px] -mb-1 flex-wrap">
+                          <span className="text-ink-mute">排序</span>
+                          {(['recent', 'review-due', 'unreviewed'] as const).map((s) => (
+                            <button
+                              key={s}
+                              onClick={() => setMistakeSort(s)}
+                              className={cn(
+                                'chip text-[9px] px-1.5 py-0 cursor-pointer transition',
+                                mistakeSort === s
+                                  ? 'border-accent/60 bg-accent/15 text-accent-glow'
+                                  : 'hover:border-accent/40',
+                              )}
+                            >
+                              {s === 'recent' ? '最新' : s === 'review-due' ? '待复习' : '未复习'}
+                            </button>
+                          ))}
+                          <button
+                            className="chip ml-auto hover:border-accent/40 cursor-pointer flex items-center gap-1"
+                            title="导出为单文件 Markdown。可发到 Notion / 飞书 / GitHub"
+                            onClick={async () => {
+                              const { exportMistakesToMarkdown } = await import('../lib/exportMistakes');
+                              exportMistakesToMarkdown(mistakes);
+                            }}
+                          >
+                            <Download size={10} /> MD
+                          </button>
+                          <button
+                            className="chip hover:border-accent/40 cursor-pointer flex items-center gap-1"
+                            title="导出为 Anki .csv（Tab 分隔）"
+                            onClick={async () => {
+                              const { exportMistakesToAnki } = await import('../lib/exportMistakes');
+                              exportMistakesToAnki(mistakes);
+                            }}
+                          >
+                            <Download size={10} /> Anki
+                          </button>
+                        </li>
+                      </>
+                    )}
+                    {sortedMistakes.map((m) => (
                       <li
                         key={m.id}
                         className="glass-card p-3 group"
@@ -164,7 +285,7 @@ export function Sidebar() {
                           <span className="chip-warn text-[10px]">{m.category}</span>
                         </div>
                         {m.userNote && (
-                          <div className="mt-1.5 px-2 py-1 bg-bg-elev/40 rounded text-[11px] text-ink-dim italic">
+                          <div className="mt-1.5 px-2 py-1 bg-bg-elev rounded text-[11px] text-ink-dim italic">
                             "{m.userNote}"
                           </div>
                         )}
@@ -195,14 +316,50 @@ export function Sidebar() {
                             ))}
                           </div>
                         )}
-                        <button
-                          onClick={() => {
-                            if (confirm('删除这条错题？')) deleteMistake(m.id);
-                          }}
-                          className="mt-2 text-[11px] text-ink-mute hover:text-bad transition opacity-0 group-hover:opacity-100"
-                        >
-                          删除
-                        </button>
+                        {/* 复习状态 + 操作 */}
+                        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-line/40 text-[10px]">
+                          {m.reviewedAt ? (
+                            <span className="flex items-center gap-1 text-ok">
+                              <CheckCircle2 size={10} />
+                              已复习 {m.reviewCount > 1 ? `×${m.reviewCount}` : ''}
+                              <span className="text-ink-mute ml-1">
+                                {new Date(m.reviewedAt).toLocaleDateString()}
+                              </span>
+                            </span>
+                          ) : (
+                            (() => {
+                              const days = (Date.now() - m.createdAt) / 86_400_000;
+                              return (
+                                <span className={cn(
+                                  'flex items-center gap-1',
+                                  days > REVIEW_DAYS_THRESHOLD ? 'text-warn' : 'text-ink-mute',
+                                )}>
+                                  <Clock size={10} />
+                                  {days < 1
+                                    ? '今天创建'
+                                    : `${Math.floor(days)} 天前创建`}
+                                  {days > REVIEW_DAYS_THRESHOLD && '（待复习）'}
+                                </span>
+                              );
+                            })()
+                          )}
+                          <button
+                            onClick={() => markMistakeReviewed(m.id)}
+                            className="ml-auto chip text-[9px] px-1.5 py-0 hover:border-ok/60 cursor-pointer"
+                            title={m.reviewedAt ? '再复习一次' : '标记为已复习'}
+                          >
+                            <CheckCircle2 size={9} /> 复习
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm('删除这条错题？')) deleteMistake(m.id);
+                            }}
+                            className="text-ink-mute hover:text-bad transition opacity-0 group-hover:opacity-100"
+                            title="删除"
+                          >
+                            <Trash2 size={10} />
+                          </button>
+                        </div>
                       </li>
                     ))}
                   </ul>

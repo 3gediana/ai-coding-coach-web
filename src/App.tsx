@@ -6,6 +6,7 @@ import { FeedbackPanel } from './components/FeedbackPanel';
 import { TaskTray } from './components/TaskTray';
 import { SettingsModal } from './components/SettingsModal';
 import { ProblemEditorModal } from './components/ProblemEditorModal';
+import { ProblemBrowserModal } from './components/ProblemBrowserModal';
 import { CommandPalette } from './components/CommandPalette';
 import { DiffResultViewer } from './components/DiffResultViewer';
 import { SubmitResultModal } from './components/SubmitResultModal';
@@ -49,6 +50,7 @@ export default function App() {
       <TaskTray />
       <SettingsModal />
       <ProblemEditorModal />
+      <ProblemBrowserModal />
       <CommandPalette />
       <DiffResultViewer />
       <SubmitResultModal />

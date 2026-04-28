@@ -2,11 +2,111 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * 主题：通过 [data-theme] 切换
+ *   parchment（默认）：米黄/卡其暖色系，灵感来自羊皮纸 + Solarized Light
+ *   vscode-dark：模仿 VS Code Dark Modern，#1e1e1e 系列
+ *   aicc-classic：v0.x 的紫色 glassmorphism（保留）
+ *
+ * 颜色用 RGB 三元组，配合 tailwind <alpha-value> 占位符支持透明度
+ *
+ * 设计原则：
+ * - 圆角：4-8px 适中（不直、不软）
+ * - 无 glassmorphism / 无紫色渐变 / 无 shadow-glow（aicc-classic 除外）
+ * - 边框 1px 实色，做隔断
+ * - 层次感：editor 最浅，sidebar/topbar 明显深一档，分隔线清晰
+ */
+
+:root,
+[data-theme='parchment'] {
+  /* Solarized Light 风格：暖米黄背景 + 冷灰文字，层次明度差只 5%（97/92），柔和不刺眼。
+   * 关键：之前的 bg(254) ↔ elev(232) 差 22 单位太大，导致侧栏沙黄 + 编辑器纯白割裂，
+   *      modal 又用 #fffcf0 纯白，三种"白"打架。现在统一基调，用 line 做隔断。
+   */
+  --c-bg: 253 246 227;            /* #fdf6e3 base3 — 主背景（编辑器/题面） */
+  --c-bg-elev: 238 232 213;       /* #eee8d5 base2 — 侧栏/顶栏/面板（差 15 单位） */
+  --c-bg-elev2: 226 219 199;      /* #e2dbc7 hover */
+  --c-bg-card: 253 246 227;       /* 同 bg：不靠"白纸"对比，靠 1px line + shadow 区分 */
+  --c-line: 213 204 178;          /* #d5ccb2 柔和边框 */
+  --c-line-strong: 168 158 130;   /* 强边框（少用） */
+  --c-ink: 88 110 117;            /* #586e75 base01 — 冷灰主文字（暖背景下更柔和） */
+  --c-ink-dim: 101 123 131;       /* #657b83 base00 次要 */
+  --c-ink-mute: 147 161 161;      /* #93a1a1 base1 弱 */
+  --c-accent: 181 137 0;          /* #b58900 Solarized yellow */
+  --c-accent-glow: 203 134 22;    /* hover 略偏橙 */
+  --c-accent-deep: 130 99 0;      /* 按下 */
+  --c-cyan: 38 139 210;           /* #268bd2 Solarized blue */
+  --c-ok: 133 153 0;              /* #859900 Solarized green */
+  --c-warn: 203 75 22;            /* #cb4b16 Solarized orange */
+  --c-bad: 220 50 47;             /* #dc322f Solarized red */
+}
+
+[data-theme='vscode-dark'] {
+  --c-bg: 30 30 30;               /* #1e1e1e */
+  --c-bg-elev: 37 37 38;          /* #252526 */
+  --c-bg-elev2: 45 45 48;         /* #2d2d30 */
+  --c-bg-card: 51 51 51;          /* #333333 */
+  --c-line: 60 60 60;             /* #3c3c3c */
+  --c-line-strong: 80 80 80;
+  --c-ink: 204 204 204;           /* #cccccc */
+  --c-ink-dim: 153 153 153;       /* #999999 */
+  --c-ink-mute: 110 110 110;
+  --c-accent: 0 122 204;          /* #007acc VS Code 蓝 */
+  --c-accent-glow: 38 153 220;
+  --c-accent-deep: 0 90 158;
+  --c-cyan: 75 197 234;
+  --c-ok: 137 209 133;
+  --c-warn: 220 170 70;
+  --c-bad: 235 110 110;
+}
+
+[data-theme='aicc-classic'] {
+  /* v0.x 经典紫色 + glassmorphism */
+  --c-bg: 10 11 20;               /* #0a0b14 */
+  --c-bg-elev: 17 19 30;          /* #11131e */
+  --c-bg-elev2: 22 26 40;
+  --c-bg-card: 26 31 48;
+  --c-line: 38 43 61;
+  --c-line-strong: 60 65 85;
+  --c-ink: 231 234 243;
+  --c-ink-dim: 154 163 184;
+  --c-ink-mute: 95 104 132;
+  --c-accent: 124 131 255;        /* #7c83ff */
+  --c-accent-glow: 154 160 255;
+  --c-accent-deep: 81 88 216;
+  --c-cyan: 34 211 238;
+  --c-ok: 52 211 153;
+  --c-warn: 251 191 36;
+  --c-bad: 248 113 113;
+}
+
 @layer base {
   html, body, #root {
     height: 100%;
   }
   body {
+    background: rgb(var(--c-bg));
+    color: rgb(var(--c-ink));
+    /* Manrope（西文）+ 系统中文圆体堆栈，落地到 tailwind 的 font-sans 之外，
+     * 让所有元素默认就用圆润字体（不用每个 div 都加 font-sans）。 */
+    font-family:
+      'Manrope', 'PingFang SC', 'HarmonyOS Sans SC',
+      'Source Han Sans CN', 'Noto Sans SC',
+      'Microsoft YaHei UI', 'Microsoft YaHei',
+      system-ui, sans-serif;
+    /* cv02/cv11 是 Inter 的 character variants，Manrope 不需要；ss01 让小写更圆。
+     * "calt" 启用上下文连字（如 →），"liga" 启用一般连字。 */
+    font-feature-settings: 'ss01', 'liga', 'calt';
+    /* 微妙收紧字距，让圆润字体更紧凑而不松散 */
+    letter-spacing: -0.005em;
+  }
+  code, pre, .font-mono, kbd {
+    font-family: 'Fira Code', 'JetBrains Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+    font-feature-settings: 'liga', 'calt';
+    letter-spacing: 0;
+  }
+  /* aicc-classic 保留 radial gradient 装饰 */
+  [data-theme='aicc-classic'] body {
     background:
       radial-gradient(ellipse 80% 60% at 20% -10%, rgba(124, 131, 255, 0.18), transparent 60%),
       radial-gradient(ellipse 60% 50% at 100% 100%, rgba(34, 211, 238, 0.10), transparent 60%),
@@ -14,84 +114,181 @@
     background-attachment: fixed;
   }
   ::selection {
-    background-color: rgba(124, 131, 255, 0.3);
+    background-color: rgb(var(--c-accent) / 0.25);
+    color: rgb(var(--c-ink));
   }
   /* Custom scrollbar */
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: rgba(124, 131, 255, 0.18);
+    background: rgb(var(--c-ink-mute) / 0.3);
+    border: 3px solid transparent;
+    background-clip: padding-box;
     border-radius: 6px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: rgba(124, 131, 255, 0.32);
+    background: rgb(var(--c-ink-mute) / 0.55);
+    background-clip: padding-box;
+    border: 3px solid transparent;
+  }
+
+  /* 高对比度滚动条：显式标注 .scrollbar-strong 时使用，浅色主题也能清楚看到 */
+  .scrollbar-strong::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  .scrollbar-strong::-webkit-scrollbar-thumb {
+    background: rgb(var(--c-line-strong));
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: 5px;
+  }
+  .scrollbar-strong::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--c-accent));
+    background-clip: padding-box;
+    border: 2px solid transparent;
+  }
+  .scrollbar-strong::-webkit-scrollbar-track {
+    background: rgb(var(--c-bg-elev) / 0.6);
+    border-radius: 5px;
   }
 }
 
 @layer components {
+  /* glass 在 parchment 主题下退化为半透明米色，保留少许通透 */
   .glass {
-    @apply bg-bg-elev/70 backdrop-blur-xl border border-line/80;
+    @apply bg-bg-elev/85 border-b border-line backdrop-blur-sm;
   }
+  [data-theme='aicc-classic'] .glass {
+    @apply bg-bg-elev/70 backdrop-blur-xl border-line/80;
+  }
+
   .glass-card {
-    @apply bg-bg-card/80 backdrop-blur-xl border border-line/60 rounded-xl shadow-soft;
+    @apply bg-bg-card border border-line rounded-md shadow-soft;
   }
+  [data-theme='aicc-classic'] .glass-card {
+    @apply bg-bg-card/80 backdrop-blur-xl border-line/60 rounded-xl;
+  }
+
+  /* 按钮：米黄系扁平 + 4px 圆角，柔但不软 */
   .btn {
-    @apply inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium
-           bg-bg-elev2 border border-line text-ink
-           hover:border-accent/60 hover:bg-bg-card hover:text-accent-glow
-           active:scale-[0.98] transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:border-line;
+    @apply inline-flex items-center gap-2 px-2.5 py-1 rounded text-[13px] font-normal
+           bg-transparent border border-line text-ink
+           hover:bg-bg-elev2 hover:border-line-strong
+           active:bg-bg-elev transition-colors duration-100
+           disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent;
   }
   .btn-primary {
-    @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold
-           text-white bg-gradient-to-br from-accent to-accent-deep
-           shadow-glow hover:brightness-110 active:scale-[0.98]
-           transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply inline-flex items-center gap-2 px-3 py-1 rounded text-[13px] font-medium
+           text-white bg-accent border border-accent
+           hover:bg-accent-glow hover:border-accent-glow
+           active:bg-accent-deep transition-colors duration-100
+           disabled:opacity-50 disabled:cursor-not-allowed;
   }
+  [data-theme='aicc-classic'] .btn-primary {
+    @apply rounded-lg shadow-glow bg-gradient-to-br from-accent to-accent-deep border-0;
+  }
+
   .btn-ghost {
-    @apply inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm
-           text-ink-dim hover:text-ink hover:bg-bg-elev2 transition;
+    @apply inline-flex items-center gap-2 px-2 py-1 rounded text-[13px]
+           text-ink-dim hover:text-ink hover:bg-bg-elev2 transition-colors duration-100;
   }
+
   .input {
-    @apply w-full px-3 py-2 bg-bg-elev border border-line rounded-lg text-sm text-ink placeholder:text-ink-mute
-           focus:outline-none focus:border-accent/70 focus:ring-2 focus:ring-accent/20 transition;
+    @apply w-full px-2.5 py-1.5 bg-bg border border-line rounded text-[13px] text-ink
+           placeholder:text-ink-mute
+           focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/40
+           transition-colors duration-100;
   }
+  [data-theme='aicc-classic'] .input {
+    @apply bg-bg-elev rounded-lg;
+  }
+
   .label {
-    @apply text-xs font-semibold text-ink-dim mb-1.5;
+    @apply text-[11px] font-semibold text-ink-dim mb-1 uppercase tracking-wider;
   }
+
   .chip {
-    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium
+    @apply inline-flex items-center gap-1 px-1.5 py-0 rounded text-[10px] font-medium
            bg-bg-elev2 border border-line text-ink-dim;
   }
-  .chip-accent {
-    @apply chip bg-accent/15 border-accent/40 text-accent-glow;
-  }
-  .chip-ok {
-    @apply chip bg-ok/10 border-ok/40 text-ok;
-  }
-  .chip-warn {
-    @apply chip bg-warn/10 border-warn/40 text-warn;
-  }
-  .chip-bad {
-    @apply chip bg-bad/10 border-bad/40 text-bad;
-  }
-  .severity-error { @apply text-bad; }
-  .severity-warning { @apply text-warn; }
-  .severity-info { @apply text-cyan; }
-  .severity-hint { @apply text-ink-dim; }
+  .chip-accent { @apply chip bg-accent/15 border-accent/40 text-accent; }
+  .chip-ok { @apply chip bg-ok/15 border-ok/40 text-ok; }
+  .chip-warn { @apply chip bg-warn/15 border-warn/40 text-warn; }
+  .chip-bad { @apply chip bg-bad/15 border-bad/40 text-bad; }
+
+  .severity-error { color: rgb(var(--c-bad)); }
+  .severity-warning { color: rgb(var(--c-warn)); }
+  .severity-info { color: rgb(var(--c-cyan)); }
+  .severity-hint { color: rgb(var(--c-ink-dim)); }
 }
 
-/* Shimmer effect for loading skeletons */
+/* ──────────────────────────────────────────────────────────────────
+ * Monaco AI 批注样式：
+ * - aicc-after-*  ：行末追加批注文字（半透明斜体，像 // 注释）
+ * - aicc-line-*   ：批注行背景轻微 tint（提示这行有问题）
+ * - aicc-glyph-*  ：左侧 glyph margin 图标（::before 显示符号）
+ */
+
+/* 行末追加文字（ContentWidget 实现）— 像 // 注释一样浮在行末
+ * 注意：必须 nowrap 否则会被 monaco overlay 容器挤压成竖排；
+ *       pointer-events: none 防止覆盖代码区域影响选中/点击 */
+.aicc-after-error,
+.aicc-after-warning,
+.aicc-after-info,
+.aicc-after-hint {
+  font-style: italic;
+  font-weight: 400;
+  opacity: 0.75;
+  white-space: nowrap;
+  pointer-events: none;
+  font-size: 12px;
+  font-family: 'Manrope', 'PingFang SC', 'Microsoft YaHei UI', sans-serif;
+  /* monaco 会把 widget 的 left 设到指定 column；这里只控样式，不改位置 */
+  padding-left: 1em;
+  user-select: none;
+}
+.aicc-after-error    { color: rgb(var(--c-bad)); }
+.aicc-after-warning  { color: rgb(var(--c-warn)); }
+.aicc-after-info     { color: rgb(var(--c-cyan)); }
+.aicc-after-hint     { color: rgb(var(--c-ink-mute)); }
+
+/* 整行 tint 背景：低饱和，不打扰阅读 */
+.aicc-line-error    { background: rgb(var(--c-bad) / 0.07); }
+.aicc-line-warning  { background: rgb(var(--c-warn) / 0.07); }
+.aicc-line-info     { background: rgb(var(--c-cyan) / 0.05); }
+.aicc-line-hint     { background: transparent; }
+
+/* 左侧 glyph margin 图标 */
+.aicc-glyph-error::before,
+.aicc-glyph-warning::before,
+.aicc-glyph-info::before,
+.aicc-glyph-hint::before {
+  display: inline-block;
+  width: 100%;
+  text-align: center;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.4;
+  font-family: 'Manrope', sans-serif;
+}
+.aicc-glyph-error::before    { content: '✗'; color: rgb(var(--c-bad)); }
+.aicc-glyph-warning::before  { content: '⚠'; color: rgb(var(--c-warn)); }
+.aicc-glyph-info::before     { content: 'ⓘ'; color: rgb(var(--c-cyan)); }
+.aicc-glyph-hint::before     { content: '·'; color: rgb(var(--c-ink-mute)); }
+
+/* shimmer placeholder（loading） */
 .shimmer {
   background: linear-gradient(
     90deg,
-    rgba(124, 131, 255, 0.05) 0%,
-    rgba(124, 131, 255, 0.18) 50%,
-    rgba(124, 131, 255, 0.05) 100%
+    rgb(var(--c-bg-elev2) / 0.5) 0%,
+    rgb(var(--c-bg-elev2)) 50%,
+    rgb(var(--c-bg-elev2) / 0.5) 100%
   );
   background-size: 200% 100%;
   animation: shimmer 1.6s linear infinite;
@@ -99,7 +296,7 @@
 
 /* Markdown body */
 .md-body {
-  @apply text-sm text-ink leading-relaxed;
+  @apply text-[13px] text-ink leading-relaxed;
 }
 .md-body h1, .md-body h2, .md-body h3 {
   @apply font-semibold text-ink mt-3 mb-2;
@@ -108,10 +305,10 @@
 .md-body h2 { @apply text-sm; }
 .md-body h3 { @apply text-sm text-ink-dim; }
 .md-body code {
-  @apply font-mono text-[12.5px] px-1.5 py-0.5 rounded bg-bg-elev2 text-cyan border border-line;
+  @apply font-mono text-[12px] px-1.5 py-0.5 rounded bg-bg-elev2 text-accent border border-line;
 }
 .md-body pre {
-  @apply bg-bg/60 border border-line rounded-lg p-3 my-2 overflow-x-auto;
+  @apply bg-bg border border-line rounded-md p-2.5 my-2 overflow-x-auto;
 }
 .md-body pre code {
   @apply bg-transparent border-0 p-0 text-ink;
@@ -119,4 +316,56 @@
 .md-body ul { @apply list-disc pl-5 space-y-1; }
 .md-body ol { @apply list-decimal pl-5 space-y-1; }
 .md-body strong { @apply text-ink font-semibold; }
-.md-body a { @apply text-accent-glow underline decoration-accent/40; }
+.md-body a { @apply text-accent underline decoration-accent/40; }
+.md-body table {
+  @apply border-collapse my-2;
+}
+.md-body th, .md-body td {
+  @apply border border-line px-2 py-1 text-[12px];
+}
+.md-body th {
+  @apply bg-bg-elev2 font-semibold;
+}
+
+/* modal 遮罩：跟随主题，light 主题下用浅米黄半透明（不要黑），保留焦点感 */
+.modal-overlay {
+  background: rgb(var(--c-bg-elev2) / 0.4);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+[data-theme='vscode-dark'] .modal-overlay,
+[data-theme='aicc-classic'] .modal-overlay {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.md-body p {
+  @apply my-1.5;
+}
+.md-body p:first-child { @apply mt-0; }
+.md-body p:last-child { @apply mb-0; }
+
+/* 紧凑模式：题目摘要、约束等狭窄区域 */
+.md-compact {
+  @apply text-[12px] leading-relaxed;
+}
+.md-compact p { @apply my-1; }
+.md-compact h1, .md-compact h2, .md-compact h3 {
+  @apply text-[13px] mt-2 mb-1;
+}
+.md-compact ul, .md-compact ol { @apply my-1; }
+
+/* KaTeX：跟随主题色，行内公式不挤压行高 */
+.md-body .katex,
+.md-compact .katex {
+  font-size: 1.02em;
+  color: var(--ink, currentColor);
+}
+.md-body .katex-display,
+.md-compact .katex-display {
+  @apply my-2 overflow-x-auto;
+}
+/* 防止 KaTeX 选中复制时出现重复字符（半透明 mathml fallback） */
+.katex .mord, .katex .mbin, .katex .mrel, .katex .mopen, .katex .mclose {
+  user-select: text;
+}

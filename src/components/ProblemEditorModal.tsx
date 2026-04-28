@@ -1,8 +1,12 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useEffect, useState } from 'react';
 import { useStore } from '../lib/store';
-import { X, ScrollText, Wand2, Loader2 } from 'lucide-react';
+import { X, ScrollText, Wand2, Loader2, Link as LinkIcon, Download } from 'lucide-react';
 import { toast } from 'sonner';
+import { fetchAndParseProblem, detectSite, isFetchableSite, FetchProblemError } from '../lib/fetchProblem';
+import { storage } from '../lib/storage';
+import type { Problem } from '../core/types';
+import { nanoid } from 'nanoid';
 
 export function ProblemEditorModal() {
   const open = useStore((s) => s.problemEditorOpen);
@@ -12,19 +16,87 @@ export function ProblemEditorModal() {
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
 
   const [text, setText] = useState('');
+  const [url, setUrl] = useState('');
+  const [fetching, setFetching] = useState(false);
+
+  // 重置
+  useEffect(() => {
+    if (open) {
+      setText('');
+      setUrl('');
+      setFetching(false);
+    }
+  }, [open]);
+
+  const detected = url.trim() ? detectSite(url.trim()) : { site: 'unsupported' as const };
+  const SITE_LABEL: Record<string, string> = {
+    luogu: '洛谷', atcoder: 'AtCoder', poj: 'POJ', hdu: 'HDU',
+    'unsupported-cf': 'Codeforces', 'unsupported-leetcode': 'LeetCode', 'unsupported-nowcoder': '牛客',
+    unsupported: '',
+  };
+  const UNSUPPORTED_HINT: Record<string, string> = {
+    'unsupported-cf': 'CF 反爬严 — 请打开题面页复制全文，粘到下方文本框走 AI 解析',
+    'unsupported-leetcode': 'LeetCode 是 SPA — 请复制题面【描述 + 示例】到下方文本框',
+    'unsupported-nowcoder': '牛客需登录 — 请复制题面到下方文本框',
+    unsupported: '不识别该站 — 请复制题面到下方文本框',
+  };
+  const fetchable = isFetchableSite(detected.site);
+
+  const refreshProblems = useStore((s) => s.refreshProblems);
+  const setActiveProblem = useStore((s) => s.setActiveProblem);
+
+  const onFetch = async () => {
+    const u = url.trim();
+    if (!u) return;
+    setFetching(true);
+    try {
+      const p = await fetchAndParseProblem(u);
+      // 直接转为 Problem 并入库（跳过 LLM）
+      const problem: Problem = {
+        id: nanoid(),
+        title: p.title,
+        statement: p.statement,
+        constraints: p.constraints,
+        examples: p.examples,
+        tags: p.tags,
+        source: p.source.url,
+        difficulty: undefined,
+        createdAt: Date.now(),
+      };
+      await storage.saveProblem(problem);
+      await refreshProblems();
+      await setActiveProblem(problem.id);
+      toast.success(`已录入：${p.title}`, {
+        description: `抓取耗时 ${p.meta?.ms ?? '?'}ms，来源：${p.source.site}`,
+      });
+      setOpen(false);
+    } catch (e) {
+      if (e instanceof FetchProblemError) {
+        if (e.code === 'unsupported') {
+          toast.error('不支持该站点', { description: e.message, duration: 8000 });
+        } else {
+          toast.error(`抓取失败 (${e.code})`, { description: e.message });
+        }
+      } else {
+        toast.error('抓取失败', { description: String((e as any)?.message || e) });
+      }
+    } finally {
+      setFetching(false);
+    }
+  };
 
   // Esc 关闭
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !fetching) {
         e.stopPropagation();
         setOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [open, setOpen]);
+  }, [open, setOpen, fetching]);
 
   const onSubmit = () => {
     if (text.trim().length < 8) {
@@ -51,7 +123,7 @@ export function ProblemEditorModal() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={() => setOpen(false)}
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
+          className="fixed inset-0 z-50 modal-overlay flex items-center justify-center p-6"
         >
           <motion.div
             initial={{ scale: 0.96, opacity: 0, y: 8 }}
@@ -70,6 +142,56 @@ export function ProblemEditorModal() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-3">
+              {/* URL 一键抓题 */}
+              <div className="rounded-md border border-line bg-bg-elev/40 p-3 space-y-2">
+                <div className="flex items-center gap-2 text-[12px] font-semibold text-ink">
+                  <LinkIcon size={13} className="text-cyan" />
+                  从 OJ URL 抓题
+                  <span className="ml-auto text-[10px] text-ink-mute font-normal">
+                    支持 洛谷 / AtCoder / POJ / HDU
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    className="input font-mono text-[12px] flex-1"
+                    placeholder="https://www.luogu.com.cn/problem/P1001  |  https://atcoder.jp/contests/abc100/tasks/abc100_a"
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && fetchable && !fetching) {
+                        e.preventDefault();
+                        onFetch();
+                      }
+                    }}
+                    disabled={fetching}
+                  />
+                  <button
+                    onClick={onFetch}
+                    disabled={!fetchable || fetching || !url.trim()}
+                    className="btn-primary shrink-0"
+                    title={!fetchable ? '该站不支持自动抓取，请复制题面到下方文本框' : '拉取题面并自动录入（无需 AI）'}
+                  >
+                    {fetching ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                    {fetching ? '抓取中…' : '抓取'}
+                  </button>
+                </div>
+                {url.trim() && (
+                  <div className="text-[11px] text-ink-mute">
+                    {fetchable
+                      ? <span className="text-ok">✓ 识别为 {SITE_LABEL[detected.site]}{detected.pid ? ` · ${detected.pid}` : ''}，点「抓取」直接入库（无需走 AI）</span>
+                      : detected.site === 'unsupported'
+                        ? <span className="text-warn">⚠ {UNSUPPORTED_HINT.unsupported}</span>
+                        : <span className="text-warn">⚠ 识别为 {SITE_LABEL[detected.site]}{detected.pid ? ` · ${detected.pid}` : ''} — {UNSUPPORTED_HINT[detected.site]}</span>}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 text-[10px] text-ink-mute">
+                <div className="h-px flex-1 bg-line" />
+                <span>或手动粘贴</span>
+                <div className="h-px flex-1 bg-line" />
+              </div>
+
               <div>
                 <div className="label">题面（粘贴 OJ 题目原文，AI 自动结构化）</div>
                 <textarea

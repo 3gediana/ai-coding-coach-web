@@ -135,7 +135,7 @@ export function TabBar() {
   const showDiff = diffSelection.length === 2;
 
   return (
-    <div className="h-9 flex items-stretch bg-bg-elev/50 border-b border-line relative shrink-0">
+    <div className="h-9 flex items-stretch bg-bg-elev border-b border-line relative shrink-0">
       <div className="flex-1 flex items-stretch overflow-x-auto scrollbar-thin min-w-0">
         {files.length === 0 && (
           <div className="px-3 py-1.5 text-xs text-ink-mute italic">

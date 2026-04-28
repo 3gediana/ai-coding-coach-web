@@ -4,9 +4,10 @@ import { useStore } from '../lib/store';
 import { PRESETS } from '../lib/presets';
 import type { AIConfig, AIProvider } from '../core/types';
 import { cn } from '../lib/cn';
-import { X, Eye, EyeOff, ExternalLink, Check, Loader2, Sparkles } from 'lucide-react';
+import { X, Eye, EyeOff, ExternalLink, Check, Loader2, Sparkles, Zap, Settings2 } from 'lucide-react';
 import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
+import { DEFAULT_ROUTER_HINTS } from '../core/ai/router';
 
 export function SettingsModal() {
   const open = useStore((s) => s.settingsOpen);
@@ -54,6 +55,11 @@ export function SettingsModal() {
     if (!draft.baseUrl.trim()) return toast.error('Base URL 不能为空');
     if (!draft.apiKey.trim()) return toast.error('API Key 不能为空');
     if (!draft.model.trim()) return toast.error('Model 不能为空');
+    // fastLane 启用了就必须填全
+    if (draft.fastLane?.enabled) {
+      if (!draft.fastLane.baseUrl?.trim()) return toast.error('FastLane Base URL 不能为空');
+      if (!draft.fastLane.model?.trim()) return toast.error('FastLane 模型不能为空');
+    }
     setCfg(draft);
     toast.success('AI 配置已保存');
     setOpen(false);
@@ -91,7 +97,7 @@ export function SettingsModal() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={() => setOpen(false)}
-          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-6"
+          className="fixed inset-0 z-50 modal-overlay flex items-center justify-center p-6"
         >
           <motion.div
             initial={{ scale: 0.96, opacity: 0, y: 8 }}
@@ -249,6 +255,206 @@ export function SettingsModal() {
                   />
                 </Field>
               </div>
+
+              {/* ━━ ⚡ FastLane（本地快车道） ━━ */}
+              <div className="border-t border-line pt-4">
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
+                  <input
+                    type="checkbox"
+                    className="accent-warn"
+                    checked={!!draft.fastLane?.enabled}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        fastLane: {
+                          baseUrl: 'http://localhost:11434',
+                          model: 'sam:latest',
+                          ...(draft.fastLane ?? {}),
+                          enabled: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  <Zap size={14} className="text-warn" />
+                  <span className="text-sm font-semibold">本地快车道（FastLane）</span>
+                  <span className="text-[10px] text-ink-mute ml-auto">实时类任务走本地 Ollama</span>
+                </label>
+                <p className="text-[11px] text-ink-mute mb-3 pl-6">
+                  代码批注 / 答疑 / 卡住引导 / 粘贴解释 走本地 Ollama；
+                  题面解析 / 错题总结仍走主云端。命中下方"路由策略"任一阈值则跳云端保稳。
+                </p>
+
+                {draft.fastLane?.enabled && (
+                  <div className="pl-6 space-y-3">
+                    <Field label="Base URL" hint="必须本地（localhost / 127.* / 局域网）">
+                      <input
+                        className="input font-mono text-xs"
+                        placeholder="http://localhost:11434"
+                        value={draft.fastLane.baseUrl}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            fastLane: { ...draft.fastLane!, baseUrl: e.target.value },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="模型" hint="ollama 已 pull 过的模型名">
+                      <input
+                        className="input font-mono text-xs"
+                        placeholder="sam:latest"
+                        value={draft.fastLane.model}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            fastLane: { ...draft.fastLane!, model: e.target.value },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="num_ctx" hint="上下文窗口；VRAM 紧张可降到 8192">
+                      <input
+                        className="input font-mono"
+                        type="number"
+                        placeholder="20480"
+                        value={draft.fastLane.numCtx ?? ''}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            fastLane: {
+                              ...draft.fastLane!,
+                              numCtx: e.target.value ? Number(e.target.value) : undefined,
+                            },
+                          })
+                        }
+                      />
+                    </Field>
+                  </div>
+                )}
+              </div>
+
+              {/* ━━ 🔀 路由策略（高级折叠） ━━ */}
+              {draft.fastLane?.enabled && (
+                <details className="border-t border-line pt-4">
+                  <summary className="cursor-pointer flex items-center gap-2 text-sm font-semibold list-none select-none">
+                    <Settings2 size={14} className="text-cyan" />
+                    路由策略（高级）
+                    <span className="text-[10px] text-ink-mute font-normal ml-auto">
+                      点击展开
+                    </span>
+                  </summary>
+                  <p className="text-[11px] text-ink-mute mt-2 mb-3 pl-6">
+                    fastLane 启用后，命中以下任一条件 → 自动跳主云端（保稳）。留空走默认值。
+                  </p>
+                  <div className="pl-6 grid grid-cols-2 gap-3">
+                    <Field
+                      label="代码字符上限"
+                      hint={`默认 ${DEFAULT_ROUTER_HINTS.codeCharLimit}`}
+                    >
+                      <input
+                        className="input font-mono"
+                        type="number"
+                        placeholder={String(DEFAULT_ROUTER_HINTS.codeCharLimit)}
+                        value={draft.routerHints?.codeCharLimit ?? ''}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            routerHints: {
+                              ...(draft.routerHints ?? {}),
+                              codeCharLimit: e.target.value ? Number(e.target.value) : undefined,
+                            },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field
+                      label="代码行数上限"
+                      hint={`默认 ${DEFAULT_ROUTER_HINTS.codeLineLimit}`}
+                    >
+                      <input
+                        className="input font-mono"
+                        type="number"
+                        placeholder={String(DEFAULT_ROUTER_HINTS.codeLineLimit)}
+                        value={draft.routerHints?.codeLineLimit ?? ''}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            routerHints: {
+                              ...(draft.routerHints ?? {}),
+                              codeLineLimit: e.target.value ? Number(e.target.value) : undefined,
+                            },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field
+                      label="问题字符上限"
+                      hint={`ask 用，默认 ${DEFAULT_ROUTER_HINTS.questionCharLimit}`}
+                    >
+                      <input
+                        className="input font-mono"
+                        type="number"
+                        placeholder={String(DEFAULT_ROUTER_HINTS.questionCharLimit)}
+                        value={draft.routerHints?.questionCharLimit ?? ''}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            routerHints: {
+                              ...(draft.routerHints ?? {}),
+                              questionCharLimit: e.target.value
+                                ? Number(e.target.value)
+                                : undefined,
+                            },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field
+                      label="粘贴字符上限"
+                      hint={`explain 用，默认 ${DEFAULT_ROUTER_HINTS.pasteCharLimit}`}
+                    >
+                      <input
+                        className="input font-mono"
+                        type="number"
+                        placeholder={String(DEFAULT_ROUTER_HINTS.pasteCharLimit)}
+                        value={draft.routerHints?.pasteCharLimit ?? ''}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            routerHints: {
+                              ...(draft.routerHints ?? {}),
+                              pasteCharLimit: e.target.value ? Number(e.target.value) : undefined,
+                            },
+                          })
+                        }
+                      />
+                    </Field>
+                  </div>
+                  <Field
+                    label="复杂题 tag 触发词"
+                    hint="逗号分隔；命中即跳云端。留空走默认列表"
+                  >
+                    <textarea
+                      className="input font-mono text-xs min-h-[60px]"
+                      placeholder={DEFAULT_ROUTER_HINTS.heavyTags.join(', ')}
+                      value={draft.routerHints?.heavyTags?.join(', ') ?? ''}
+                      onChange={(e) => {
+                        const arr = e.target.value
+                          .split(/[,，]/)
+                          .map((s) => s.trim())
+                          .filter(Boolean);
+                        setDraft({
+                          ...draft,
+                          routerHints: {
+                            ...(draft.routerHints ?? {}),
+                            heavyTags: arr.length > 0 ? arr : undefined,
+                          },
+                        });
+                      }}
+                    />
+                  </Field>
+                </details>
+              )}
 
               {/* Test result */}
               <AnimatePresence>

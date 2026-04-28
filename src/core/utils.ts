@@ -4,6 +4,7 @@
  * 不依赖 vscode，未来 Web 版可直接复用。
  */
 import type { CoachEvent, LearnerProfile, Mistake, Problem, Session } from './types';
+import { aggregateStudentProfile } from './profile';
 
 // ============== 令牌桶 ==============
 
@@ -265,12 +266,33 @@ export function buildLearnerProfile(args: {
   const weakSet = new Set(weakestTags.map((w) => w.tag));
   const currentTagsHitWeak = (args.currentProblemTags ?? []).filter((t) => weakSet.has(t));
 
+  // 增量画像（基于 profile 模块），给 AI 更丰富上下文
+  const sp = aggregateStudentProfile({
+    sessions: args.sessions,
+    problems: args.problems,
+    mistakes: args.mistakes,
+  });
+  // 找最高频的 verdict
+  let topVerdict: string | undefined;
+  let topVerdictN = 0;
+  for (const [v, n] of Object.entries(sp.verdictBreakdown)) {
+    if (n > topVerdictN) {
+      topVerdictN = n;
+      topVerdict = v;
+    }
+  }
+
   return {
     totalProblems: stats.totalProblems,
     totalMistakes: args.mistakes.length,
     weakestTags,
     topMistakeCategories,
     currentTagsHitWeak,
+    streakDays: sp.currentStreakDays,
+    pendingReviewCount: sp.pendingReview,
+    last7DaysProblems: sp.weekProblems,
+    independentRate: Number(sp.independentRate.toFixed(2)),
+    topVerdict: topVerdictN > 0 ? topVerdict : undefined,
   };
 }
 

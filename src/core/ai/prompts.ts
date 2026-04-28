@@ -8,6 +8,7 @@
  */
 import type { AnalysisHistoryEntry, Lang, LearnerProfile, Problem } from '../types';
 import { serializeForPrompt as serializeTaxonomy } from '../taxonomy';
+import { codeHash } from '../utils';
 
 export const SYSTEM_CODING_COACH = `你是一位资深的算法竞赛教练和编程导师，专注于辅导大学生学习 C++ 和 Python。
 
@@ -99,6 +100,64 @@ const verdictHintMap: Record<string, string> = {
 /**
  * 把粘贴的题目原文解析为结构化 JSON。
  */
+/**
+ * 学生在做题时随手提问 → 结合当前题目 + 代码上下文给出针对性回答。
+ * 输出是自然语言 markdown，不需要 JSON。
+ *
+ * @param question  学生的具体问题
+ * @param history   之前的 Q&A（最多带最近 4 轮），让追问能上下文延续
+ */
+export function buildAskQuestionPrompt(args: {
+  problem?: Problem;
+  code?: string;
+  language?: Lang;
+  question: string;
+  history?: { role: 'user' | 'assistant'; content: string }[];
+}): { system: string; messages: { role: 'system' | 'user' | 'assistant'; content: string }[] } {
+  const ctxLines: string[] = [];
+  if (args.problem) {
+    ctxLines.push(`# 当前题目：${args.problem.title}`);
+    if (args.problem.statement) ctxLines.push(args.problem.statement.slice(0, 2000));
+    if (args.problem.constraints) ctxLines.push('## 约束\n' + args.problem.constraints);
+    if (args.problem.examples?.length) {
+      ctxLines.push('## 示例');
+      for (const ex of args.problem.examples.slice(0, 2)) {
+        ctxLines.push(`输入：${ex.input}\n输出：${ex.output}`);
+      }
+    }
+  } else {
+    ctxLines.push('（学生当前没有激活题目，直接回答其问题即可）');
+  }
+  if (args.code && args.code.trim().length > 5) {
+    ctxLines.push(`## 学生当前代码（${args.language ?? '未知语言'}）`);
+    ctxLines.push('```' + (args.language ?? '') + '\n' + args.code.slice(0, 4000) + '\n```');
+  }
+
+  const system = `${SYSTEM_CODING_COACH}
+
+学生在做题过程中向你提问。你的任务：
+- **结合上面给出的题目和代码**回答学生的具体问题
+- 不要直接给出完整 AC 代码（学生在学习），可以给伪代码、片段、或思路引导
+- 如果学生卡在某个知识点（什么是单调队列 / DP 怎么转移 / 这种数据范围用什么算法），先讲清楚概念，再点拨如何套用到当前题目
+- 用 markdown，可以用 \`code\` / 列表 / **粗体**
+- 中文回答，**严格控制在 200 字以内**。先给最关键的 1-2 点，详细展开请学生追问。
+- 不要把所有可能的相关知识都列出来。**只针对学生具体的问题**给最直接的回答。`;
+
+  const ctx = ctxLines.join('\n\n');
+  const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
+    { role: 'system', content: system },
+    { role: 'user', content: ctx + '\n\n---\n\n（接下来是历史对话，请在此上下文里回答最后一个问题）' },
+  ];
+  if (args.history?.length) {
+    for (const h of args.history.slice(-8)) {
+      messages.push({ role: h.role, content: h.content });
+    }
+  }
+  messages.push({ role: 'user', content: args.question });
+
+  return { system, messages };
+}
+
 export function buildParseProblemPrompt(rawText: string): PromptPair {
   return {
     system:
@@ -129,6 +188,39 @@ ${rawText}
  *
  * profile 和 history 让 AI 给出"针对性、不重复"的反馈。
  */
+/** 字符上限（避免 prompt 爆炸） */
+const STATEMENT_MAX = 2000;
+const CONSTRAINTS_MAX = 800;
+const CODE_MAX = 6000;
+
+/** 给 AI 看带行号前缀的代码：明显降低 AI 数错行的概率
+ * 输出形如：
+ *   1 | #include <bits/stdc++.h>
+ *   2 | using namespace std;
+ */
+function withLineNumbers(code: string): { numbered: string; totalLines: number; truncated: boolean } {
+  let body = code;
+  let truncated = false;
+  if (body.length > CODE_MAX) {
+    // 优先保留头尾，中段截掉（中段往往是工具函数/重复 loop）
+    const keepHead = Math.floor(CODE_MAX * 0.6);
+    const keepTail = CODE_MAX - keepHead - 100;
+    body = body.slice(0, keepHead) + '\n// ... [中段省略] ...\n' + body.slice(-keepTail);
+    truncated = true;
+  }
+  const lines = body.split('\n');
+  const width = String(lines.length).length;
+  const numbered = lines
+    .map((line, i) => `${String(i + 1).padStart(width, ' ')} | ${line}`)
+    .join('\n');
+  return { numbered, totalLines: lines.length, truncated };
+}
+
+function clip(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max) + '…[截断]' : s;
+}
+
+
 export function buildAnalyzeCodePrompt(args: {
   problem?: Problem;
   code: string;
@@ -140,13 +232,17 @@ export function buildAnalyzeCodePrompt(args: {
   const problemContext = args.problem
     ? `【当前题目】
 标题：${args.problem.title}
-题面：${args.problem.statement}
-${args.problem.constraints ? '约束：' + args.problem.constraints : ''}`
+题面：${clip(args.problem.statement, STATEMENT_MAX)}
+${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTRAINTS_MAX) : ''}`
     : '（用户未录入题目，仅就代码本身进行分析）';
 
   const profileBlock = renderProfile(args.profile);
   const historyBlock = renderHistory(args.history);
   const siblingBlock = renderSiblings(args.siblings);
+
+  const { numbered, totalLines, truncated } = withLineNumbers(args.code);
+  // 当前代码哈希（前 6 字符），AI 通过对照 history 里的 codeHash 判断"代码是否改了"
+  const currentHash = codeHash(args.code).slice(0, 6);
 
   return {
     system: SYSTEM_CODING_COACH,
@@ -154,38 +250,53 @@ ${args.problem.constraints ? '约束：' + args.problem.constraints : ''}`
 ${profileBlock}
 ${historyBlock}
 ${siblingBlock}
-【学生当前正在分析的 ${args.language} 代码】
-\`\`\`${args.language}
-${args.code}
+【学生当前正在分析的 ${args.language} 代码（哈希=${currentHash}, ${totalLines} 行${truncated ? '，已截断' : ''}，每行带 "行号 | " 前缀）】
+\`\`\`
+${numbered}
 \`\`\`
 
-输出 JSON：
+输出 JSON（严格遵守，不要任何 markdown 标记或前后多余文字）：
 {
   "issues": [
     {
-      "line": 行号(1-indexed, 整数),
+      "line": 整数行号 (1..${totalLines}, 必须严格在范围内),
       "severity": "error" | "warning" | "info" | "hint",
-      "category": "bug" | "optimization" | "style" | "algorithm",
-      "message": "问题描述（一句话）",
-      "suggestion": "具体怎么改（一两句话）"
+      "category": "correctness" | "performance" | "robustness" | "readability" | "intent",
+      "message": "问题一句话讲清（≤40 字）",
+      "suggestion": "怎么改（≤80 字，可含极短代码片段，不要给完整解法）"
     }
   ],
-  "complexitySummary": "时间 O(...)，空间 O(...)，简短说明",
-  "overallComment": "整体评价（2-3 句话：能否 AC，关键瓶颈在哪）"
+  "complexitySummary": "时间 O(...)，空间 O(...)，1 句话说明（≤40 字）",
+  "overallComment": "整体评价（2-3 句：能否 AC？最大瓶颈？≤120 字）"
 }
 
-要求：
-1. 按严重程度排序，最关键的问题排第一
+📐 issue 维度（category）：
+- **correctness** 正确性：边界 / 越界 / 整数溢出 / 算法逻辑错
+- **performance** 性能：复杂度风险 / TLE / 不必要的拷贝 / cin 慢
+- **robustness** 健壮性：未初始化 / 异常输入 / 空指针 / 递归过深
+- **readability** 可读性：命名 / 缩进 / 死代码 / 魔数
+- **intent** 题意符合：跑出来对但没解对该题（如把 "最长" 解成 "最大"）
+
+🎯 严重程度（severity）：
+- **error** 必 WA / RE 的硬错误
+- **warning** 大概率 TLE / MLE / 边界出错
+- **info** 写法不优 / 复杂度可优化
+- **hint** 风格 / 微优化
+
+⚠ 教学约束（重要）：
+1. **不要给完整 AC 代码**：suggestion 里最多写关键 2-3 行片段或思路，让学生自己写出来
 2. 不要为没问题的代码硬找问题，issues 可以为空数组
-3. 重点关注：边界条件、TLE/MLE 风险、算法选择、语言特性陷阱
-   - C++：数组越界、未初始化、整数溢出 (int vs long long)、cin/cout 同步、vector 拷贝
-   - Python：默认参数陷阱、大数据下的 list 操作、递归深度、is vs ==
-4. 如果上方提供了"学生学习画像"，请重点针对其薄弱知识点给出提醒（即使代码当前没暴露，也要预警相关风险）
-5. 如果上方提供了"本题反馈历史"：
-   - 已被指出且学生已修复的问题：不要再说
-   - 已被指出但仍存在的问题：简短复盘一句，不展开
-   - 重点说"新出现"的问题
-6. 直接输出 JSON`,
+3. 按严重程度排序，error/warning 在前
+4. 同一个问题不要在多行都标注，只标注最相关那一行
+5. C++ 重点关注：int vs long long、数组越界、未初始化、cin 同步关闭、vector 大量拷贝
+6. Python 重点关注：默认参数陷阱、list 大数据、递归深度、is vs ==
+
+📊 上下文使用：
+- 如有"学习画像"：薄弱知识点在 message 里点明（即使代码当前没暴露相关风险）
+- 如有"反馈历史"：已修复的不再提；仍存在的提一句"上次说过"；重点说新出现的
+- 如有"其它文件"：只在必要时引用，主体仍是当前分析的代码
+
+直接输出 JSON。`,
   };
 }
 
@@ -227,6 +338,29 @@ function renderProfile(p?: LearnerProfile): string {
   }
   const lines: string[] = ['', '【学生学习画像（用于针对性反馈）】'];
   lines.push(`已练 ${p.totalProblems} 道题，错题 ${p.totalMistakes} 道`);
+  // 学习强度 + 节奏
+  const intensityParts: string[] = [];
+  if (p.streakDays !== undefined && p.streakDays > 0) {
+    intensityParts.push(`连续学习 ${p.streakDays} 天`);
+  }
+  if (p.last7DaysProblems !== undefined && p.last7DaysProblems > 0) {
+    intensityParts.push(`本周练 ${p.last7DaysProblems} 道`);
+  }
+  if (intensityParts.length > 0) lines.push('节奏：' + intensityParts.join('，'));
+  // 独立程度
+  if (p.independentRate !== undefined && p.totalProblems >= 3) {
+    const pct = Math.round(p.independentRate * 100);
+    if (pct < 40) {
+      lines.push(`【提示：学生 AI 依赖度高（独立解题率仅 ${pct}%）—— 多用引导性提问，少给完整答案】`);
+    } else if (pct > 75) {
+      lines.push(`独立解题率 ${pct}%（较强自学能力）`);
+    }
+  }
+  // 复习状态
+  if (p.pendingReviewCount !== undefined && p.pendingReviewCount >= 3) {
+    lines.push(`【提示：该学生有 ${p.pendingReviewCount} 道错题超 3 天没复习，可适当提及】`);
+  }
+  // 薄弱
   if (p.weakestTags.length > 0) {
     const w = p.weakestTags
       .map((t) => `${t.tag} ${(t.mastery * 100).toFixed(0)}%(${t.count}题)`)
@@ -236,6 +370,17 @@ function renderProfile(p?: LearnerProfile): string {
   if (p.topMistakeCategories.length > 0) {
     const c = p.topMistakeCategories.map((c) => `${c.category}×${c.count}`).join('、');
     lines.push(`常见错误类型（最近10错题）：${c}`);
+  }
+  // 错误类型偏好
+  if (p.topVerdict && p.totalMistakes >= 3) {
+    const hint: Record<string, string> = {
+      WA: '该学生 WA 偏多 → 重点关注边界/反例构造',
+      TLE: '该学生 TLE 偏多 → 重点关注算法复杂度',
+      MLE: '该学生 MLE 偏多 → 关注空间使用 / 大数组',
+      RE: '该学生 RE 偏多 → 关注越界/除零等运行时错误',
+      CE: '该学生 CE 偏多 → 关注语法/类型',
+    };
+    if (hint[p.topVerdict]) lines.push(`【${hint[p.topVerdict]}】`);
   }
   if (p.currentTagsHitWeak.length > 0) {
     lines.push(
@@ -250,17 +395,26 @@ function renderHistory(h?: AnalysisHistoryEntry[]): string {
     return '';
   }
   const lines: string[] = ['', '【本题之前的反馈历史（避免重复说同样的话）】'];
+  // 取最后一次的 codeHash 作为对比基准
+  const lastHash = h[h.length - 1]?.codeHash;
   h.forEach((e, i) => {
     const t = new Date(e.ts).toLocaleTimeString();
+    const codeMark = e.codeHash ? ` (代码=${e.codeHash.slice(0, 6)}, ${e.codeLineCount ?? '?'}行)` : '';
     if (e.issuesSnapshot.length === 0) {
-      lines.push(`第 ${i + 1} 次（${t}, ${e.reason}）：未发现问题`);
+      lines.push(`第 ${i + 1} 次（${t}, ${e.reason}${codeMark}）：未发现问题`);
     } else {
-      lines.push(`第 ${i + 1} 次（${t}, ${e.reason}）：`);
+      lines.push(`第 ${i + 1} 次（${t}, ${e.reason}${codeMark}）：`);
       e.issuesSnapshot.forEach((s) => {
         lines.push(`  · L${s.line} ${s.severity}/${s.category}: ${s.message}`);
       });
     }
   });
+  // 提示 AI 当前代码 vs 上次的关系（学生改了 / 没改 / 改了多少）
+  if (lastHash) {
+    lines.push(
+      `\n💡 提示：上面历史括号里"代码=xxxxxx"是当时的代码哈希。如果当前分析的代码哈希跟最后一次相同 → 学生没改任何代码（不要重复说同样的问题，可换角度或追加新观察）；不同 → 学生改了代码，重点说"新出现的"和"上次说过但仍存在的"。`,
+    );
+  }
   return lines.join('\n');
 }
 

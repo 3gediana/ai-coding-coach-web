@@ -56,10 +56,11 @@ export class AIClient {
     const body = this.buildBody(req, false);
     const res = await this.fetchWithRetry(body, req);
     const json = await res.json();
-    const content =
-      json?.choices?.[0]?.message?.content ??
-      json?.choices?.[0]?.text ??
-      '';
+    // ollama 原生 /api/chat: { message: { content }, ... }
+    // OpenAI 兼容:           { choices: [{ message: { content } }] }
+    const content = this.isOllamaNative()
+      ? (json?.message?.content ?? '')
+      : (json?.choices?.[0]?.message?.content ?? json?.choices?.[0]?.text ?? '');
     return typeof content === 'string' ? content : JSON.stringify(content);
   }
 
@@ -75,6 +76,7 @@ export class AIClient {
     const decoder = new TextDecoder();
     let buf = '';
     let acc = '';
+    const ollamaNative = this.isOllamaNative();
 
     try {
       while (true) {
@@ -82,28 +84,49 @@ export class AIClient {
         if (done) break;
         buf += decoder.decode(value, { stream: true });
 
-        // SSE: 按 \n\n 拆事件，每个事件可能多行 data:
-        const events = buf.split('\n\n');
-        buf = events.pop() ?? '';
-
-        for (const evt of events) {
-          for (const line of evt.split('\n')) {
-            if (!line.startsWith('data:')) continue;
-            const data = line.slice(5).trim();
-            if (!data || data === '[DONE]') continue;
+        if (ollamaNative) {
+          // ollama 原生：NDJSON，每行一个 JSON
+          // { message: { content }, done }
+          const lines = buf.split('\n');
+          buf = lines.pop() ?? '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
             try {
-              const j = JSON.parse(data);
-              const delta =
-                j?.choices?.[0]?.delta?.content ??
-                j?.choices?.[0]?.message?.content ??
-                '';
+              const j = JSON.parse(trimmed);
+              const delta = j?.message?.content ?? '';
               if (typeof delta === 'string' && delta) {
                 acc += delta;
                 req.onChunk?.(delta, acc);
                 yield delta;
               }
             } catch {
-              // 容忍非 JSON 行
+              // ignore
+            }
+          }
+        } else {
+          // OpenAI 兼容 SSE: 按 \n\n 拆事件
+          const events = buf.split('\n\n');
+          buf = events.pop() ?? '';
+          for (const evt of events) {
+            for (const line of evt.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              const data = line.slice(5).trim();
+              if (!data || data === '[DONE]') continue;
+              try {
+                const j = JSON.parse(data);
+                const delta =
+                  j?.choices?.[0]?.delta?.content ??
+                  j?.choices?.[0]?.message?.content ??
+                  '';
+                if (typeof delta === 'string' && delta) {
+                  acc += delta;
+                  req.onChunk?.(delta, acc);
+                  yield delta;
+                }
+              } catch {
+                // 容忍非 JSON 行
+              }
             }
           }
         }
@@ -141,11 +164,66 @@ export class AIClient {
 
   // ============ 私有 ============
 
+  /** 是否走 ollama 原生 /api/chat 协议（拥有 num_gpu / num_ctx 等关键参数） */
+  private isOllamaNative(): boolean {
+    return this.cfg.provider === 'ollama';
+  }
+
+  /**
+   * 计算实际请求的 endpoint URL：
+   * - ollama: 把 baseUrl 中 OpenAI 兼容路径 `/v1/chat/completions` 自动改写为 `/api/chat`
+   *   这样用户在设置里仍可填 `http://localhost:11434/v1/chat/completions`（或 `/api/chat`），都正常
+   * - 其它：原样返回
+   */
+  private effectiveBaseUrl(): string {
+    if (!this.isOllamaNative()) return this.cfg.baseUrl;
+    let u = this.cfg.baseUrl.trim();
+    u = u.replace(/\/v1\/chat\/completions\/?$/, '/api/chat');
+    if (!/\/api\/chat\/?$/.test(u)) {
+      // 容忍用户填了 base 域名（例如 http://localhost:11434）
+      u = u.replace(/\/+$/, '') + '/api/chat';
+    }
+    return u;
+  }
+
   private buildBody(req: ChatRequest, stream: boolean): Record<string, unknown> {
     const cfg = this.cfg;
+    const messages = [...req.messages];
+    // 兜底：Qwen3 识别 /no_think 指令关思考
+    if (this.isOllamaNative()) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === 'user' && !messages[i].content.includes('/no_think')) {
+          messages[i] = { ...messages[i], content: messages[i].content + ' /no_think' };
+          break;
+        }
+      }
+    }
+
+    if (this.isOllamaNative()) {
+      // Ollama 原生 /api/chat 格式
+      // - options.num_gpu = -1 全部 layer 到 GPU
+      // - options.num_ctx：用户在设置里可调，不填默认 20480
+      //   ceiling bench 实测 24K 维持 43-44 tok/s，32K 暴跌至 9 tok/s（CPU offload）
+      //   小显存机器建议下调到 8192–16384
+      // - options.num_predict 限制输出长度
+      // - think: false 关闭思考链
+      return {
+        model: req.model ?? cfg.model,
+        messages,
+        stream,
+        think: false,
+        options: {
+          temperature: req.temperature ?? cfg.temperature ?? DEFAULT_TEMPERATURE,
+          num_gpu: -1,
+          num_ctx: cfg.numCtx ?? 20480,
+          num_predict: req.maxTokens ?? cfg.maxTokens ?? 2048,
+        },
+      };
+    }
+
     return {
       model: req.model ?? cfg.model,
-      messages: req.messages,
+      messages,
       max_tokens: req.maxTokens ?? cfg.maxTokens ?? 4096,
       temperature: req.temperature ?? cfg.temperature ?? DEFAULT_TEMPERATURE,
       stream,
@@ -171,14 +249,17 @@ export class AIClient {
       linkSig(req.signal);
 
       try {
-        const url = buildProxyUrl(cfg.baseUrl);
+        const url = buildProxyUrl(this.effectiveBaseUrl());
+        const headers: Record<string, string> = {
+          'content-type': 'application/json',
+        };
+        // ollama 等本地服务不需要 apiKey，空时跳过 Authorization
+        if (cfg.apiKey?.trim()) {
+          headers.authorization = `Bearer ${cfg.apiKey.trim()}`;
+        }
         const res = await fetch(url, {
           method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            authorization: `Bearer ${cfg.apiKey}`,
-            // dev proxy 透传给真实 endpoint
-          },
+          headers,
           body: JSON.stringify(body),
           signal: ctrl.signal,
         });

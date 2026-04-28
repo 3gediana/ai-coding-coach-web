@@ -144,7 +144,7 @@ export function CommandPalette() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={() => setOpen(false)}
-          className="fixed inset-0 z-[60] bg-black/40 backdrop-blur-sm flex items-start justify-center pt-[12vh] px-4"
+          className="fixed inset-0 z-[60] modal-overlay flex items-start justify-center pt-[12vh] px-4"
         >
           <motion.div
             initial={{ scale: 0.96, opacity: 0, y: -8 }}
