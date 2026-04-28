@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.5
+// @version      0.2.6
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -133,32 +133,23 @@
       return { lang, text: pre.innerText.trim() };
     });
 
-    // 抽样例：扩大到 mainContainer (含外层 el-card 和样例区域)
-    const sampleTabs = await harvestSchoolOJSamples(mainContainer);
+    // 校内 OJ 用第二张 el-card 显示样例 + 编辑器
+    // 第一张卡 = 题面，第二张卡 = 样例 + 编辑器
+    const sampleTabs = harvestSchoolOJSamplesByText(mainContainer);
 
-    // 诊断：在 mainContainer 全范围搜索 tab/pane/sample 元素
+    // 诊断：保留各卡内容快照
+    const allCards = [...mainContainer.querySelectorAll('.el-card__body')];
     const schoolOJDebug = {
-      hasElTabs: mainContainer.querySelectorAll('.el-tabs').length,
-      hasElTabPane: mainContainer.querySelectorAll('.el-tab-pane').length,
-      hasElTabsItem: mainContainer.querySelectorAll('.el-tabs__item').length,
-      tabItemTexts: [...mainContainer.querySelectorAll('.el-tabs__item')].map((e) => e.innerText.trim().slice(0, 40)),
-      preCount: mainContainer.querySelectorAll('pre').length,
+      elCardCount: allCards.length,
+      elCardTexts: allCards.map((c, i) => ({
+        i,
+        len: c.innerText.length,
+        head: c.innerText.slice(0, 100).replace(/\n/g, '|'),
+        tail: c.innerText.slice(-100).replace(/\n/g, '|'),
+      })),
       preList: [...mainContainer.querySelectorAll('pre')].map((e) => ({
         cls: e.className.slice(0, 60),
         text: e.innerText.slice(0, 80),
-      })),
-      // el-card 数量（题目通常有多张卡：题面 / 样例 / 编辑器）
-      elCardCount: mainContainer.querySelectorAll('.el-card').length,
-      elCardClasses: [...mainContainer.querySelectorAll('.el-card')].map((e) => e.className.slice(0, 80)),
-      sampleSelectors: [
-        '[class*="sample"]',
-        '[class*="example"]',
-        '[class*="case"]',
-        '[class*="测试"]',
-      ].map((sel) => ({
-        sel,
-        count: mainContainer.querySelectorAll(sel).length,
-        first: mainContainer.querySelector(sel)?.className?.slice(0, 80) || '',
       })),
     };
 
@@ -195,57 +186,44 @@
   }
 
   /**
-   * 校内 OJ 样例 tab 通常用 el-tabs 懒加载：未点击的 pane 内容不在 DOM
-   * 策略：依次点击每个 tab item → 等渲染 → 抓 active 的 pane 内容
+   * 校内 OJ 样例 (基于 DOM 结构 + 文本规则):
+   * 第二张 el-card 里有 div 含「输入样例N」/「输出样例N」当 header，紧跟 pre/div 是数据
+   * 找所有「输入样例N」「输出样例N」label 元素 → 找最近兄弟/父级里的 pre 取数据
    */
-  async function harvestSchoolOJSamples(main) {
-    // 直接读 — 已经渲染的（不一定有内容）
+  function harvestSchoolOJSamplesByText(mainContainer) {
     const samples = [];
-    const tabItems = [...main.querySelectorAll('.el-tabs__item')];
-    if (tabItems.length === 0) {
-      // 校内 OJ 没有 el-tabs，可能样例直接是 pre/code 块
-      // 找文字含「输入」「输出」「样例」的 pre
-      const pres = [...main.querySelectorAll('pre')];
-      for (const pre of pres) {
-        const ctx = pre.parentElement?.innerText?.slice(0, 100) || '';
-        if (/输入|输出|样例|sample|input|output/i.test(ctx)) {
-          samples.push({ label: ctx.slice(0, 30), text: pre.innerText.trim() });
-        }
-      }
-      return samples;
-    }
-
-    // 有 tabs：依次点击触发懒加载
-    const origActive = main.querySelector('.el-tabs__item.is-active');
-    for (const item of tabItems) {
-      const label = item.innerText.trim();
-      try {
-        item.click();
-        // 等渲染
-        await new Promise((r) => setTimeout(r, 100));
-        // 当前 active 的 pane
-        const activePane =
-          main.querySelector('.el-tab-pane[aria-hidden="false"]') ||
-          [...main.querySelectorAll('.el-tab-pane')].find((p) => p.style.display !== 'none' && p.innerText.trim()) ||
-          main.querySelector('.el-tabs__content .el-tab-pane');
-        if (activePane?.innerText?.trim()) {
-          samples.push({ label, text: activePane.innerText.trim() });
-        }
-      } catch {
-        /* ignore click failure */
-      }
-    }
-    // 恢复原 active
-    if (origActive) {
-      try { origActive.click(); } catch { /* ignore */ }
-    }
-    // 去重（同 label）
-    const seen = new Set();
-    return samples.filter((s) => {
-      if (seen.has(s.label)) return false;
-      seen.add(s.label);
-      return true;
+    // 找所有含「输入样例N」/「输出样例N」字眼的元素（精确到 leaf 节点）
+    const all = [...mainContainer.querySelectorAll('div, span, h3, h4, label, p')];
+    const headerEls = all.filter((el) => {
+      const t = el.innerText?.trim() || '';
+      // 不能太长（label 应短），不能含 pre 子元素（不是 leaf）
+      return t.length < 50 && /^(输入|输出)样例\s*\d+/.test(t) && el.querySelector('pre, .CodeMirror, [class*="line"]') === null;
     });
+
+    for (const header of headerEls) {
+      const label = header.innerText.trim();
+      // 在 header 父级或兄弟中找最近 pre / div.line / textarea
+      // 1) 先看父元素的下一个兄弟
+      let dataEl = null;
+      let cursor = header;
+      // 向父级回溯找包含 header + 数据的容器
+      for (let depth = 0; depth < 4 && cursor; depth++) {
+        const candidates = cursor.querySelectorAll('pre, .CodeMirror-code, [class*="content"], textarea');
+        for (const c of candidates) {
+          if (c !== header && !header.contains(c) && c.innerText?.trim() && c.innerText.length < 5000) {
+            dataEl = c;
+            break;
+          }
+        }
+        if (dataEl) break;
+        cursor = cursor.parentElement;
+      }
+      if (dataEl) {
+        const text = dataEl.innerText.replace(/\u200B/g, '').trim();
+        if (text) samples.push({ label, text });
+      }
+    }
+    return samples;
   }
 
   function buildSchoolOJMarkdown({ title, problemId, fullText, codeBlocks, sampleTabs }) {
