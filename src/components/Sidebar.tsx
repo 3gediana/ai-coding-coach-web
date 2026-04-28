@@ -5,6 +5,8 @@ import { cn } from '../lib/cn';
 import { Dashboard } from './Dashboard';
 import { getArea } from '../core/taxonomy';
 import { useMemo, useState } from 'react';
+import { ResizeHandle } from './ResizeHandle';
+import { usePersistedWidth } from '../lib/usePersistedWidth';
 
 type MistakeSort = 'recent' | 'review-due' | 'unreviewed';
 
@@ -23,6 +25,7 @@ export function Sidebar() {
   const markMistakeReviewed = useStore((s) => s.markMistakeReviewed);
 
   const [mistakeSort, setMistakeSort] = useState<MistakeSort>('recent');
+  const [panelWidth, setPanelWidth] = usePersistedWidth('aicc.layout.sidebarWidth', 320, 240, 700);
 
   // 错题 stats + 排序
   const mistakeStats = useMemo(() => {
@@ -113,12 +116,12 @@ export function Sidebar() {
           <motion.div
             key={tab}
             initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 320, opacity: 1 }}
+            animate={{ width: panelWidth, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
-            className="bg-bg border-r border-line overflow-hidden"
+            className="bg-bg border-r border-line overflow-hidden flex-shrink-0"
           >
-            <div className="w-[320px] h-full flex flex-col">
+            <div style={{ width: `${panelWidth}px` }} className="h-full flex flex-col">
               <div className="h-12 flex items-center justify-between px-4 border-b border-line">
                 <span className="font-semibold text-sm">
                   {items.find((i) => i.id === tab)?.label}
@@ -385,6 +388,16 @@ export function Sidebar() {
           </motion.div>
         )}
       </AnimatePresence>
+      {/* 分隔条：仅在 panel 展开时显示，VSCode 风格可拖拽 */}
+      {tab && (
+        <ResizeHandle
+          direction="right"
+          currentWidth={panelWidth}
+          onResize={setPanelWidth}
+          min={240}
+          max={700}
+        />
+      )}
     </div>
   );
 }

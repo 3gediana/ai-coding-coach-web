@@ -11,8 +11,11 @@ import {
 } from 'lucide-react';
 import { MathMarkdown } from './MathMarkdown';
 import { QAPanel } from './QAPanel';
+import { ResizeHandle } from './ResizeHandle';
+import { usePersistedWidth } from '../lib/usePersistedWidth';
 
 export function FeedbackPanel() {
+  const [width, setWidth] = usePersistedWidth('aicc.layout.feedbackWidth', 400, 280, 900);
   const activeProblemId = useStore((s) => s.activeProblemId);
   const analysisByProblem = useStore((s) => s.analysisByProblem);
   const tasks = useStore((s) => s.tasks);
@@ -36,7 +39,12 @@ export function FeedbackPanel() {
   );
 
   return (
-    <aside className="w-[400px] border-l border-line bg-bg flex flex-col min-h-0">
+    <>
+      <ResizeHandle direction="left" currentWidth={width} onResize={setWidth} min={280} max={900} />
+      <aside
+        className="border-l border-line bg-bg flex flex-col min-h-0 flex-shrink-0"
+        style={{ width: `${width}px` }}
+      >
       {/* Tab toolbar */}
       <div className="h-9 border-b border-line bg-bg-elev flex items-stretch text-xs">
         <button
@@ -116,7 +124,8 @@ export function FeedbackPanel() {
           ) : null}
         </div>
       )}
-    </aside>
+      </aside>
+    </>
   );
 }
 
