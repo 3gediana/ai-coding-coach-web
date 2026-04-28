@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.7
+// @version      0.2.8
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -152,6 +152,15 @@
       sampleRootTag: sampleRoot?.tagName || '',
       sampleRootInsideMain: !!sampleRoot && mainContainer.contains(sampleRoot),
       sampleRootText: sampleRoot?.innerText?.slice(0, 600).replace(/\n/g, '|') || '',
+      // sampleRoot 内 textarea / pre / [class*=content] 元素数量与首个内容
+      sampleRootDataEls: sampleRoot
+        ? [...sampleRoot.querySelectorAll('textarea, pre, [class*="content"], [class*="data"]')].slice(0, 10).map((e) => ({
+            tag: e.tagName,
+            cls: (e.className || '').slice(0, 60),
+            len: (e.value || e.innerText || '').length,
+            preview: (e.value || e.innerText || '').slice(0, 80).replace(/\n/g, '|'),
+          }))
+        : [],
       bodyTextSlice: document.body.innerText.slice(
         Math.max(0, document.body.innerText.indexOf('输入样例1') - 50),
         Math.max(0, document.body.innerText.indexOf('输入样例1') + 600),
@@ -230,41 +239,40 @@
       return true;
     });
 
-    for (const header of headerEls) {
-      const labelMatch = (header.firstChild?.nodeType === 3 ? header.firstChild.textContent : header.textContent).trim().match(/^(输入|输出)样例\s*\d+/);
-      const label = labelMatch ? labelMatch[0] : header.textContent.trim().slice(0, 20);
-
-      // 找数据：向父级回溯，每层在父级下查找 pre/CodeMirror-line/textarea/[class*="样例"]
-      let dataEl = null;
-      let cursor = header.parentElement;
-      for (let depth = 0; depth < 5 && cursor && !dataEl; depth++) {
-        // 在 cursor 内查找数据元素（排除 header 自己及其子树）
-        const cands = [
-          ...cursor.querySelectorAll('pre, textarea, [class*="content"], [class*="data"]'),
-        ];
-        for (const c of cands) {
-          if (header.contains(c) || c.contains(header)) continue;
-          const txt = (c.value || c.innerText || '').replace(/\u200B/g, '').trim();
-          // 数据应该不包含「输入样例」字眼（否则又匹到 label 区）
+    // 收集 sampleRoot 内所有数据候选元素（按 DOM 顺序）
+    const allDataEls = [];
+    {
+      const walker = document.createTreeWalker(sampleRoot, NodeFilter.SHOW_ELEMENT, null);
+      let node = walker.nextNode();
+      while (node) {
+        const tag = node.tagName;
+        const cls = node.className || '';
+        const isCandidate =
+          tag === 'TEXTAREA' ||
+          tag === 'PRE' ||
+          (typeof cls === 'string' && /content|data/i.test(cls));
+        if (isCandidate) {
+          const txt = (node.value || node.innerText || '').replace(/\u200B/g, '').trim();
           if (txt && txt.length < 2000 && !/输入样例|输出样例|样例查看/.test(txt)) {
-            dataEl = c;
-            break;
+            allDataEls.push(node);
           }
         }
-        cursor = cursor.parentElement;
+        node = walker.nextNode();
       }
+    }
+
+    // 按顺序与 headers 一一配对（headers[i] ↔ allDataEls[i]）
+    for (let i = 0; i < headerEls.length; i++) {
+      const header = headerEls[i];
+      const labelMatch = (header.firstChild?.nodeType === 3 ? header.firstChild.textContent : header.textContent).trim().match(/^(输入|输出)样例\s*\d+/);
+      const label = labelMatch ? labelMatch[0] : header.textContent.trim().slice(0, 20);
+      const dataEl = allDataEls[i];
       if (dataEl) {
         const text = (dataEl.value || dataEl.innerText || '').replace(/\u200B/g, '').trim();
-        samples.push({ label, text });
+        if (text) samples.push({ label, text });
       }
     }
-    // 去重（同 label 取最长）
-    const map = new Map();
-    for (const s of samples) {
-      const cur = map.get(s.label);
-      if (!cur || s.text.length > cur.text.length) map.set(s.label, s);
-    }
-    return [...map.values()];
+    return samples;
   }
 
   function buildSchoolOJMarkdown({ title, problemId, fullText, codeBlocks, sampleTabs }) {
