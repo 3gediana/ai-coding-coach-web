@@ -9,11 +9,8 @@ import {
   ExternalLink,
   MessageCircle,
 } from 'lucide-react';
-import { useState } from 'react';
 import { MathMarkdown } from './MathMarkdown';
 import { QAPanel } from './QAPanel';
-
-type Tab = 'analyze' | 'ask';
 
 export function FeedbackPanel() {
   const activeProblemId = useStore((s) => s.activeProblemId);
@@ -23,14 +20,15 @@ export function FeedbackPanel() {
   const problems = useStore((s) => s.problems);
   const qaByProblem = useStore((s) => s.qaByProblem);
   const qaPendingProblemId = useStore((s) => s.qaPendingProblemId);
+  // tab 状态升到 store：CodeEditor 框选「问 AI」时能从外面切到 ask
+  const tab = useStore((s) => s.feedbackTab);
+  const setTab = useStore((s) => s.setFeedbackTab);
 
   const key = activeProblemId ?? '__draft__';
   const result = analysisByProblem[key];
   const problem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
   const qaCount = (qaByProblem[key] ?? []).filter((m) => m.role === 'user').length;
   const qaActive = qaPendingProblemId === key;
-
-  const [tab, setTab] = useState<Tab>('analyze');
 
   // 找到正在跑的相关任务
   const runningAnalysis = tasks.find(

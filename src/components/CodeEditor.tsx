@@ -2,8 +2,8 @@ import Editor, { OnMount, type Monaco } from '@monaco-editor/react';
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
 import type { CodeIssue, FileLang } from '../core/types';
-import { motion } from 'framer-motion';
-import { Eye, Code2 } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Eye, Code2, MessageCircleQuestion, BookOpen, Bug } from 'lucide-react';
 import { cn } from '../lib/cn';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -41,6 +41,11 @@ export function CodeEditor() {
   const [mdPreview, setMdPreview] = useState(false);
   const isMd = file?.language === 'markdown';
   const showPreview = isMd && mdPreview;
+
+  // 框选「问 AI」浮按钮：选区非空且 ≥ 2 字符时浮起
+  const [askBtn, setAskBtn] = useState<{ x: number; y: number; text: string } | null>(null);
+  // 容器 ref：浮按钮的绝对定位用容器坐标系
+  const containerRef = useRef<HTMLDivElement>(null);
 
   // Monaco refs
   const editorRef = useRef<any>(null);
@@ -225,28 +230,80 @@ export function CodeEditor() {
       }
     });
 
-    // 粘贴检测：≥ 30 行触发提示
-    editor.onDidPaste((e: any) => {
-      try {
-        const range = e.range;
-        const lineCount = range.endLineNumber - range.startLineNumber + 1;
-        if (lineCount >= 30) {
-          const model = editor.getModel();
-          if (!model) return;
-          const snippet = model.getValueInRange(range);
-          // 只对代码文件（不是 markdown / plaintext）触发
-          const st = useStore.getState();
-          const scope = st.activeProblemId ?? '__draft__';
-          const fileId = st.activeFileIdByScope[scope];
-          const f = (st.filesByScope[scope] ?? []).find((x) => x.id === fileId);
-          if (!f) return;
-          if (f.language === 'markdown' || f.language === 'plaintext') return;
-          st.setPasteSuggestion({ snippet, lineCount });
-        }
-      } catch {
-        /* ignore */
+    // 框选「问 AI」：选区非空 → 浮按钮
+    editor.onDidChangeCursorSelection(() => {
+      const sel = editor.getSelection();
+      if (!sel || sel.isEmpty()) {
+        setAskBtn(null);
+        return;
       }
+      const model = editor.getModel();
+      if (!model) return;
+      const text = model.getValueInRange(sel);
+      // 太短 / markdown / plaintext 不触发
+      if (text.trim().length < 2) {
+        setAskBtn(null);
+        return;
+      }
+      const f = useStore.getState().filesByScope[
+        useStore.getState().activeProblemId ?? '__draft__'
+      ]?.find((x) => x.id === useStore.getState().activeFileIdByScope[
+        useStore.getState().activeProblemId ?? '__draft__'
+      ]);
+      if (f && (f.language === 'markdown' || f.language === 'plaintext')) {
+        setAskBtn(null);
+        return;
+      }
+      // 计算选区起点的视口坐标 → 转换到 container 坐标系
+      // 按钮浮在选区右上角（往上移 28px 避开光标）
+      const startLn = Math.min(sel.startLineNumber, sel.endLineNumber);
+      const startCol = sel.startLineNumber < sel.endLineNumber
+        ? sel.startColumn
+        : Math.min(sel.startColumn, sel.endColumn);
+      const pos = editor.getScrolledVisiblePosition({
+        lineNumber: startLn,
+        column: startCol,
+      });
+      const editorDom = editor.getDomNode();
+      const container = containerRef.current;
+      if (!pos || !editorDom || !container) return;
+      const editorRect = editorDom.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      // 容器坐标 = 视口坐标 - 容器视口左上
+      const x = editorRect.left - containerRect.left + pos.left + 8;
+      const y = editorRect.top - containerRect.top + pos.top - 30;
+      setAskBtn({ x, y, text });
     });
+
+    // 编辑器失焦也保留按钮（让用户能点）
+    // 但选区清空（点别处）会通过上面的 onDidChangeCursorSelection 自动隐藏
+  };
+
+  /**
+   * 框选浮按钮三种动作：
+   * - ask: 把代码 prefill 到输入框，让用户继续打具体问题
+   * - explain: 直接发预设"解释这段代码"问题，不需打字
+   * - bug:    直接发预设"找 bug"问题，不需打字
+   */
+  const handleAction = (action: 'ask' | 'explain' | 'bug') => {
+    if (!askBtn) return;
+    const lang = file?.language ?? '';
+    const codeBlock = `\`\`\`${lang}\n${askBtn.text}\n\`\`\``;
+    const st = useStore.getState();
+
+    if (action === 'ask') {
+      // prefill 到输入框，光标停在末尾，用户接着打具体问题
+      st.setAskPrefill(`关于这段代码：\n${codeBlock}\n\n`);
+    } else {
+      // 直接发预设问题，不打字
+      const presets: Record<'explain' | 'bug', string> = {
+        explain: `请简要解释下面这段代码在做什么 / 思路是什么：\n${codeBlock}`,
+        bug: `下面这段代码可能有什么 bug 或潜在问题？请指出最可能的 1-2 处：\n${codeBlock}`,
+      };
+      st.askQuestion(presets[action]);
+    }
+    st.setFeedbackTab('ask');
+    setAskBtn(null);
   };
 
   // 切文件 / 切题 → 重置 issues + decoration（避免行号错位）
@@ -325,7 +382,46 @@ export function CodeEditor() {
         )}
       </div>
 
-      <div className="flex-1 min-h-0 flex">
+      <div ref={containerRef} className="flex-1 min-h-0 flex relative">
+        {/* 框选浮按钮组：问 AI / 解释 / 找 bug */}
+        <AnimatePresence>
+          {askBtn && (
+            <motion.div
+              initial={{ opacity: 0, y: 4, scale: 0.92 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 4, scale: 0.92 }}
+              transition={{ duration: 0.12 }}
+              onMouseDown={(e) => e.preventDefault()} // 防止 monaco 失焦清选区
+              className="absolute z-30 flex items-stretch text-[11px] font-medium rounded-md shadow-lg overflow-hidden border border-line bg-bg-elev"
+              style={{ left: askBtn.x, top: Math.max(askBtn.y, 0) }}
+            >
+              <button
+                onClick={() => handleAction('ask')}
+                className="flex items-center gap-1 px-2 py-1 bg-accent text-bg hover:brightness-110 transition cursor-pointer"
+                title="把这段代码塞到输入框，自己写具体问题"
+              >
+                <MessageCircleQuestion size={11} />
+                问 AI
+              </button>
+              <button
+                onClick={() => handleAction('explain')}
+                className="flex items-center gap-1 px-2 py-1 text-ink hover:bg-cyan/15 hover:text-cyan transition cursor-pointer border-l border-line"
+                title="解释这段代码做什么"
+              >
+                <BookOpen size={11} />
+                解释
+              </button>
+              <button
+                onClick={() => handleAction('bug')}
+                className="flex items-center gap-1 px-2 py-1 text-ink hover:bg-bad/15 hover:text-bad transition cursor-pointer border-l border-line"
+                title="找出可能的 bug / 潜在问题"
+              >
+                <Bug size={11} />
+                找 bug
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
         {!showPreview && (
           <div className={cn('flex-1 min-w-0', isMd && mdPreview && 'border-r border-line')}>
             <Editor

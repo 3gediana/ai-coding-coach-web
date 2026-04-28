@@ -24,6 +24,8 @@ export function QAPanel() {
   const clearQA = useStore((s) => s.clearQA);
   const pending = useStore((s) => s.qaPendingProblemId);
   const aiOk = useStore((s) => !!s.aiConfig.apiKey);
+  const askPrefill = useStore((s) => s.askPrefill);
+  const setAskPrefill = useStore((s) => s.setAskPrefill);
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const messages = qaByProblem[scope] ?? [];
@@ -47,6 +49,20 @@ export function QAPanel() {
     ta.style.height = 'auto';
     ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
   }, [input]);
+
+  // 框选「问 AI」prefill：CodeEditor 通过 setAskPrefill 把代码段塞进来
+  useEffect(() => {
+    if (!askPrefill) return;
+    setInput(askPrefill);
+    // 让光标停在 prefill 末尾，方便用户继续输入问题
+    requestAnimationFrame(() => {
+      const ta = taRef.current;
+      if (!ta) return;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    });
+    setAskPrefill(null);
+  }, [askPrefill, setAskPrefill]);
 
   const onSubmit = () => {
     const q = input.trim();

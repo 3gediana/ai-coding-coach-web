@@ -11,7 +11,6 @@ import { CommandPalette } from './components/CommandPalette';
 import { DiffResultViewer } from './components/DiffResultViewer';
 import { SubmitResultModal } from './components/SubmitResultModal';
 import { StuckHintCard } from './components/StuckHintCard';
-import { PasteSuggestionChip } from './components/PasteSuggestionChip';
 import { RuntimePane } from './components/RuntimePane';
 import { useStore } from './lib/store';
 import { toast } from 'sonner';
@@ -55,7 +54,6 @@ export default function App() {
       <DiffResultViewer />
       <SubmitResultModal />
       <StuckHintCard />
-      <PasteSuggestionChip />
     </div>
   );
 }

@@ -172,7 +172,10 @@ interface State {
   lastHintAt: number;
   currentHint: string | null;
   stuckHintEnabled: boolean;
-  pasteSuggestion: { snippet: string; lineCount: number } | null;
+  /** QA 输入框预填字符串（CodeEditor 框选 "问 AI" 时把代码 prefill 到 QAPanel） */
+  askPrefill: string | null;
+  /** FeedbackPanel 当前 tab（'analyze' / 'ask'），升到 store 让外部能切 */
+  feedbackTab: 'analyze' | 'ask';
   /** 对拍：选中的两个 fileId */
   diffSelection: string[];
 
@@ -239,8 +242,8 @@ interface State {
   setStuckHintEnabled: (v: boolean) => void;
   dismissHint: () => void;
   enqueueStuckHint: () => string | null;
-  setPasteSuggestion: (s: { snippet: string; lineCount: number } | null) => void;
-  enqueueExplainPaste: () => string | null;
+  setAskPrefill: (s: string | null) => void;
+  setFeedbackTab: (t: 'analyze' | 'ask') => void;
 }
 
 // ============== 初始化 ==============
@@ -283,7 +286,12 @@ export function defaultCode(lang: FileLang): string {
   if (lang === 'plaintext') {
     return '';
   }
-  return `#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n    ios::sync_with_stdio(false);\n    cin.tie(nullptr);\n    \n    return 0;\n}\n`;
+  if (lang === 'c') {
+    // C 标准头文件，覆盖最常用的：IO / 内存 / 字符串 / 数学
+    return `#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <math.h>\n\nint main() {\n    \n    return 0;\n}\n`;
+  }
+  // cpp / 默认：显式列出常用 header（让学生看到具体用了什么）
+  return `#include <iostream>\n#include <vector>\n#include <string>\n#include <algorithm>\n#include <cmath>\n#include <cstring>\nusing namespace std;\n\nint main() {\n    \n    return 0;\n}\n`;
 }
 
 export function defaultFileName(lang: FileLang, existing: string[]): string {
@@ -454,7 +462,8 @@ export const useStore = create<State>((set, get) => {
     lastHintAt: 0,
     currentHint: null,
     stuckHintEnabled: localStorage.getItem('aicc.stuckHint.v1') !== 'off',
-    pasteSuggestion: null,
+    askPrefill: null,
+    feedbackTab: 'analyze',
     diffSelection: [],
 
     setAIConfig: (cfg) => {
@@ -1217,38 +1226,9 @@ export const useStore = create<State>((set, get) => {
       });
     },
 
-    // ───── 粘贴提示 ─────
-    setPasteSuggestion: (s) => set({ pasteSuggestion: s }),
-    enqueueExplainPaste: () => {
-      const st = get();
-      if (!st.aiConfig.apiKey) {
-        toast.error('请先配置 AI');
-        set({ settingsOpen: true });
-        return null;
-      }
-      const sug = st.pasteSuggestion;
-      if (!sug) return null;
-      const problem = st.activeProblemId
-        ? st.problems.find((p) => p.id === st.activeProblemId)
-        : null;
-      // 取当前活跃文件语言
-      const scope = st.activeProblemId ?? DRAFT_SCOPE;
-      const fileId = st.activeFileIdByScope[scope];
-      const file = (st.filesByScope[scope] ?? []).find((f) => f.id === fileId);
-      const lang: Lang = file ? langOfFile(file.language) : 'cpp';
-
-      set({ pasteSuggestion: null });
-      return enqueue('explain-paste', `解释粘贴段（${sug.lineCount} 行）`, {
-        run: (onChunk, onRetry, signal) =>
-          get().coach.explainPaste(
-            { problem: problem ?? undefined, snippet: sug.snippet, language: lang },
-            { onChunk, onRetry, signal },
-          ),
-        onSuccess: () => {
-          toast.success('粘贴段解释已生成（看任务托盘）');
-        },
-      });
-    },
+    // ───── 框选问 AI / FeedbackPanel tab ─────
+    setAskPrefill: (s) => set({ askPrefill: s }),
+    setFeedbackTab: (t) => set({ feedbackTab: t }),
   };
 });
 
@@ -1327,7 +1307,7 @@ if (typeof window !== 'undefined') {
     s.setCmdPaletteOpen(false);
     s.setSubmitModalOpen(false);
     s.dismissHint();
-    s.setPasteSuggestion(null);
+    s.setAskPrefill(null);
     // 不清 diffSelection，避免 e2e 测试连锁失败
   };
 }
