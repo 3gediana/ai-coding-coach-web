@@ -9,7 +9,8 @@
  */
 import { useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Target, BookOpen, Sparkles } from 'lucide-react';
+import { X, Target, Sparkles } from 'lucide-react';
+import { toast } from 'sonner';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import type { LearningCard } from '../core/recommend';
@@ -59,7 +60,18 @@ export function LearningEngineCard() {
       return;
     }
     if (card.action.type === 'open-problem') {
-      await setActiveProblem(card.action.problemId);
+      const pid = card.action.problemId;
+      await setActiveProblem(pid);
+      // 复习模式联动：如果这题在错题本里有未复习，浮 toast 显示错因 + 提示「AC 即为复习」
+      if (card.kind === 'review-mistakes') {
+        const m = mistakes.find((x) => x.problemId === pid && !x.reviewedAt);
+        if (m) {
+          toast.info(`📝 复习模式：${m.problemTitle}`, {
+            description: `上次错因：${m.rootCause}\n提交 AC 后会自动标记已复习`,
+            duration: 8000,
+          });
+        }
+      }
       return;
     }
     if (card.action.type === 'add-bank') {

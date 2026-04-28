@@ -992,6 +992,22 @@ export const useStore = create<State>((set, get) => {
             toast.success(`已加入错题本：${m.category}`);
           } else {
             toast.success(`已总结知识点`);
+            // 错题本联动：这题之前如果在错题本里且未复习 → 自动标记
+            // 真正的"复习"不是手动按按钮，是 AC 通过
+            const related = get().mistakes.filter(
+              (m) => m.problemId === problem.id && !m.reviewedAt,
+            );
+            for (const m of related) {
+              await get().markMistakeReviewed(m.id);
+            }
+            if (related.length > 0) {
+              toast.success(`✨ 自动标记 ${related.length} 条错题已复习`, {
+                description: 'AC 即为有效复习',
+                duration: 4000,
+              });
+              // 同步刷新学习引擎（复习率会改变）
+              get().refreshLearningEngine();
+            }
           }
         },
       });
@@ -1107,12 +1123,20 @@ export const useStore = create<State>((set, get) => {
       await get().refreshMistakes();
     },
     markMistakeReviewed: async (id) => {
-      const m = await storage.getMistake(id);
+      // 先从 store 取（避免 storage 异步不一致 + 测试场景兼容）
+      let m = get().mistakes.find((x) => x.id === id);
+      if (!m) m = await storage.getMistake(id);
       if (!m) return;
-      m.reviewedAt = Date.now();
-      m.reviewCount = (m.reviewCount ?? 0) + 1;
-      await storage.saveMistake(m);
-      await get().refreshMistakes();
+      const updated: Mistake = {
+        ...m,
+        reviewedAt: Date.now(),
+        reviewCount: (m.reviewCount ?? 0) + 1,
+      };
+      await storage.saveMistake(updated);
+      // 直接 patch store 立刻反映（不靠 refreshMistakes 重新拉一遍）
+      set((s) => ({
+        mistakes: s.mistakes.map((x) => (x.id === id ? updated : x)),
+      }));
     },
 
     setSidebarTab: (t) => set({ sidebarTab: t }),
