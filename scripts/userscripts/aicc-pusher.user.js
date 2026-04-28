@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.3
+// @version      0.2.4
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -129,15 +129,30 @@
       return { lang, text: pre.innerText.trim() };
     });
 
-    // 抽样例：el-tabs 结构（每个 tab-pane 的内容都拼起来）
-    // 校内 OJ 样例位于 .el-tabs__content > .el-tab-pane（即使 hidden 也在 DOM）
-    const sampleTabs = [...main.querySelectorAll('.el-tabs__content .el-tab-pane')].map((pane) => {
-      // pane 标题对应的 tab item
-      const idx = [...pane.parentElement.children].indexOf(pane);
-      const tabItem = main.querySelectorAll('.el-tabs__item')[idx];
-      const label = tabItem?.innerText?.trim() || `样例${idx + 1}`;
-      return { label, text: pane.innerText.trim() };
-    });
+    // 抽样例：先尝试 el-tabs__content，再点击所有 tab item 触发懒加载
+    const sampleTabs = await harvestSchoolOJSamples(main);
+
+    // 诊断：抓所有可能含样例的元素，方便定位
+    const schoolOJDebug = {
+      hasElTabs: main.querySelectorAll('.el-tabs').length,
+      hasElTabPane: main.querySelectorAll('.el-tab-pane').length,
+      hasElTabsItem: main.querySelectorAll('.el-tabs__item').length,
+      tabItemTexts: [...main.querySelectorAll('.el-tabs__item')].map((e) => e.innerText.trim().slice(0, 40)),
+      preCount: main.querySelectorAll('pre').length,
+      preList: [...main.querySelectorAll('pre')].map((e) => ({
+        cls: e.className.slice(0, 60),
+        text: e.innerText.slice(0, 80),
+      })),
+      sampleSelectors: [
+        '[class*="sample"]',
+        '[class*="example"]',
+        '[class*="case"]',
+      ].map((sel) => ({
+        sel,
+        count: main.querySelectorAll(sel).length,
+        first: main.querySelector(sel)?.className?.slice(0, 60) || '',
+      })),
+    };
 
     // url 加题号，避免同一 contest 多道题被去重覆盖
     const url = problemId ? `${location.href}#problem-${problemId}` : location.href;
@@ -166,8 +181,63 @@
         rawInnerText: fullText,
         codeBlocks,
         sampleTabs,
+        schoolOJDebug,
       },
     };
+  }
+
+  /**
+   * 校内 OJ 样例 tab 通常用 el-tabs 懒加载：未点击的 pane 内容不在 DOM
+   * 策略：依次点击每个 tab item → 等渲染 → 抓 active 的 pane 内容
+   */
+  async function harvestSchoolOJSamples(main) {
+    // 直接读 — 已经渲染的（不一定有内容）
+    const samples = [];
+    const tabItems = [...main.querySelectorAll('.el-tabs__item')];
+    if (tabItems.length === 0) {
+      // 校内 OJ 没有 el-tabs，可能样例直接是 pre/code 块
+      // 找文字含「输入」「输出」「样例」的 pre
+      const pres = [...main.querySelectorAll('pre')];
+      for (const pre of pres) {
+        const ctx = pre.parentElement?.innerText?.slice(0, 100) || '';
+        if (/输入|输出|样例|sample|input|output/i.test(ctx)) {
+          samples.push({ label: ctx.slice(0, 30), text: pre.innerText.trim() });
+        }
+      }
+      return samples;
+    }
+
+    // 有 tabs：依次点击触发懒加载
+    const origActive = main.querySelector('.el-tabs__item.is-active');
+    for (const item of tabItems) {
+      const label = item.innerText.trim();
+      try {
+        item.click();
+        // 等渲染
+        await new Promise((r) => setTimeout(r, 100));
+        // 当前 active 的 pane
+        const activePane =
+          main.querySelector('.el-tab-pane[aria-hidden="false"]') ||
+          [...main.querySelectorAll('.el-tab-pane')].find((p) => p.style.display !== 'none' && p.innerText.trim()) ||
+          main.querySelector('.el-tabs__content .el-tab-pane');
+        if (activePane?.innerText?.trim()) {
+          samples.push({ label, text: activePane.innerText.trim() });
+        }
+      } catch {
+        /* ignore click failure */
+      }
+    }
+    // 恢复原 active
+    if (origActive) {
+      try { origActive.click(); } catch { /* ignore */ }
+    }
+    // 去重（同 label）
+    const seen = new Set();
+    return samples.filter((s) => {
+      if (seen.has(s.label)) return false;
+      seen.add(s.label);
+      return true;
+    });
   }
 
   function buildSchoolOJMarkdown({ title, problemId, fullText, codeBlocks, sampleTabs }) {
