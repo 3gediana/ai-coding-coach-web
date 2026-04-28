@@ -277,15 +277,25 @@ export default defineConfig({
       },
     },
     {
-      // ========== Tampermonkey 题目导入接收端 ==========
+      // ========== Tampermonkey 题目导入接收端 + Node 端 sam 处理 ==========
       // 流程：
-      //   TM 脚本（在 educoder/校内 OJ 页面）抓题面 → POST /__import → JSON
-      //   AI Coach 前端订阅 GET /__import-sse → 收到 → 调用 store.handleImport
+      //   1. TM POST /__import → 落盘 logs/imports/<ts>.raw.json
+      //   2. 立即响应 200（TM 早返回，不等处理）
+      //   3. 异步调 importProcessor.processImportFile（Node 端调 ollama sam）
+      //   4. 处理完写 logs/imports/<ts>.processed.json
+      //   5. SSE 推 processed payload 给前端 → 前端入库（不再调 AI）
       //
-      // 跨域：CORS 全开（仅 dev 环境，不暴露到 production）
-      // 队列：SSE 未连时入队，连接后批量推。最多保留 50 条避免内存泄漏
+      // 这样：
+      //   - 处理逻辑在 Node 端，稳定可观测（log + 落盘文件可重放）
+      //   - 浏览器没刷新也能调试（看 .processed.json 文件即可）
+      //   - sam keep_alive=0 由 Node 端 finally 块统一管理
+      //
+      // 跨域：CORS 全开（仅 dev 环境）。SSE 未连时入队避免数据丢失
       name: 'aicc-import-receiver',
-      configureServer(server) {
+      async configureServer(server) {
+        // 动态 import Node 端 processor（避免 vite 试图把它当 client 模块打包）
+        // @ts-expect-error - .mjs 没 d.ts，运行时 ESM 加载
+        const { processImportFile } = await import('./scripts/server/importProcessor.mjs');
         type ImportPayload = {
           source: string;
           url: string;
@@ -328,38 +338,57 @@ export default defineConfig({
                 res.end(JSON.stringify({ error: 'missing url/source' }));
                 return;
               }
-              // 1. 落盘：永远写一份到 logs/imports/，方便测试 / debug / 重放
-              let savedPath: string | null = null;
+              // 1. 落盘 raw 文件
+              let rawPath: string | null = null;
               try {
                 const dir = pathResolve(process.cwd(), 'logs', 'imports');
                 mkdirSync(dir, { recursive: true });
                 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
                 const safeSource = String(payload.source).replace(/[^\w-]/g, '_');
-                const fname = `${ts}_${safeSource}.json`;
-                savedPath = pathResolve(dir, fname);
-                writeFileSync(savedPath, JSON.stringify(payload, null, 2), 'utf8');
+                const fname = `${ts}_${safeSource}.raw.json`;
+                rawPath = pathResolve(dir, fname);
+                writeFileSync(rawPath, JSON.stringify(payload, null, 2), 'utf8');
               } catch (err: any) {
                 console.warn(`\x1b[31m[aicc-import]\x1b[0m 落盘失败: ${err?.message}`);
-              }
-              // 2. 推送给所有在线客户端
-              const msg = `data: ${JSON.stringify(payload)}\n\n`;
-              let pushed = 0;
-              for (const c of sseClients) {
-                try { c.write(msg); pushed++; } catch { /* ignore */ }
-              }
-              // 没在线客户端 → 入队（下次连接时一次性推）
-              if (pushed === 0) {
-                queue.push(payload);
-                if (queue.length > 50) queue.shift();
               }
               const sizeKB = (text.length / 1024).toFixed(1);
               const imgN = payload.images?.length ?? 0;
               console.log(
-                `\x1b[36m[aicc-import]\x1b[0m ${payload.source} ${payload.title?.slice(0, 30) ?? '(无标题)'} (${sizeKB} KB, ${imgN} 图) → ${pushed > 0 ? `推送 ${pushed}` : '入队'}${savedPath ? ` · 落盘 ${savedPath.split(/[\\\/]/).pop()}` : ''}`,
+                `\x1b[36m[aicc-import]\x1b[0m ${payload.source} ${payload.title?.slice(0, 30) ?? '(无标题)'} (${sizeKB} KB, ${imgN} 图) ${rawPath ? `· raw 落盘 ${rawPath.split(/[\\\/]/).pop()}` : ''}`,
               );
+
+              // 2. 立即响应 200，让 TM 早返回（不等 sam 处理）
               res.statusCode = 200;
               res.setHeader('content-type', 'application/json');
-              res.end(JSON.stringify({ ok: true, pushed, queued: queue.length }));
+              res.end(JSON.stringify({ ok: true, rawPath: rawPath?.split(/[\\\/]/).pop() }));
+
+              // 3. 异步：Node 端处理（sam 识图 + 卸载）→ SSE 推 processed payload
+              if (rawPath) {
+                processImportFile(rawPath)
+                  .then((result: { processedPath: string; payload: ImportPayload }) => {
+                    const processed = result.payload;
+                    const msg = `data: ${JSON.stringify(processed)}\n\n`;
+                    let pushed = 0;
+                    for (const c of sseClients) {
+                      try { c.write(msg); pushed++; } catch { /* ignore */ }
+                    }
+                    if (pushed === 0) {
+                      queue.push(processed);
+                      if (queue.length > 50) queue.shift();
+                    }
+                    console.log(
+                      `\x1b[36m[aicc-import]\x1b[0m processed → ${pushed > 0 ? `推送 ${pushed}` : '入队'} · ${result.processedPath.split(/[\\\/]/).pop()}`,
+                    );
+                  })
+                  .catch((err: any) => {
+                    console.error(`\x1b[31m[aicc-import]\x1b[0m processor 失败: ${err?.message || err}`);
+                    // 失败也推 raw payload 让前端有反馈
+                    const msg = `data: ${JSON.stringify(payload)}\n\n`;
+                    for (const c of sseClients) {
+                      try { c.write(msg); } catch { /* ignore */ }
+                    }
+                  });
+              }
             } catch (e: any) {
               res.statusCode = 400;
               res.setHeader('content-type', 'application/json');
