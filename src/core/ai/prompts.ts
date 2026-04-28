@@ -10,14 +10,17 @@ import type { AnalysisHistoryEntry, Lang, LearnerProfile, Problem } from '../typ
 import { serializeForPrompt as serializeTaxonomy } from '../taxonomy';
 import { codeHash } from '../utils';
 
+/** 通用风格基线，**不绑定输出格式**（JSON 指令应放在具体任务的 prompt 里） */
 export const SYSTEM_CODING_COACH = `你是一位资深的算法竞赛教练和编程导师，专注于辅导大学生学习 C++ 和 Python。
 
 你的风格：
 - 直接、犀利、不说废话
 - 优先指出最关键的问题（按严重程度排序）
 - 给出可执行的具体修改建议，不空谈
-- 复杂度分析必须给出 Big-O 表达式
-- 输出严格使用 JSON 格式，不包含 \`\`\`json 标记或任何额外文字`;
+- 复杂度分析必须给出 Big-O 表达式`;
+
+/** JSON 输出指令：要 JSON 输出的任务自己拼接到 system 末尾 */
+export const SYSTEM_JSON_OUTPUT = `\n\n输出严格使用 JSON 格式，不包含 \`\`\`json 标记或任何额外文字。`;
 
 interface PromptPair {
   system: string;
@@ -68,7 +71,7 @@ export function buildExplainPastePrompt(args: {
     ? `当前题目：${args.problem.title}\n${args.problem.statement}\n\n`
     : '当前没有激活题目。\n\n';
   return {
-    system: SYSTEM_CODING_COACH,
+    system: SYSTEM_CODING_COACH + SYSTEM_JSON_OUTPUT,
     user: `${ctx}学生粘贴了下面的 ${args.language} 代码片段：
 
 \`\`\`${args.language}
@@ -107,13 +110,64 @@ const verdictHintMap: Record<string, string> = {
  * @param question  学生的具体问题
  * @param history   之前的 Q&A（最多带最近 4 轮），让追问能上下文延续
  */
+/**
+ * 把学生问题分成 3 类，不同类型不同长度策略：
+ *   - concept    "什么是 X" / 介绍概念    → 篇幅长，要解释 + 举例
+ *   - reasoning  "为什么 X" / 对比 / 推理 → 中等，逐步推理
+ *   - operation  "怎么写 / 找 bug / 修"   → 极短，1-2 点直击
+ */
+export type AskQuestionKind = 'concept' | 'reasoning' | 'operation';
+
+export function classifyAskQuestion(q: string): AskQuestionKind {
+  // 概念问题：什么是 / 什么叫 / 介绍 / 定义 / 区别 / 含义
+  if (/什么是|什么叫|介绍.*?概念|.*?定义|.*?含义|什么意思|怎么理解/.test(q)) {
+    return 'concept';
+  }
+  // 推理问题：为什么 / 为啥 / 比较 / 优劣 / 区别 / 何时
+  if (/为什么|为啥|比较|区别|对比|优劣|哪种|什么时候|何时|为何/.test(q)) {
+    return 'reasoning';
+  }
+  // 默认操作类：怎么写 / 怎么改 / 找 bug / 解释这段 / 修复
+  return 'operation';
+}
+
+/** 每类的 maxTokens 和 system 指令 */
+const ASK_PROFILES: Record<
+  AskQuestionKind,
+  { maxTokens: number; lengthInstruction: string }
+> = {
+  concept: {
+    maxTokens: 1500,
+    lengthInstruction:
+      '这是概念解释题，可以详细讲：先给定义（1 句），再举例 1-2 个，再点拨如何用到当前题目。**400 字以内**。',
+  },
+  reasoning: {
+    maxTokens: 1000,
+    lengthInstruction:
+      '这是推理 / 对比题，逐步分析关键差异。**300 字以内**，重点突出。',
+  },
+  operation: {
+    maxTokens: 600,
+    lengthInstruction:
+      '这是具体操作题（怎么改 / 找 bug / 修），**150 字以内**，直接给 1-2 个最关键的点。',
+  },
+};
+
 export function buildAskQuestionPrompt(args: {
   problem?: Problem;
   code?: string;
   language?: Lang;
   question: string;
   history?: { role: 'user' | 'assistant'; content: string }[];
-}): { system: string; messages: { role: 'system' | 'user' | 'assistant'; content: string }[] } {
+}): {
+  system: string;
+  messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
+  kind: AskQuestionKind;
+  maxTokens: number;
+} {
+  const kind = classifyAskQuestion(args.question);
+  const profile = ASK_PROFILES[kind];
+
   const ctxLines: string[] = [];
   if (args.problem) {
     ctxLines.push(`# 当前题目：${args.problem.title}`);
@@ -138,9 +192,8 @@ export function buildAskQuestionPrompt(args: {
 学生在做题过程中向你提问。你的任务：
 - **结合上面给出的题目和代码**回答学生的具体问题
 - 不要直接给出完整 AC 代码（学生在学习），可以给伪代码、片段、或思路引导
-- 如果学生卡在某个知识点（什么是单调队列 / DP 怎么转移 / 这种数据范围用什么算法），先讲清楚概念，再点拨如何套用到当前题目
 - 用 markdown，可以用 \`code\` / 列表 / **粗体**
-- 中文回答，**严格控制在 200 字以内**。先给最关键的 1-2 点，详细展开请学生追问。
+- ${profile.lengthInstruction}
 - 不要把所有可能的相关知识都列出来。**只针对学生具体的问题**给最直接的回答。`;
 
   const ctx = ctxLines.join('\n\n');
@@ -155,7 +208,7 @@ export function buildAskQuestionPrompt(args: {
   }
   messages.push({ role: 'user', content: args.question });
 
-  return { system, messages };
+  return { system, messages, kind, maxTokens: profile.maxTokens };
 }
 
 export function buildParseProblemPrompt(rawText: string): PromptPair {
@@ -245,7 +298,7 @@ ${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTR
   const currentHash = codeHash(args.code).slice(0, 6);
 
   return {
-    system: SYSTEM_CODING_COACH,
+    system: SYSTEM_CODING_COACH + SYSTEM_JSON_OUTPUT,
     user: `${problemContext}
 ${profileBlock}
 ${historyBlock}
@@ -437,7 +490,7 @@ export function buildSummarizePrompt(args: {
       ? verdictHintMap[args.verdict] ?? `提交结果：${args.verdict}`
       : '';
     return {
-      system: SYSTEM_CODING_COACH,
+      system: SYSTEM_CODING_COACH + SYSTEM_JSON_OUTPUT,
       user: `学生在以下题目上出错了，请输出错题分析。
 
 题目：${args.problem.title}
@@ -473,7 +526,7 @@ ${serializeTaxonomy()}
   }
 
   return {
-    system: SYSTEM_CODING_COACH,
+    system: SYSTEM_CODING_COACH + SYSTEM_JSON_OUTPUT,
     user: `学生通过了以下题目，请输出知识点总结。
 
 题目：${args.problem.title}

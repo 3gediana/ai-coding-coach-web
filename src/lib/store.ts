@@ -21,6 +21,7 @@ import type {
   Lang,
   LearnerProfile,
   Mistake,
+  OnboardingStep,
   Problem,
   Session,
   SubmissionVerdict,
@@ -176,6 +177,8 @@ interface State {
   askPrefill: string | null;
   /** FeedbackPanel 当前 tab（'analyze' / 'ask'），升到 store 让外部能切 */
   feedbackTab: 'analyze' | 'ask';
+  /** Onboarding 当前步骤 */
+  onboardingStep: OnboardingStep;
   /** 对拍：选中的两个 fileId */
   diffSelection: string[];
 
@@ -244,6 +247,14 @@ interface State {
   enqueueStuckHint: () => string | null;
   setAskPrefill: (s: string | null) => void;
   setFeedbackTab: (t: 'analyze' | 'ask') => void;
+
+  // Onboarding actions
+  /** 启动 onboarding：注入 demo 题 + bug 代码 → 切到 wait-analyze */
+  startOnboarding: () => Promise<void>;
+  /** 推进到下一步（参数指定到哪步） */
+  advanceOnboarding: (to: OnboardingStep) => void;
+  /** 用户跳过 / 完成 → idle 并标记 done 到 localStorage */
+  finishOnboarding: () => void;
 }
 
 // ============== 初始化 ==============
@@ -461,9 +472,12 @@ export const useStore = create<State>((set, get) => {
     lastEditAt: Date.now(),
     lastHintAt: 0,
     currentHint: null,
-    stuckHintEnabled: localStorage.getItem('aicc.stuckHint.v1') !== 'off',
+    // 卡住引导默认 OFF（学生想认真思考时不被打扰；用 TopBar 的「求助」按钮主动召唤）
+    stuckHintEnabled: localStorage.getItem('aicc.stuckHint.v1') === 'on',
     askPrefill: null,
     feedbackTab: 'analyze',
+    // Onboarding：localStorage 已标记完成 → idle；否则 wait-analyze 状态会在 App 启动时由触发器决定是否进 inject
+    onboardingStep: localStorage.getItem('aicc.onboarding.v1') === 'done' ? 'idle' : 'idle',
     diffSelection: [],
 
     setAIConfig: (cfg) => {
@@ -1229,6 +1243,84 @@ export const useStore = create<State>((set, get) => {
     // ───── 框选问 AI / FeedbackPanel tab ─────
     setAskPrefill: (s) => set({ askPrefill: s }),
     setFeedbackTab: (t) => set({ feedbackTab: t }),
+
+    // ───── Onboarding ─────
+    startOnboarding: async () => {
+      // 注入 Two Sum demo 题 + 故意 bug 代码
+      const problemId = '__onboarding_two_sum__';
+      const fileId = '__onboarding_main__';
+      const now = Date.now();
+      const demoProblem: Problem = {
+        id: problemId,
+        title: '两数之和（入门）',
+        statement:
+          '给定整数数组 nums 和目标 target，找出使得它们之和等于 target 的两个不同下标 i, j（i < j），输出 i 和 j。\n如果有多组解，输出任意一组即可。',
+        constraints: '2 ≤ n ≤ 1000\n-10⁹ ≤ nums[i] ≤ 10⁹\n保证至少有一组解',
+        examples: [
+          { input: '4 9\n2 7 11 15', output: '0 1', explanation: 'nums[0]+nums[1] = 2+7 = 9' },
+        ],
+        tags: ['数组', '入门'],
+        difficulty: 'easy',
+        createdAt: now,
+      };
+      // 故意有 bug 的初始代码：j <= n 越界
+      const buggyCode = `#include <iostream>
+#include <vector>
+using namespace std;
+
+int main() {
+    int n, target;
+    cin >> n >> target;
+    vector<int> nums(n);
+    for (int i = 0; i < n; i++) cin >> nums[i];
+
+    // 暴力枚举所有 (i, j) 对
+    for (int i = 0; i < n; i++) {
+        for (int j = i + 1; j <= n; j++) {  // ← bug 在这里
+            if (nums[i] + nums[j] == target) {
+                cout << i << " " << j << endl;
+                return 0;
+            }
+        }
+    }
+    return 0;
+}
+`;
+      await storage.saveProblem(demoProblem);
+      set((st) => ({
+        problems: [demoProblem, ...st.problems.filter((p) => p.id !== problemId)],
+        activeProblemId: problemId,
+        filesByScope: {
+          ...st.filesByScope,
+          [problemId]: [
+            {
+              id: fileId,
+              problemId,
+              name: 'main.cpp',
+              language: 'cpp',
+              content: buggyCode,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        },
+        activeFileIdByScope: { ...st.activeFileIdByScope, [problemId]: fileId },
+        sidebarTab: null,
+        feedbackTab: 'analyze',
+        onboardingStep: 'wait-analyze',
+      }));
+      toast.info('👋 跟我做一遍 Two Sum，3 步看完核心流程', {
+        description: '点高亮的「分析代码」按钮开始',
+        duration: 5000,
+      });
+    },
+
+    advanceOnboarding: (to) => set({ onboardingStep: to }),
+
+    finishOnboarding: () => {
+      localStorage.setItem('aicc.onboarding.v1', 'done');
+      set({ onboardingStep: 'idle' });
+    },
   };
 });
 

@@ -12,12 +12,14 @@ import { DiffResultViewer } from './components/DiffResultViewer';
 import { SubmitResultModal } from './components/SubmitResultModal';
 import { StuckHintCard } from './components/StuckHintCard';
 import { RuntimePane } from './components/RuntimePane';
+import { OnboardingOverlay } from './components/OnboardingOverlay';
 import { useStore } from './lib/store';
 import { toast } from 'sonner';
 
 export default function App() {
   const aiConfig = useStore((s) => s.aiConfig);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const startOnboarding = useStore((s) => s.startOnboarding);
 
   useEffect(() => {
     if (!aiConfig.apiKey) {
@@ -29,6 +31,14 @@ export default function App() {
         },
         duration: 8000,
       });
+      return;
+    }
+    // 已配置 AI 且没完成过 onboarding → 1.5s 后启动引导
+    if (localStorage.getItem('aicc.onboarding.v1') !== 'done') {
+      const t = setTimeout(() => {
+        void startOnboarding();
+      }, 1500);
+      return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -54,6 +64,7 @@ export default function App() {
       <DiffResultViewer />
       <SubmitResultModal />
       <StuckHintCard />
+      <OnboardingOverlay />
     </div>
   );
 }

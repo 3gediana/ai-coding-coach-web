@@ -210,7 +210,8 @@ export class Coach {
     },
     opts: StreamOpts = {},
   ): Promise<string> {
-    const { messages } = buildAskQuestionPrompt(args);
+    // 问题分类决定 maxTokens 和 system 指令长度
+    const { messages, maxTokens, kind } = buildAskQuestionPrompt(args);
     // 路由：长问题 / 复杂题 → 主云端
     const { client } = this.pick({
       taskKind: 'ask',
@@ -219,11 +220,13 @@ export class Coach {
       codeLineCount: args.code?.split('\n').length,
       questionLength: args.question.length,
     });
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(`[Ask Kind] ${kind} → maxTokens ${maxTokens}`);
+    }
     let acc = '';
     for await (const _ of client.chatStream({
       messages,
-      // 200 字中文 ≈ 400 token，给 800 留 markdown 语法 + 短代码片段空间
-      maxTokens: 800,
+      maxTokens,
       temperature: 0.4,
       ...opts,
       onChunk: (delta, accumulated) => {

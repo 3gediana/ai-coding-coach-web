@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { useEffect } from 'react';
-import { Settings, Sparkles, Plus, Play, CheckCircle2, PlayCircle, Library } from 'lucide-react';
+import { Settings, Sparkles, Plus, Play, CheckCircle2, PlayCircle, Library, Lightbulb } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { isRuntimeSupported } from '../lib/runtime';
@@ -27,6 +27,7 @@ export function TopBar() {
   const setSubmitModalOpen = useStore((s) => s.setSubmitModalOpen);
   const setRuntimePaneOpen = useStore((s) => s.setRuntimePaneOpen);
   const enqueueAnalyze = useStore((s) => s.enqueueAnalyze);
+  const enqueueStuckHint = useStore((s) => s.enqueueStuckHint);
   const activeProblemId = useStore((s) => s.activeProblemId);
   const problems = useStore((s) => s.problems);
   const filesByScope = useStore((s) => s.filesByScope);
@@ -130,8 +131,21 @@ export function TopBar() {
         <PlayCircle size={15} />
       </button>
 
+      {/* 求助：苏格拉底引导（学生主动按，不打扰） */}
+      {activeProblemId && (
+        <button
+          onClick={() => enqueueStuckHint()}
+          className="btn-ghost hover:!text-warn"
+          disabled={!canAnalyze}
+          title="卡住了？让 AI 给 1-2 个苏格拉底问题（不直接给答案）"
+        >
+          <Lightbulb size={15} />
+        </button>
+      )}
+
       {/* 主操作：分析代码（唯一 primary，视觉焦点） */}
       <button
+        data-onboarding="analyze"
         onClick={() => enqueueAnalyze({ reason: 'manual' })}
         className="btn-primary"
         disabled={!canAnalyze}

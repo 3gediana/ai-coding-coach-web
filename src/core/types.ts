@@ -204,6 +204,14 @@ export interface AIConfig {
   };
 }
 
+/** Onboarding 状态：首次启动引导学生走一遍核心流程 */
+export type OnboardingStep =
+  | 'idle'           // 已完成或被跳过
+  | 'inject'         // 正在注入 demo 题（瞬间过）
+  | 'wait-analyze'   // 高亮「分析代码」按钮，等学生点
+  | 'wait-edit'      // 高亮 AI 批注，等学生改代码
+  | 'celebrate';     // 完成后 3 秒庆祝 toast
+
 /** 时间状态机的 5 个状态 */
 export type TriggerState = 'CODING' | 'THINKING' | 'STUCK' | 'AWAY' | 'RETURNED';
 
