@@ -12,7 +12,9 @@ export function ProblemEditorModal() {
   const open = useStore((s) => s.problemEditorOpen);
   const setOpen = useStore((s) => s.setProblemEditorOpen);
   const enqueueParseProblem = useStore((s) => s.enqueueParseProblem);
-  const aiOk = useStore((s) => !!s.aiConfig.apiKey);
+  const aiOk = useStore((s) =>
+    s.aiConfig.provider === 'ollama' ? !!s.aiConfig.baseUrl : !!s.aiConfig.apiKey,
+  );
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
 
   const [text, setText] = useState('');

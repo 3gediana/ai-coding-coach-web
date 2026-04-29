@@ -29,7 +29,7 @@ export function StuckHintCard() {
       const st = useStore.getState();
       if (!st.stuckHintEnabled) return;
       if (!st.activeProblemId) return;
-      if (!st.aiConfig.apiKey) return;
+      if (st.aiConfig.provider === 'ollama' ? !st.aiConfig.baseUrl : !st.aiConfig.apiKey) return;
       if (st.currentHint) return; // 已经有 hint 在显示
       // 已经有正在跑的 stuck-hint task → 不重复
       const running = st.tasks.some(

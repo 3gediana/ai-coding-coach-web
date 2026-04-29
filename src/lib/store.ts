@@ -74,6 +74,10 @@ function deriveFastConfig(cfg: AIConfig): AIConfig | null {
   };
 }
 
+function hasUsableAIConfig(cfg: AIConfig): boolean {
+  return cfg.provider === 'ollama' ? !!cfg.baseUrl.trim() : !!cfg.apiKey.trim();
+}
+
 /** 提交结果选项（错题或 AC 总结） */
 /** 学生提问历史一条消息：用户问 / AI 答（流式时 streaming=true） */
 export interface QAMessage {
@@ -1010,8 +1014,8 @@ export const useStore = create<State>((set, get) => {
         toast.error('请先激活一道题目');
         return null;
       }
-      if (!st.aiConfig.apiKey) {
-        toast.error('请先在设置里填 API Key');
+      if (!hasUsableAIConfig(st.aiConfig)) {
+        toast.error('请先配置 AI 服务');
         set({ settingsOpen: true });
         return null;
       }
@@ -1073,7 +1077,7 @@ export const useStore = create<State>((set, get) => {
 
     enqueueDiff: () => {
       const st = get();
-      if (!st.aiConfig.apiKey) {
+      if (!hasUsableAIConfig(st.aiConfig)) {
         toast.error('请先配置 AI');
         set({ settingsOpen: true });
         return null;
@@ -1206,7 +1210,7 @@ export const useStore = create<State>((set, get) => {
       const trimmed = question.trim();
       if (!trimmed) return;
       const s = get();
-      if (!s.aiConfig.apiKey) {
+      if (!hasUsableAIConfig(s.aiConfig)) {
         toast.error('请先配置 AI 服务（baseUrl + apiKey + model）');
         s.setSettingsOpen(true);
         return;
@@ -1328,7 +1332,7 @@ export const useStore = create<State>((set, get) => {
     dismissHint: () => set({ currentHint: null }),
     enqueueStuckHint: () => {
       const st = get();
-      if (!st.aiConfig.apiKey || !st.activeProblemId) return null;
+      if (!hasUsableAIConfig(st.aiConfig) || !st.activeProblemId) return null;
       const problem = st.problems.find((p) => p.id === st.activeProblemId);
       if (!problem) return null;
       const fileId = st.activeFileIdByScope[st.activeProblemId];
@@ -1484,7 +1488,7 @@ int main() {
       // 新建：尝试 cloud AI parseProblem（可选）
       const statement = payload.rawText || '';
       let problem: Problem;
-      if (st.aiConfig.apiKey && statement) {
+      if (hasUsableAIConfig(st.aiConfig) && statement) {
         try {
           const parsed = await get().coach.parseProblem(statement);
           problem = {

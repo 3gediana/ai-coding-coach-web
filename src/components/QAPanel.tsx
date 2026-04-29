@@ -23,7 +23,9 @@ export function QAPanel() {
   const askQuestion = useStore((s) => s.askQuestion);
   const clearQA = useStore((s) => s.clearQA);
   const pending = useStore((s) => s.qaPendingProblemId);
-  const aiOk = useStore((s) => !!s.aiConfig.apiKey);
+  const aiOk = useStore((s) =>
+    s.aiConfig.provider === 'ollama' ? !!s.aiConfig.baseUrl : !!s.aiConfig.apiKey,
+  );
   const askPrefill = useStore((s) => s.askPrefill);
   const setAskPrefill = useStore((s) => s.setAskPrefill);
 
