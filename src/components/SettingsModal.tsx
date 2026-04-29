@@ -4,7 +4,7 @@ import { useStore } from '../lib/store';
 import { PRESETS } from '../lib/presets';
 import type { AIConfig, AIProvider } from '../core/types';
 import { cn } from '../lib/cn';
-import { X, Eye, EyeOff, ExternalLink, Check, Loader2, Sparkles, Zap, Settings2 } from 'lucide-react';
+import { X, Eye, EyeOff, ExternalLink, Check, Loader2, Sparkles, Zap, Settings2, Lightbulb } from 'lucide-react';
 import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
 import { DEFAULT_ROUTER_HINTS } from '../core/ai/router';
@@ -14,6 +14,8 @@ export function SettingsModal() {
   const setOpen = useStore((s) => s.setSettingsOpen);
   const cfg = useStore((s) => s.aiConfig);
   const setCfg = useStore((s) => s.setAIConfig);
+  const stuckHintEnabled = useStore((s) => s.stuckHintEnabled);
+  const setStuckHintEnabled = useStore((s) => s.setStuckHintEnabled);
 
   const [draft, setDraft] = useState<AIConfig>(cfg);
   const [showKey, setShowKey] = useState(false);
@@ -455,6 +457,27 @@ export function SettingsModal() {
                   </Field>
                 </details>
               )}
+
+              {/* ━━ 💡 学习辅助 ━━ */}
+              <div className="border-t border-line pt-4">
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
+                  <input
+                    type="checkbox"
+                    className="accent-warn"
+                    checked={stuckHintEnabled}
+                    onChange={(e) => setStuckHintEnabled(e.target.checked)}
+                  />
+                  <Lightbulb size={14} className="text-warn" />
+                  <span className="text-sm font-semibold">120s 卡住主动提醒</span>
+                  <span className="text-[10px] text-ink-mute ml-auto">
+                    {stuckHintEnabled ? '已开启' : '未开启'}
+                  </span>
+                </label>
+                <p className="text-[11px] text-ink-mute pl-6">
+                  连续 2 分钟没编辑代码时，AI 自动给一条引导式提示（不直接给答案）。
+                  关闭后，仍可点顶栏 <span className="inline-flex items-center gap-0.5"><Lightbulb size={10} className="text-warn" />求助</span> 按钮手动触发。
+                </p>
+              </div>
 
               {/* Test result */}
               <AnimatePresence>
