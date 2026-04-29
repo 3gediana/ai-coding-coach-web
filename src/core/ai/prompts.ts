@@ -289,6 +289,15 @@ export function buildAnalyzeCodePrompt(args: {
   profile?: LearnerProfile;
   history?: AnalysisHistoryEntry[];
   siblings?: Array<{ name: string; language: string; content: string }>;
+  /** 最近一次本地运行的快照：让 AI 能看到 stderr / exitCode / stdin，给出对症建议 */
+  runtimeContext?: {
+    exitCode: number;
+    stdin?: string;
+    stdout?: string;
+    stderr?: string;
+    durationMs?: number;
+    timestamp?: number;
+  };
 }): PromptPair {
   const problemContext = args.problem
     ? `【当前题目】
@@ -300,6 +309,7 @@ ${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTR
   const profileBlock = renderProfile(args.profile);
   const historyBlock = renderHistory(args.history);
   const siblingBlock = renderSiblings(args.siblings);
+  const runtimeBlock = renderRuntimeContext(args.runtimeContext);
 
   const { numbered, totalLines, truncated } = withLineNumbers(args.code);
   // 当前代码哈希（前 6 字符），AI 通过对照 history 里的 codeHash 判断"代码是否改了"
@@ -311,6 +321,7 @@ ${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTR
 ${profileBlock}
 ${historyBlock}
 ${siblingBlock}
+${runtimeBlock}
 【学生当前正在分析的 ${args.language} 代码（哈希=${currentHash}, ${totalLines} 行${truncated ? '，已截断' : ''}，每行带 "行号 | " 前缀）】
 \`\`\`
 ${numbered}
@@ -359,6 +370,44 @@ ${numbered}
 
 直接输出 JSON。`,
   };
+}
+
+/** 渲染最近一次运行的快照：exitCode + stderr + stdin + stdout 给 AI 看 */
+function renderRuntimeContext(rc?: {
+  exitCode: number;
+  stdin?: string;
+  stdout?: string;
+  stderr?: string;
+  durationMs?: number;
+  timestamp?: number;
+}): string {
+  if (!rc) return '';
+  const failed = rc.exitCode !== 0;
+  const ageSec = rc.timestamp ? Math.round((Date.now() - rc.timestamp) / 1000) : 0;
+  const banner = failed
+    ? '【🔥 上次运行失败 — 优先解释这个错误】'
+    : '【上次运行 — 已通过，可作为参考】';
+  const lines: string[] = [banner];
+  lines.push(`退出码：${rc.exitCode}${failed ? '（失败！）' : '（正常）'}` +
+    (rc.durationMs !== undefined ? ` · 耗时 ${rc.durationMs.toFixed(0)}ms` : '') +
+    (ageSec ? ` · ${ageSec}s 前` : ''));
+  if (rc.stdin && rc.stdin.trim()) {
+    lines.push(`stdin（用户实际输入）:\n${clip(rc.stdin, 500)}`);
+  }
+  if (rc.stderr && rc.stderr.trim()) {
+    lines.push(`stderr（错误输出）:\n${clip(rc.stderr, 1500)}`);
+  }
+  if (rc.stdout && rc.stdout.trim()) {
+    lines.push(`stdout（标准输出）:\n${clip(rc.stdout, 500)}`);
+  }
+  if (failed) {
+    lines.push(
+      '⚠ 重要：这次运行失败了！issues 数组里**必须至少一条 error**指出失败的根本原因，' +
+      '直接对应 stderr 里的具体错误（如越界 / bad_alloc / segfault / TLE / RuntimeError 等），' +
+      '并给出具体到哪一行的修改建议。**不要泛泛说"检查边界"**，要指出哪个变量哪个下标越界了。',
+    );
+  }
+  return lines.join('\n') + '\n';
 }
 
 function renderSiblings(

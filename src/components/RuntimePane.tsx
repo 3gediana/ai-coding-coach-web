@@ -21,6 +21,7 @@ import {
   Eraser,
   Loader2,
   Settings as SettingsIcon,
+  Sparkles,
 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { runPython, runCpp, isRuntimeSupported } from '../lib/runtime';
@@ -40,6 +41,9 @@ export function RuntimePane() {
   const filesByScope = useStore((s) => s.filesByScope);
   const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
   const activeProblemId = useStore((s) => s.activeProblemId);
+  const setAskPrefill = useStore((s) => s.setAskPrefill);
+  const setFeedbackTab = useStore((s) => s.setFeedbackTab);
+  const setLastRun = useStore((s) => s.setLastRun);
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const file = (filesByScope[scope] ?? []).find((f) => f.id === activeFileIdByScope[scope]);
@@ -100,13 +104,57 @@ export function RuntimePane() {
         'system',
         `${result.exitCode === 0 ? '✓' : '✗'} 退出码 ${result.exitCode} · 耗时 ${result.durationMs.toFixed(0)}ms`,
       );
+      // 把运行快照存到 store，让 analyzeCode 能读取（关键修复！）
+      // result.stdout/stderr 是 runtime 累积的全量输出，比 output state 更可靠（state 可能还没 flush）
+      setLastRun(scope, {
+        fileId: file.id,
+        fileName: file.name,
+        language: file.language,
+        exitCode: result.exitCode,
+        stdin,
+        stdout: result.stdout || '',
+        stderr: result.stderr || '',
+        durationMs: result.durationMs,
+        timestamp: Date.now(),
+      });
+      // 运行失败：主动提示用户可以让 AI 帮看
+      if (result.exitCode !== 0) {
+        toast.error(`运行失败（退出码 ${result.exitCode})`, {
+          description: '点终端右上「让 AI 看看错误」按钮，AI 会帮你分析原因',
+          duration: 7000,
+        });
+      }
     } catch (e: any) {
       append('stderr', `运行时错误：${e?.message ?? e}`);
       setExitCode(-1);
+      toast.error('运行抛出异常', {
+        description: '点终端右上「让 AI 看看错误」按钮，AI 会帮你分析',
+        duration: 7000,
+      });
     } finally {
       setRunning(false);
       setProgress('');
     }
+  };
+
+  const onAskAI = () => {
+    if (!file) return;
+    // 收集 stderr + system 输出（运行失败的关键信息）
+    const errorLines = output
+      .filter((l) => l.kind === 'stderr' || l.kind === 'system')
+      .map((l) => l.text)
+      .join('\n')
+      .slice(-2000); // 只保留最后 2000 字，避免 prompt 过大
+    const codePreview = file.content.slice(0, 1500);
+    const prefill =
+      `运行 \`${file.name}\` 失败（退出码 ${exitCode}）。\n\n` +
+      `**输入 (stdin)**:\n\`\`\`\n${stdin || '(空)'}\n\`\`\`\n\n` +
+      `**错误输出**:\n\`\`\`\n${errorLines || '(无 stderr)'}\n\`\`\`\n\n` +
+      `**代码** (${file.language}):\n\`\`\`${file.language}\n${codePreview}${file.content.length > 1500 ? '\n// ... [中段省略]' : ''}\n\`\`\`\n\n` +
+      `请帮我分析这个错误的原因，给出最小的修改建议。`;
+    setAskPrefill(prefill);
+    setFeedbackTab('ask');
+    toast.info('已把错误信息发给 AI', { description: '右栏「问 AI」会自动展开输入框' });
   };
 
   const onClear = () => {
@@ -157,6 +205,18 @@ export function RuntimePane() {
           >
             {exitCode === 0 ? '✓' : '✗'} {duration.toFixed(0)}ms
           </span>
+        )}
+
+        {/* 失败时显示「让 AI 看」按钮：把 stderr + 代码 prefill 到问 AI */}
+        {exitCode !== null && exitCode !== 0 && !running && (
+          <button
+            onClick={onAskAI}
+            className="ml-2 px-2 py-0.5 text-[11px] rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 hover:border-accent/60 transition flex items-center gap-1 font-semibold"
+            title="把错误输出 + 代码 + stdin 发给 AI 分析"
+          >
+            <Sparkles size={11} />
+            让 AI 看看错误
+          </button>
         )}
 
         <div className="ml-auto flex items-center gap-1">

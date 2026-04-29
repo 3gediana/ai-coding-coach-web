@@ -93,12 +93,22 @@ export function CodeEditor() {
     if (!model) return;
     issues.forEach((iss, idx) => {
       const lineMaxCol = model.getLineMaxColumn(iss.line);
+      // 中文宽度 ≈ 2 倍英文，截到 32 个字符避免溢出与下一行重叠
       const shortMsg =
-        iss.message.slice(0, 80) + (iss.message.length > 80 ? '…' : '');
+        iss.message.slice(0, 32) + (iss.message.length > 32 ? '…' : '');
       const node = document.createElement('span');
       node.className = `aicc-after-${iss.severity}`;
       node.textContent = `  // ${severityIcon(iss.severity)} ${shortMsg}`;
-      node.title = `${iss.message}${iss.suggestion ? '\n建议：' + iss.suggestion : ''}`;
+      // 完整内容：hover 时浏览器原生 tooltip 显示
+      node.title =
+        iss.message +
+        (iss.suggestion ? '\n\n💡 建议：' + iss.suggestion : '') +
+        '\n\n（点击查看完整 + 跳到详细面板）';
+      // 点击批注 → 切到「分析」tab + 滚动到对应 issue
+      node.addEventListener('click', (e) => {
+        e.stopPropagation();
+        useStore.getState().setFeedbackTab('analyze');
+      });
       const widget = {
         getId: () => `aicc-annot-${idx}-${iss.line}`,
         getDomNode: () => node,

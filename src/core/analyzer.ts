@@ -125,6 +125,15 @@ export class Coach {
       history?: AnalysisHistoryEntry[];
       /** 同题/草稿区下的其它文件（让 AI 知道上下文：暴力对照 / 笔记 / 多版本） */
       siblings?: Array<{ name: string; language: string; content: string }>;
+      /** 最近一次本地运行快照：exitCode + stderr + stdin，让 AI 看到运行结果给对症建议 */
+      runtimeContext?: {
+        exitCode: number;
+        stdin?: string;
+        stdout?: string;
+        stderr?: string;
+        durationMs?: number;
+        timestamp?: number;
+      };
     },
     opts: StreamOpts = {},
   ): Promise<AnalysisResult> {

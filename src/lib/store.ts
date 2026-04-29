@@ -137,6 +137,19 @@ interface TaskHandler {
   onFailure?: (err: Error) => void;
 }
 
+/** 一次代码运行的快照（用于 analyzeCode 喂给 AI 看 stderr/exitCode） */
+export interface RunSnapshot {
+  fileId: string;
+  fileName: string;
+  language: string;
+  exitCode: number;
+  stdin: string;
+  stdout: string;
+  stderr: string;
+  durationMs: number;
+  timestamp: number;
+}
+
 const handlersById = new Map<string, TaskHandler>();
 const abortersById = new Map<string, AbortController>();
 const MAX_CONCURRENT = 3;
@@ -201,6 +214,8 @@ interface State {
   learningCardDismissedDate: string | null;
   /** 对拍：选中的两个 fileId */
   diffSelection: string[];
+  /** 最近一次运行结果（按 scope）— 让 analyzeCode 能拿到 stderr/exitCode 给出对症建议 */
+  lastRunByScope: Record<string, RunSnapshot>;
 
   // ===== actions =====
   setAIConfig: (cfg: AIConfig) => void;
@@ -226,6 +241,9 @@ interface State {
   // 对拍选择
   toggleDiffSelection: (fileId: string) => void;
   clearDiffSelection: () => void;
+  /** RuntimePane 运行结束后写入；analyzeCode 之前会读取作为上下文 */
+  setLastRun: (scope: string, snap: RunSnapshot) => void;
+  clearLastRun: (scope: string) => void;
 
   refreshProblems: () => Promise<void>;
   refreshMistakes: () => Promise<void>;
@@ -514,6 +532,7 @@ export const useStore = create<State>((set, get) => {
     learningCards: [],
     learningCardDismissedDate: localStorage.getItem('aicc.learning.dismissed.v1'),
     diffSelection: [],
+    lastRunByScope: {},
 
     setAIConfig: (cfg) => {
       try {
@@ -732,6 +751,17 @@ export const useStore = create<State>((set, get) => {
 
     clearDiffSelection: () => set({ diffSelection: [] }),
 
+    setLastRun: (scope, snap) =>
+      set((s) => ({
+        lastRunByScope: { ...s.lastRunByScope, [scope]: snap },
+      })),
+    clearLastRun: (scope) =>
+      set((s) => {
+        const next = { ...s.lastRunByScope };
+        delete next[scope];
+        return { lastRunByScope: next };
+      }),
+
     // ===== 数据加载 =====
 
     refreshProblems: async () => {
@@ -899,6 +929,23 @@ export const useStore = create<State>((set, get) => {
               .slice(0, 5)
               .map((f) => ({ name: f.name, language: f.language, content: f.content }));
 
+            // 取最近一次运行快照（让 AI 看到 stderr / exitCode）
+            // 仅当快照对应当前 file 且 30 分钟内才用，避免给 AI 过期上下文
+            const runSnap = get().lastRunByScope[problem?.id ?? DRAFT_SCOPE];
+            const runtimeContext =
+              runSnap &&
+              runSnap.fileId === file.id &&
+              Date.now() - runSnap.timestamp < 30 * 60 * 1000
+                ? {
+                    exitCode: runSnap.exitCode,
+                    stdin: runSnap.stdin,
+                    stdout: runSnap.stdout,
+                    stderr: runSnap.stderr,
+                    durationMs: runSnap.durationMs,
+                    timestamp: runSnap.timestamp,
+                  }
+                : undefined;
+
             return get().coach.analyzeCode(
               {
                 problem,
@@ -907,6 +954,7 @@ export const useStore = create<State>((set, get) => {
                 profile,
                 history,
                 siblings,
+                runtimeContext,
               },
               { onChunk, onRetry, signal },
             );

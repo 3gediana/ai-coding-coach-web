@@ -237,7 +237,8 @@
 
 /* 行末追加文字（ContentWidget 实现）— 像 // 注释一样浮在行末
  * 注意：必须 nowrap 否则会被 monaco overlay 容器挤压成竖排；
- *       pointer-events: none 防止覆盖代码区域影响选中/点击 */
+ *       max-width + ellipsis 避免过长批注与下一行代码视觉重叠；
+ *       pointer-events: auto 让用户能 hover 看 tooltip + 点击跳分析 */
 .aicc-after-error,
 .aicc-after-warning,
 .aicc-after-info,
@@ -246,12 +247,30 @@
   font-weight: 400;
   opacity: 0.75;
   white-space: nowrap;
-  pointer-events: none;
+  /* 让用户能 hover 看 tooltip / 点击跳详情 */
+  pointer-events: auto;
+  cursor: help;
   font-size: 12px;
   font-family: 'Manrope', 'PingFang SC', 'Microsoft YaHei UI', sans-serif;
   /* monaco 会把 widget 的 left 设到指定 column；这里只控样式，不改位置 */
   padding-left: 1em;
   user-select: none;
+  /* 截断超长批注，避免和下一行代码视觉重叠 */
+  max-width: 60ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+  vertical-align: bottom;
+  /* hover 时强调一下，提示可交互 */
+  transition: opacity 0.15s, text-decoration-color 0.15s;
+}
+.aicc-after-error:hover,
+.aicc-after-warning:hover,
+.aicc-after-info:hover,
+.aicc-after-hint:hover {
+  opacity: 1;
+  text-decoration: underline dotted currentColor;
+  text-underline-offset: 2px;
 }
 .aicc-after-error    { color: rgb(var(--c-bad)); }
 .aicc-after-warning  { color: rgb(var(--c-warn)); }
