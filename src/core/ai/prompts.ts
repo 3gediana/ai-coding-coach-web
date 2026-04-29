@@ -156,6 +156,132 @@ const verdictHintMap: Record<string, string> = {
 };
 
 /**
+ * Coach 主动嗅探系列（FastLane 专属）。
+ *
+ * 这三个 prompt 不是给"用户主动点分析"用的，是 Coach **自己想出来的**——
+ *   - 学生跑代码失败 → 本地秒级归因（A）
+ *   - 学生首次跑通样例 → 一次性数据范围审计（C）
+ *   - 学生停下来 90s 但代码还在写 → 题意偏离嗅探（B，最慎重，默认关）
+ *
+ * 输出尽量短（≤80 字一句话），只写一条 trace + 编辑器角标，**不弹窗不打扰**。
+ */
+
+/** A. 编译/运行错误归因：本地秒级，写一条 trace + 角标 */
+export function buildDiagnoseRuntimeErrorPrompt(args: {
+  problem?: Problem;
+  language: Lang;
+  code: string;
+  exitCode: number;
+  stderrTail: string;
+  stdinHead?: string;
+}): PromptPair {
+  const problemBlock = args.problem
+    ? `题目：${args.problem.title}\n题面摘要：${clip(args.problem.statement, 600)}\n`
+    : '（无激活题目）\n';
+  const stdinBlock = args.stdinHead && args.stdinHead.trim()
+    ? `\nstdin（首 200 字）：\n${args.stdinHead.slice(0, 200)}\n`
+    : '';
+  const { numbered, totalLines } = withLineNumbers(args.code);
+  return {
+    system:
+      '你是静默的代码错误归因器。学生刚跑代码失败了，给一句话告诉他大概在哪。' +
+      '只看 stderr 和代码做最直接的判断，不要展开讲。' +
+      SYSTEM_JSON_OUTPUT,
+    user: `${problemBlock}
+退出码：${args.exitCode}
+stderr（末尾 ≤500 字）：
+${clip(args.stderrTail, 500)}
+${stdinBlock}
+学生当前 ${args.language} 代码（${totalLines} 行，每行带行号）：
+\`\`\`
+${numbered}
+\`\`\`
+
+输出 JSON：
+{
+  "errorClass": "数组越界 | 段错误 | TLE | RuntimeError | NameError | 编译错误 | 死循环 | 其他",
+  "likelyLine": 整数行号(必须 1..${totalLines}) 或 null（实在判断不出来）,
+  "oneLineHint": "一句话告诉学生在哪查（≤60 字，要具体到变量名/数组名/函数名，**不要泛泛说"检查边界"**）"
+}
+
+直接输出 JSON。`,
+  };
+}
+
+/** C. 数据范围 sanity check：题目首次跑通样例后一次性扫一眼 */
+export function buildSanityCheckConstraintsPrompt(args: {
+  problem: Problem;
+  language: Lang;
+  code: string;
+}): PromptPair {
+  return {
+    system:
+      '你是数据范围审计员。学生刚跑通样例，请扫一眼有没有数据范围爆掉的隐患。' +
+      '保守一点：看不到明显风险就返回空数组。' +
+      SYSTEM_JSON_OUTPUT,
+    user: `题目：${args.problem.title}
+${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTRAINTS_MAX) : '（题目没给明确约束）'}
+
+学生 ${args.language} 代码：
+\`\`\`${args.language}
+${args.code.slice(0, 4000)}
+\`\`\`
+
+只关注以下风险：
+- 整数类型不够（如 n*m 可能超 int 但用了 int）
+- 数组/容器开小了（栈数组维度小于约束最大值）
+- 复杂度跟约束明显不符（如 N=1e6 但用 O(N²)）
+- 容器选择影响显著（vector<vector> 超大、map 当 hash）
+- C++ 的 cin/cout 没关同步在大数据下慢
+
+不要重复 issues 里已经会说的语法/逻辑问题，**只看数据范围**。
+
+输出 JSON：
+{ "risks": ["≤30 字一条，最多 3 条；没风险返回空数组"] }
+
+直接输出 JSON。`,
+  };
+}
+
+/** B. 题意偏离嗅探：90s 停顿且代码净增 ≥30 字时，判断方向对不对 */
+export function buildSniffIntentPrompt(args: {
+  problem: Problem;
+  language: Lang;
+  code: string;
+}): PromptPair {
+  const exampleBlock = args.problem.examples?.[0]
+    ? `\n样例输入：\n${args.problem.examples[0].input}\n样例输出：\n${args.problem.examples[0].output}\n`
+    : '';
+  return {
+    system:
+      '你是题意校对员。学生写了一段代码停下来 90 秒了。判断他的方向对不对。' +
+      '**保守判断**：只要思路看起来在轨就说在轨。只有看到明显偏题（算了不该算的指标 / 用错了数据结构 / 漏了关键约束）才报偏离。' +
+      SYSTEM_JSON_OUTPUT,
+    user: `题目：${args.problem.title}
+题面（前 800 字）：
+${clip(args.problem.statement, 800)}
+${args.problem.constraints ? '约束：' + clip(args.problem.constraints, 400) : ''}
+${exampleBlock}
+学生当前 ${args.language} 代码：
+\`\`\`${args.language}
+${args.code.slice(0, 2500)}
+\`\`\`
+
+请判断方向：
+- onTrack=true：思路在轨。**只要看不到明显偏题就给 true**。
+- onTrack=false：明显偏题，evidence 一句话说"你在算 X 但题目要的是 Y"或"用 X 数据结构会导致 Y"。
+
+⚠ 不要把"代码不完整""还没实现完"判成偏题。学生在写一半，方向不错就够。
+⚠ 不要给完整解法、不要给伪代码，evidence 只指出方向问题。
+
+输出 JSON：
+{ "onTrack": true | false, "evidence": "仅 onTrack=false 时填，≤50 字" }
+
+直接输出 JSON。`,
+  };
+}
+
+/**
  * 把粘贴的题目原文解析为结构化 JSON。
  */
 /**

@@ -13,6 +13,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { DiffResultViewer } from './components/DiffResultViewer';
 import { SubmitResultModal } from './components/SubmitResultModal';
 import { StuckHintCard } from './components/StuckHintCard';
+import { IntentSnifferCard } from './components/IntentSnifferCard';
 import { RuntimePane } from './components/RuntimePane';
 import { OnboardingOverlay } from './components/OnboardingOverlay';
 import { useStore } from './lib/store';
@@ -118,6 +119,7 @@ export default function App() {
       <DiffResultViewer />
       <SubmitResultModal />
       <StuckHintCard />
+      <IntentSnifferCard />
       <OnboardingOverlay />
     </div>
   );

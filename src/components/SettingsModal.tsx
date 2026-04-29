@@ -4,6 +4,7 @@ import { useStore } from '../lib/store';
 import { PRESETS, DEFAULT_AI_CONFIG, RECOMMENDED_OLLAMA_MODELS } from '../lib/presets';
 import type { AIConfig, AIProvider } from '../core/types';
 import { cn } from '../lib/cn';
+import { isLocalOllamaUrl } from '../lib/ollama';
 import {
   X,
   Eye,
@@ -19,6 +20,9 @@ import {
   RefreshCw,
   Download,
   AlertTriangle,
+  Bug,
+  Compass,
+  Ruler,
 } from 'lucide-react';
 import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
@@ -31,6 +35,20 @@ export function SettingsModal() {
   const setCfg = useStore((s) => s.setAIConfig);
   const stuckHintEnabled = useStore((s) => s.stuckHintEnabled);
   const setStuckHintEnabled = useStore((s) => s.setStuckHintEnabled);
+  const diagnoseOnFailEnabled = useStore((s) => s.diagnoseOnFailEnabled);
+  const setDiagnoseOnFailEnabled = useStore((s) => s.setDiagnoseOnFailEnabled);
+  const constraintSanityEnabled = useStore((s) => s.constraintSanityEnabled);
+  const setConstraintSanityEnabled = useStore((s) => s.setConstraintSanityEnabled);
+  const intentSniffEnabled = useStore((s) => s.intentSniffEnabled);
+  const setIntentSniffEnabled = useStore((s) => s.setIntentSniffEnabled);
+
+  /** fastLane 是否就绪：enabled + 本地 baseUrl + model 都配齐才算 */
+  const fastLaneReady = !!(
+    cfg.fastLane?.enabled &&
+    cfg.fastLane.baseUrl?.trim() &&
+    cfg.fastLane.model?.trim() &&
+    isLocalOllamaUrl(cfg.fastLane.baseUrl)
+  );
 
   const [draft, setDraft] = useState<AIConfig>(cfg);
   const [showKey, setShowKey] = useState(false);
@@ -567,6 +585,105 @@ export function SettingsModal() {
                   连续 2 分钟没编辑代码时，AI 自动给一条引导式提示（不直接给答案）。
                   关闭后，仍可点顶栏 <span className="inline-flex items-center gap-0.5"><Lightbulb size={10} className="text-warn" />求助</span> 按钮手动触发。
                 </p>
+              </div>
+
+              {/* ━━ ✨ Coach 主动嗅探（FastLane 专属） ━━ */}
+              <div className="border-t border-line pt-4 space-y-3">
+                <div>
+                  <h3 className="text-sm font-semibold flex items-center gap-1.5 mb-1">
+                    <Sparkles size={13} className="text-accent" />
+                    Coach 主动嗅探（FastLane 专属）
+                    {fastLaneReady ? (
+                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-ok/15 text-ok border border-ok/40 flex items-center gap-1">
+                        <Check size={9} /> fastLane 已就绪
+                      </span>
+                    ) : (
+                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-bad/10 text-bad border border-bad/40 flex items-center gap-1">
+                        <AlertTriangle size={9} /> fastLane 未配置 · 三个开关无效
+                      </span>
+                    )}
+                  </h3>
+                  <p className="text-[11px] text-ink-mute leading-relaxed">
+                    本地模型在<strong>有意义事件</strong>（跑代码失败、跑通样例、长时间停顿后代码净增）发生时
+                    自己扫一眼代码，<strong>静默</strong>把发现写到 Agent 行动面板和编辑器右上角小角标。
+                    不弹窗、不抢焦点、可随时关掉。
+                  </p>
+                  <p className="text-[11px] text-warn leading-relaxed mt-1">
+                    ⚠ <strong>仅走本地 fastLane</strong>：fastLane 没配好这三个开关全部静默不生效，
+                    绝不会偷偷蹭主云端 token。
+                  </p>
+                </div>
+
+                {/* A. 跑失败归因 */}
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="accent-bad mt-1"
+                    checked={diagnoseOnFailEnabled}
+                    onChange={(e) => setDiagnoseOnFailEnabled(e.target.checked)}
+                  />
+                  <Bug size={14} className="text-bad mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      跑失败 → 秒级错误归因
+                      <span className="text-[10px] text-ink-mute">
+                        {diagnoseOnFailEnabled ? '已开启' : '未开启'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-ink-mute mt-0.5">
+                      退出码 ≠ 0 时，本地模型在 0.8 秒内根据 stderr 给一句话定位（e.g. "可能在 L42 数组 a 越界"）。
+                      <strong className="text-ink">推荐开</strong>，最直接的 FastLane 价值。
+                    </p>
+                  </div>
+                </label>
+
+                {/* C. 数据范围 sanity */}
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="accent-warn mt-1"
+                    checked={constraintSanityEnabled}
+                    onChange={(e) => setConstraintSanityEnabled(e.target.checked)}
+                  />
+                  <Ruler size={14} className="text-warn mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      跑通样例 → 数据范围审计
+                      <span className="text-[10px] text-ink-mute">
+                        {constraintSanityEnabled ? '已开启' : '未开启'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-ink-mute mt-0.5">
+                      首次跑通样例时一次性扫数据范围风险（int 是否够、数组是否开小、复杂度是否过得去）。
+                      每题终生只跑一次，<strong className="text-ink">推荐开</strong>。
+                    </p>
+                  </div>
+                </label>
+
+                {/* B. 题意偏离嗅探（最慎重，默认 OFF） */}
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="accent-accent mt-1"
+                    checked={intentSniffEnabled}
+                    onChange={(e) => setIntentSniffEnabled(e.target.checked)}
+                  />
+                  <Compass size={14} className="text-accent mt-0.5 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium flex items-center gap-2">
+                      90s 停顿 + 代码净增 → 题意校对
+                      <span className="text-[10px] text-warn ml-1">实验性</span>
+                      <span className="text-[10px] text-ink-mute">
+                        {intentSniffEnabled ? '已开启' : '未开启'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-ink-mute mt-0.5">
+                      停下 90 秒且代码净增 ≥ 30 字时，本地模型扫一眼判方向是否对。
+                      只在<strong>明显偏题</strong>时才报警，否则全静默。
+                      5 分钟全局节流，同段代码不重复嗅探。<strong className="text-warn">默认关</strong>，担心打扰先别开。
+                    </p>
+                  </div>
+                </label>
               </div>
 
               {/* Test result */}

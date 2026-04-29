@@ -7,10 +7,13 @@ import { AIClient } from './ai/client';
 import {
   buildAnalyzeCodePrompt,
   buildAskQuestionPrompt,
+  buildDiagnoseRuntimeErrorPrompt,
   buildExplainPastePrompt,
   buildHackCasePrompt,
   buildParseProblemPrompt,
   buildPlainExplanationPrompt,
+  buildSanityCheckConstraintsPrompt,
+  buildSniffIntentPrompt,
   buildStuckHintPrompt,
   buildSummarizePrompt,
 } from './ai/prompts';
@@ -61,11 +64,6 @@ export class Coach {
   /** 用户改了路由阈值时调用 */
   updateRouterHints(hints: RouterHints | undefined) {
     this.routerHints = hints;
-  }
-
-  /** 实时前台任务用这个客户端（fastLane 启用且配好时走本地，否则回落主 client） */
-  private get realtimeClient(): AIClient {
-    return this.aiFast ?? this.ai;
   }
 
   /**
@@ -433,6 +431,149 @@ export class Coach {
       concerns: data.concerns ?? [],
       suggestion: data.suggestion ?? '',
     };
+  }
+
+  // ────────────────────────────────────────────────
+  // ★ Coach 主动嗅探（FastLane 专属）：
+  //   **只**走 aiFast（本地 ollama）。若 fastLane 未配置一律返回 noop，
+  //   绝不回落到主 client（避免静默烧云端 token）。
+  //   调用方负责节流和静默落地（写 trace + 角标，不弹窗）。
+  // ────────────────────────────────────────────────
+
+  /** Coach 嗅探类任务是否可用：fastLane 配好才会有 aiFast */
+  get fastLaneAvailable(): boolean {
+    return !!this.aiFast;
+  }
+
+  /**
+   * A. 编译/运行错误归因。学生跑代码失败时调，本地秒级出一句话。
+   *
+   * 返回 null 表示：fastLane 未配 / 模型输出无法用 / 调用失败。调用方应静默忽略。
+   */
+  async diagnoseRuntimeError(args: {
+    problem?: Problem;
+    language: Lang;
+    code: string;
+    exitCode: number;
+    stderrTail: string;
+    stdinHead?: string;
+    signal?: AbortSignal;
+  }): Promise<{
+    errorClass: string;
+    likelyLine: number | null;
+    oneLineHint: string;
+  } | null> {
+    if (!this.aiFast) return null; // 防御纵深：与主体隔离，绝不蹭主 client
+    const { system, user } = buildDiagnoseRuntimeErrorPrompt(args);
+    try {
+      const data = await this.aiFast.chatJson<{
+        errorClass?: string;
+        likelyLine?: number | null;
+        oneLineHint?: string;
+      }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 200,
+        temperature: 0.2,
+        signal: args.signal,
+      });
+      const hint = (data.oneLineHint ?? '').trim();
+      if (!hint) return null;
+      const totalLines = Math.max(1, args.code.split('\n').length);
+      let line: number | null = null;
+      if (typeof data.likelyLine === 'number' && Number.isFinite(data.likelyLine)) {
+        const v = Math.round(data.likelyLine);
+        if (v >= 1 && v <= totalLines) line = v;
+      }
+      return {
+        errorClass: (data.errorClass ?? '其他').toString().slice(0, 24),
+        likelyLine: line,
+        oneLineHint: hint.slice(0, 120),
+      };
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.diagnoseRuntimeError] fastLane failed', e);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * C. 数据范围 sanity check。题目首次跑通样例后调一次，扫一眼数据范围风险。
+   *
+   * 返回的 risks 数组可能为空（说明本地模型扫不出风险），上层应静默不展示。
+   */
+  async sanityCheckConstraints(args: {
+    problem: Problem;
+    language: Lang;
+    code: string;
+    signal?: AbortSignal;
+  }): Promise<string[]> {
+    if (!this.aiFast) return []; // 防御纵深：与主体隔离，绝不蹭主 client
+    const { system, user } = buildSanityCheckConstraintsPrompt(args);
+    try {
+      const data = await this.aiFast.chatJson<{ risks?: unknown }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 250,
+        temperature: 0.2,
+        signal: args.signal,
+      });
+      if (!Array.isArray(data.risks)) return [];
+      return data.risks
+        .filter((r): r is string => typeof r === 'string' && r.trim().length > 0)
+        .map((r) => r.trim().slice(0, 60))
+        .slice(0, 3);
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.sanityCheckConstraints] fastLane failed', e);
+      }
+      return [];
+    }
+  }
+
+  /**
+   * B. 题意偏离嗅探。学生停下来 ≥90s 且代码净增 ≥30 字时调。
+   *
+   * **保守判断**：返回 onTrack=true（含错误回退）时一律不要展示给学生。
+   * 只有 onTrack=false 且 evidence 非空才落地为一条 trace + 角标。
+   */
+  async sniffIntent(args: {
+    problem: Problem;
+    language: Lang;
+    code: string;
+    signal?: AbortSignal;
+  }): Promise<{ onTrack: boolean; evidence: string }> {
+    // 防御纵深：fastLane 没配 → 默认在轨（保守，不打扰，绝不蹭主 client）
+    if (!this.aiFast) return { onTrack: true, evidence: '' };
+    const { system, user } = buildSniffIntentPrompt(args);
+    try {
+      const data = await this.aiFast.chatJson<{
+        onTrack?: boolean;
+        evidence?: string;
+      }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 150,
+        temperature: 0.3,
+        signal: args.signal,
+      });
+      const onTrack = data.onTrack !== false; // 默认 true（保守）
+      const evidence = (data.evidence ?? '').trim().slice(0, 100);
+      return { onTrack, evidence };
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.sniffIntent] fastLane failed', e);
+      }
+      // 失败 → 默认在轨（保守，不打扰）
+      return { onTrack: true, evidence: '' };
+    }
   }
 
   /**

@@ -2,8 +2,9 @@ import Editor, { OnMount, type Monaco } from '@monaco-editor/react';
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
 import type { CodeIssue, FileLang } from '../core/types';
+import type { CoachHint, CoachHintKind } from '../lib/store';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Eye, Code2, MessageCircleQuestion } from 'lucide-react';
+import { Eye, Code2, MessageCircleQuestion, Bug, Compass, Ruler, X, Sparkles } from 'lucide-react';
 import { cn } from '../lib/cn';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -29,6 +30,8 @@ export function CodeEditor() {
   const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
   const updateFileContent = useStore((s) => s.updateFileContent);
   const analysisByProblem = useStore((s) => s.analysisByProblem);
+  const coachHintsByScope = useStore((s) => s.coachHintsByScope);
+  const dismissCoachHint = useStore((s) => s.dismissCoachHint);
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const files = filesByScope[scope] ?? [];
@@ -42,6 +45,13 @@ export function CodeEditor() {
     (!result.fileId || result.fileId === file.id) &&
     (!result.codeHash || result.codeHash === codeHash(file.content));
 
+  // 当前 scope 下、属于当前 file 的 coach hint（其它 file 的不展示）
+  const coachHints: CoachHint[] = (coachHintsByScope[scope] ?? []).filter(
+    (h) => !h.fileId || h.fileId === activeId,
+  );
+
+  // 角标 popover 展开状态
+  const [hintPopoverOpen, setHintPopoverOpen] = useState(false);
   // markdown 预览开关
   const [mdPreview, setMdPreview] = useState(false);
   const isMd = file?.language === 'markdown';
@@ -302,6 +312,20 @@ export function CodeEditor() {
     // 但选区清空（点别处）会通过上面的 onDidChangeCursorSelection 自动隐藏
   };
 
+  /** 把 monaco 视图滚到指定行并把光标停在行首（CoachHint 跳行用） */
+  const jumpToLine = (line: number) => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    if (!editor || !monaco) return;
+    try {
+      editor.revealLineInCenter(line);
+      editor.setPosition({ lineNumber: line, column: 1 });
+      editor.focus();
+    } catch {
+      /* ignore */
+    }
+  };
+
   const handleAction = () => {
     if (!askBtn) return;
     const st = useStore.getState();
@@ -346,7 +370,7 @@ export function CodeEditor() {
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* 状态栏 */}
-      <div className="h-7 px-3 border-b border-line/60 bg-bg-elev/30 flex items-center gap-2 text-[11px] text-ink-mute shrink-0">
+      <div className="h-7 px-3 border-b border-line/60 bg-bg-elev/30 flex items-center gap-2 text-[11px] text-ink-mute shrink-0 relative">
         <span className="font-mono text-ink-dim">{file.name}</span>
         <span>·</span>
         <span className="font-mono">{file.language}</span>
@@ -364,11 +388,66 @@ export function CodeEditor() {
             {mdPreview ? '预览中' : '预览'}
           </button>
         )}
+
+        {/* Coach 主动嗅探角标：本地模型扫出来的潜在风险（点开看详情，不打扰） */}
+        {coachHints.length > 0 && file.language !== 'markdown' && file.language !== 'plaintext' && (
+          <button
+            type="button"
+            onClick={() => setHintPopoverOpen((v) => !v)}
+            className={cn(
+              'ml-auto px-2 py-0.5 rounded text-[10px] flex items-center gap-1 border transition',
+              hintPopoverOpen
+                ? 'bg-warn/20 text-warn border-warn/60'
+                : 'bg-warn/10 text-warn border-warn/30 hover:bg-warn/20',
+            )}
+            title={`Coach 嗅探到 ${coachHints.length} 条潜在风险（不打扰，按需查看）`}
+          >
+            <Sparkles size={10} />
+            <span>Coach · {coachHints.length}</span>
+          </button>
+        )}
+
+        <AnimatePresence>
+          {hintPopoverOpen && coachHints.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.12 }}
+              className="absolute right-2 top-full mt-1 z-30 w-[320px] max-h-[60vh] overflow-y-auto rounded-md border border-line bg-bg-elev shadow-lg"
+            >
+              <div className="px-3 py-1.5 text-[10px] text-ink-mute border-b border-line/60 flex items-center justify-between">
+                <span>本地 Coach 嗅探（静默，仅你可见）</span>
+                <button
+                  onClick={() => setHintPopoverOpen(false)}
+                  className="hover:text-ink"
+                  title="收起"
+                >
+                  <X size={10} />
+                </button>
+              </div>
+              <ul>
+                {coachHints.map((h) => (
+                  <CoachHintRow
+                    key={h.id}
+                    hint={h}
+                    onJump={(line: number) => {
+                      jumpToLine(line);
+                      setHintPopoverOpen(false);
+                    }}
+                    onDismiss={() => dismissCoachHint(h.id)}
+                  />
+                ))}
+              </ul>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {result && file.language !== 'markdown' && file.language !== 'plaintext' && (
           <motion.div
             initial={{ scale: 0.8, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
-            className="ml-auto flex items-center gap-2"
+            className={cn('flex items-center gap-2', coachHints.length === 0 && 'ml-auto')}
           >
             <span>{resultFresh ? '已分析' : '旧分析'} ·</span>
             {!resultFresh ? (
@@ -487,6 +566,62 @@ export function CodeEditor() {
         .aicc-glyph-hint { background: #9aa3b8; width: 3px !important; margin-left: 3px; border-radius: 2px; }
       `}</style>
     </div>
+  );
+}
+
+/** Coach 角标 popover 里一行 hint 的渲染：按 kind 选图标和颜色，可跳行可关闭 */
+const HINT_KIND_META: Record<
+  CoachHintKind,
+  { icon: typeof Bug; label: string; color: string }
+> = {
+  'runtime-error': { icon: Bug, label: '跑失败归因', color: 'text-bad' },
+  'intent-drift': { icon: Compass, label: '题意偏离', color: 'text-warn' },
+  'constraint-risk': { icon: Ruler, label: '数据范围', color: 'text-warn' },
+};
+
+function CoachHintRow({
+  hint,
+  onJump,
+  onDismiss,
+}: {
+  hint: CoachHint;
+  onJump: (line: number) => void;
+  onDismiss: () => void;
+}) {
+  const meta = HINT_KIND_META[hint.kind];
+  const Icon = meta.icon;
+  return (
+    <li className="px-3 py-2 border-b border-line/30 last:border-0 group">
+      <div className="flex items-start gap-2">
+        <Icon size={11} className={cn('mt-0.5 shrink-0', meta.color)} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 text-[10px] mb-0.5">
+            <span className={cn('uppercase tracking-wide font-semibold', meta.color)}>
+              {meta.label}
+            </span>
+            {hint.line && (
+              <button
+                onClick={() => onJump(hint.line!)}
+                className="text-accent hover:underline font-mono"
+                title={`跳到第 ${hint.line} 行`}
+              >
+                L{hint.line}
+              </button>
+            )}
+          </div>
+          <div className="text-[11px] text-ink leading-snug break-words">
+            {hint.message}
+          </div>
+        </div>
+        <button
+          onClick={onDismiss}
+          className="text-ink-mute hover:text-bad shrink-0 opacity-0 group-hover:opacity-100 transition"
+          title="关闭这条提示"
+        >
+          <X size={10} />
+        </button>
+      </div>
+    </li>
   );
 }
 

@@ -164,6 +164,76 @@ export interface AgentTraceEvent {
 }
 
 const AGENT_TRACE_LIMIT = 80;
+
+// ============== Coach Hint（FastLane 主动嗅探的产物） ==============
+
+/**
+ * Coach 主动嗅探得到的一条**静默**提示。
+ * UI 只通过编辑器右上角小角标 + Agent 行动面板暴露，**不弹 toast 不抢焦点**。
+ *
+ *  - runtime-error：跑代码失败时本地秒级出归因（A）
+ *  - constraint-risk：题目首次跑通样例后扫一眼数据范围（C）
+ *  - intent-drift：90s 停顿 + 代码净增 ≥30 字时判方向是否对（B，默认关）
+ */
+export type CoachHintKind = 'runtime-error' | 'intent-drift' | 'constraint-risk';
+
+export interface CoachHint {
+  id: string;
+  kind: CoachHintKind;
+  scope: string;
+  problemId?: string;
+  fileId?: string;
+  /** 涉及的代码行（runtime-error 才有；UI 角标点开后跳转到该行） */
+  line?: number;
+  /** 一句话提示（≤120 字） */
+  message: string;
+  level: 'info' | 'warn' | 'error';
+  ts: number;
+}
+
+const COACH_HINT_LIMIT_PER_SCOPE = 6;
+
+/**
+ * Coach 嗅探的去重 / 节流状态（模块级，不进 React 状态避免无谓重渲染）：
+ *   - lastDiagByStderrHash：同一份 stderr 60s 内不重复归因
+ *   - sanityCheckedProblems：每个 problemId 只 sanity check 一次（终生去重）
+ *   - lastSniffByCodeHash：同一份代码不重复 sniff
+ *   - lastIntentSniffAt：5 分钟全局节流，避免本地模型被反复唤醒
+ */
+const lastDiagByStderrHash = new Map<string, number>();
+const sanityCheckedProblems = new Set<string>();
+const lastSniffByCodeHash = new Map<string, number>();
+const lastIntentSniffAt = { ts: 0 };
+
+const DIAG_DEDUP_MS = 60_000;
+const INTENT_SNIFF_GLOBAL_MS = 5 * 60_000;
+
+/** 跑代码输入/输出比较的归一化（与 RuntimePane.normalizeSampleText 同语义） */
+function normalizeRunIO(s: string | undefined): string {
+  if (!s) return '';
+  return s
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[\t ]+$/g, '').replace(/^\s+/, ''))
+    .join('\n')
+    .trim();
+}
+
+/** 把一条 hint 推入 coachHintsByScope[scope]，按 scope 限 6 条 */
+function appendCoachHint(
+  set: (fn: (s: any) => any) => void,
+  scope: string,
+  hint: CoachHint,
+): void {
+  set((s: any) => {
+    const cur: CoachHint[] = s.coachHintsByScope[scope] ?? [];
+    const next = [hint, ...cur].slice(0, COACH_HINT_LIMIT_PER_SCOPE);
+    return {
+      coachHintsByScope: { ...s.coachHintsByScope, [scope]: next },
+    };
+  });
+}
+
 export type TaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
 export interface Task {
@@ -272,6 +342,15 @@ interface State {
   /** 最近一次运行结果（按 scope）— 让 analyzeCode 能拿到 stderr/exitCode 给出对症建议 */
   lastRunByScope: Record<string, RunSnapshot>;
 
+  /** Coach 主动嗅探得到的静默提示（按 scope）；UI 只通过角标 + 行动面板暴露 */
+  coachHintsByScope: Record<string, CoachHint[]>;
+  /** A. 跑失败 → 本地秒级归因（默认 ON） */
+  diagnoseOnFailEnabled: boolean;
+  /** C. 首次跑通样例 → 数据范围 sanity（默认 ON，每题一次） */
+  constraintSanityEnabled: boolean;
+  /** B. 90s 停顿 + 代码净增 ≥30 字 → 题意偏离嗅探（默认 OFF，谨慎） */
+  intentSniffEnabled: boolean;
+
   // ===== actions =====
   setAIConfig: (cfg: AIConfig) => void;
   setDefaultLang: (l: Lang) => void;
@@ -334,6 +413,21 @@ interface State {
     e: Omit<AgentTraceEvent, 'id' | 'ts'> & { id?: string; ts?: number },
   ) => void;
   clearAgentTrace: () => void;
+
+  // ===== Coach 主动嗅探（FastLane 专属，全部静默） =====
+  /** A. 跑代码失败时本地秒级归因（由 setLastRun 内部触发，外部一般不直接调） */
+  requestRuntimeDiagnosis: (scope: string) => Promise<void>;
+  /** C. 题目首次跑通样例时数据范围审计（由 setLastRun 内部触发） */
+  requestConstraintSanity: (problemId: string) => Promise<void>;
+  /** B. 90s 停顿 + 代码净增触发；由 IntentSnifferCard 轮询调，全局 5min 节流 */
+  requestIntentSniff: (scope: string) => Promise<void>;
+  /** 用户在角标里点 X 关掉一条 hint */
+  dismissCoachHint: (id: string) => void;
+  /** 切题 / 切文件时清空角标 */
+  clearCoachHints: (scope: string) => void;
+  setDiagnoseOnFailEnabled: (v: boolean) => void;
+  setConstraintSanityEnabled: (v: boolean) => void;
+  setIntentSniffEnabled: (v: boolean) => void;
 
   cancelTask: (id: string) => void;
   retryTask: (id: string) => void;
@@ -714,6 +808,12 @@ export const useStore = create<State>((set, get) => {
     diffSelection: [],
     lastRunByScope: {},
 
+    // Coach 主动嗅探：A 默认 ON / C 默认 ON / B 默认 OFF（最慎重）
+    coachHintsByScope: {},
+    diagnoseOnFailEnabled: localStorage.getItem('aicc.coach.diagnoseOnFail.v1') !== 'off',
+    constraintSanityEnabled: localStorage.getItem('aicc.coach.constraintSanity.v1') !== 'off',
+    intentSniffEnabled: localStorage.getItem('aicc.coach.intentSniff.v1') === 'on',
+
     setAIConfig: (cfg) => {
       try {
         localStorage.setItem(LS_AI_CFG, JSON.stringify(cfg));
@@ -941,16 +1041,255 @@ export const useStore = create<State>((set, get) => {
 
     clearDiffSelection: () => set({ diffSelection: [] }),
 
-    setLastRun: (scope, snap) =>
+    setLastRun: (scope, snap) => {
       set((s) => ({
         lastRunByScope: { ...s.lastRunByScope, [scope]: snap },
-      })),
+      }));
+      // Coach 主动嗅探挂钩（全部静默，失败/超时也不打扰）
+      const st = get();
+      if (snap.exitCode !== 0 && st.diagnoseOnFailEnabled) {
+        // A. 跑失败 → 800ms 后归因（让 stderr / 日志完全 flush）
+        setTimeout(() => {
+          void get().requestRuntimeDiagnosis(scope);
+        }, 800);
+      }
+      if (
+        snap.exitCode === 0 &&
+        st.constraintSanityEnabled &&
+        scope !== DRAFT_SCOPE &&
+        !sanityCheckedProblems.has(scope)
+      ) {
+        // C. 题目首次跑通样例 → 数据范围 sanity（每题终生一次）
+        // 用样例输入对比：只在用户跑的 stdin 与首样例 input 相符时算"跑通样例"
+        const problem = st.problems.find((p) => p.id === scope);
+        const sample = problem?.examples?.[0];
+        if (sample && normalizeRunIO(snap.stdin) === normalizeRunIO(sample.input)) {
+          // 立刻标记，避免并发重入；失败时下面 catch 里再 delete
+          sanityCheckedProblems.add(scope);
+          void get().requestConstraintSanity(scope);
+        }
+      }
+    },
     clearLastRun: (scope) =>
       set((s) => {
         const next = { ...s.lastRunByScope };
         delete next[scope];
         return { lastRunByScope: next };
       }),
+
+    // ===== Coach 主动嗅探（A / B / C） =====
+
+    requestRuntimeDiagnosis: async (scope) => {
+      const st = get();
+      if (!st.diagnoseOnFailEnabled) return;
+      // 与主体隔离：fastLane 没配好就不嗅，绝不偷偷蹭云端 token
+      if (!deriveFastConfig(st.aiConfig)) return;
+      const snap = st.lastRunByScope[scope];
+      if (!snap || snap.exitCode === 0) return;
+      const stderrTail = (snap.stderr ?? '').slice(-500).trim();
+      if (!stderrTail) return; // stderr 空就别费事
+      // 同 stderr 60s 内不重复（节流）
+      const stderrKey = codeHash(stderrTail.slice(-200));
+      const last = lastDiagByStderrHash.get(stderrKey) ?? 0;
+      if (Date.now() - last < DIAG_DEDUP_MS) return;
+      lastDiagByStderrHash.set(stderrKey, Date.now());
+      const file = (st.filesByScope[scope] ?? []).find((f) => f.id === snap.fileId);
+      if (!file) return;
+      const problem = scope !== DRAFT_SCOPE ? st.problems.find((p) => p.id === scope) : undefined;
+      const lang = langOfFile(file.language);
+      // 调用本地模型（fastLane）；client 内部自带超时和重试，外部不再额外裹
+      try {
+        const result = await get().coach.diagnoseRuntimeError({
+          problem,
+          language: lang,
+          code: file.content,
+          exitCode: snap.exitCode,
+          stderrTail,
+          stdinHead: snap.stdin?.slice(0, 200),
+        });
+        if (!result) return; // 模型解析失败 → 静默
+        const hint: CoachHint = {
+          id: nanoid(),
+          kind: 'runtime-error',
+          scope,
+          problemId: problem?.id,
+          fileId: file.id,
+          line: result.likelyLine ?? undefined,
+          message: result.oneLineHint,
+          level: 'warn',
+          ts: Date.now(),
+        };
+        appendCoachHint(set, scope, hint);
+        get().recordAgentTrace({
+          kind: 'perceive',
+          level: 'warn',
+          title: `跑失败归因：${result.errorClass}`,
+          detail:
+            (result.likelyLine ? `可能在第 ${result.likelyLine} 行：` : '') +
+            result.oneLineHint,
+          problemId: problem?.id,
+        });
+      } catch (e) {
+        // 节流计数已经记了，本次失败别消耗下次机会 → 撤销
+        lastDiagByStderrHash.delete(stderrKey);
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach] requestRuntimeDiagnosis failed', e);
+        }
+      }
+    },
+
+    requestConstraintSanity: async (problemId) => {
+      const st = get();
+      if (!st.constraintSanityEnabled) return;
+      // 与主体隔离：fastLane 没配好就不嗅
+      if (!deriveFastConfig(st.aiConfig)) return;
+      const problem = st.problems.find((p) => p.id === problemId);
+      if (!problem) return;
+      const fileId = st.activeFileIdByScope[problemId];
+      const file = (st.filesByScope[problemId] ?? []).find((f) => f.id === fileId);
+      if (!file) return;
+      if (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python') return;
+      const lang = langOfFile(file.language);
+      try {
+        const risks = await get().coach.sanityCheckConstraints({
+          problem,
+          language: lang,
+          code: file.content,
+        });
+        if (risks.length === 0) {
+          // 没风险 → 仅写一条 trace（info，可折叠），不出角标
+          get().recordAgentTrace({
+            kind: 'perceive',
+            level: 'info',
+            title: '数据范围审计：未发现风险',
+            problemId,
+          });
+          return;
+        }
+        // 有风险 → 一条 hint（合并所有 risks）
+        const message = risks.length === 1 ? risks[0] : `${risks.length} 项风险：${risks.join('；')}`;
+        const hint: CoachHint = {
+          id: nanoid(),
+          kind: 'constraint-risk',
+          scope: problemId,
+          problemId,
+          fileId: file.id,
+          message: message.slice(0, 200),
+          level: 'warn',
+          ts: Date.now(),
+        };
+        appendCoachHint(set, problemId, hint);
+        get().recordAgentTrace({
+          kind: 'perceive',
+          level: 'warn',
+          title: `数据范围审计：${risks.length} 项风险`,
+          detail: risks.join('\n'),
+          problemId,
+        });
+      } catch (e) {
+        // 失败 → 撤销终生标记，让下一次跑通时还能再试
+        sanityCheckedProblems.delete(problemId);
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach] requestConstraintSanity failed', e);
+        }
+      }
+    },
+
+    requestIntentSniff: async (scope) => {
+      const st = get();
+      if (!st.intentSniffEnabled) return;
+      // 与主体隔离：fastLane 没配好就不嗅
+      if (!deriveFastConfig(st.aiConfig)) return;
+      if (scope === DRAFT_SCOPE) return; // 草稿无题目，没法嗅
+      const problem = st.problems.find((p) => p.id === scope);
+      if (!problem) return;
+      const fileId = st.activeFileIdByScope[scope];
+      const file = (st.filesByScope[scope] ?? []).find((f) => f.id === fileId);
+      if (!file) return;
+      if (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python') return;
+      // 同 codeHash 不重复 sniff
+      const ch = codeHash(file.content);
+      if (lastSniffByCodeHash.has(ch)) return;
+      // 全局节流：5 分钟内最多一次
+      const now = Date.now();
+      if (now - lastIntentSniffAt.ts < INTENT_SNIFF_GLOBAL_MS) return;
+      lastSniffByCodeHash.set(ch, now);
+      lastIntentSniffAt.ts = now;
+      const lang = langOfFile(file.language);
+      try {
+        const { onTrack, evidence } = await get().coach.sniffIntent({
+          problem,
+          language: lang,
+          code: file.content,
+        });
+        if (onTrack) {
+          // 在轨 → 完全静默，只一条 trace 记录"我看过了"
+          get().recordAgentTrace({
+            kind: 'perceive',
+            level: 'info',
+            title: '题意校对：方向在轨',
+            problemId: problem.id,
+          });
+          return;
+        }
+        if (!evidence) return; // 失败保护：onTrack=false 但没 evidence 就忽略
+        const hint: CoachHint = {
+          id: nanoid(),
+          kind: 'intent-drift',
+          scope,
+          problemId: problem.id,
+          fileId: file.id,
+          message: evidence.slice(0, 120),
+          level: 'warn',
+          ts: Date.now(),
+        };
+        appendCoachHint(set, scope, hint);
+        get().recordAgentTrace({
+          kind: 'perceive',
+          level: 'warn',
+          title: '题意校对：方向可能偏了',
+          detail: evidence,
+          problemId: problem.id,
+        });
+      } catch (e) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach] requestIntentSniff failed', e);
+        }
+      }
+    },
+
+    dismissCoachHint: (id) =>
+      set((s) => {
+        const next: Record<string, CoachHint[]> = {};
+        let changed = false;
+        for (const [k, list] of Object.entries(s.coachHintsByScope)) {
+          const filtered = list.filter((h) => h.id !== id);
+          if (filtered.length !== list.length) changed = true;
+          next[k] = filtered;
+        }
+        return changed ? { coachHintsByScope: next } : s;
+      }),
+
+    clearCoachHints: (scope) =>
+      set((s) => {
+        if (!s.coachHintsByScope[scope]) return s;
+        const next = { ...s.coachHintsByScope };
+        delete next[scope];
+        return { coachHintsByScope: next };
+      }),
+
+    setDiagnoseOnFailEnabled: (v) => {
+      localStorage.setItem('aicc.coach.diagnoseOnFail.v1', v ? 'on' : 'off');
+      set({ diagnoseOnFailEnabled: v });
+    },
+    setConstraintSanityEnabled: (v) => {
+      localStorage.setItem('aicc.coach.constraintSanity.v1', v ? 'on' : 'off');
+      set({ constraintSanityEnabled: v });
+    },
+    setIntentSniffEnabled: (v) => {
+      localStorage.setItem('aicc.coach.intentSniff.v1', v ? 'on' : 'off');
+      set({ intentSniffEnabled: v });
+    },
 
     // ===== 数据加载 =====
 
