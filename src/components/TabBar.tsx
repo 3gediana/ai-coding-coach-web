@@ -59,12 +59,14 @@ export function TabBar() {
     // 延迟 100ms 后才让全局 listener 关菜单，避免触发它的那次右键事件自己把它关掉
     const t = setTimeout(() => {
       active = true;
-      window.addEventListener('mousedown', close);
+      // 用 click 而非 mousedown：菜单按钮的 onClick 先于 click 冒泡到 window，
+      // 菜单容器的 onClick stopPropagation 能阻止关闭。
+      window.addEventListener('click', close);
       window.addEventListener('contextmenu', close);
     }, 100);
     return () => {
       clearTimeout(t);
-      window.removeEventListener('mousedown', close);
+      window.removeEventListener('click', close);
       window.removeEventListener('contextmenu', close);
     };
   }, [ctxMenu]);
@@ -319,6 +321,7 @@ export function TabBar() {
             className="fixed z-[100] glass-card py-1 w-48"
             style={{ left: ctxMenu.x, top: ctxMenu.y }}
             onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
           >
             {(() => {
               const f = files.find((x) => x.id === ctxMenu.fileId);

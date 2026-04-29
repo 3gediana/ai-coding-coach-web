@@ -7,7 +7,6 @@ import { Eye, Code2, MessageCircleQuestion, BookOpen, Bug } from 'lucide-react';
 import { cn } from '../lib/cn';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { TabBar } from './TabBar';
 import { registerSnippets } from '../lib/editor-snippets';
 
 /** 根据 <html data-theme> 当前值，把对应的 monaco 主题应用上 */
@@ -320,9 +319,8 @@ export function CodeEditor() {
   if (!file) {
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <TabBar />
         <div className="flex-1 flex items-center justify-center text-ink-mute text-sm">
-          没有文件，点上方 + 新建
+          没有文件，点左侧 + 新建
         </div>
       </div>
     );
@@ -330,7 +328,6 @@ export function CodeEditor() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
-      <TabBar />
       {/* 状态栏 */}
       <div className="h-7 px-3 border-b border-line/60 bg-bg-elev/30 flex items-center gap-2 text-[11px] text-ink-mute shrink-0">
         <span className="font-mono text-ink-dim">{file.name}</span>

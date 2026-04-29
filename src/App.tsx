@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
+import { FileTree } from './components/FileTree';
 import { CodeEditor } from './components/CodeEditor';
 import { FeedbackPanel } from './components/FeedbackPanel';
 import { TaskTray } from './components/TaskTray';
@@ -56,6 +57,7 @@ export default function App() {
       <div className="flex-1 flex min-h-0">
         <Sidebar />
         <main className="flex-1 flex min-w-0">
+          <FileTree />
           <div className="flex-1 min-w-0 flex flex-col">
             <CodeEditor />
             <RuntimePane />
