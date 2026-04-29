@@ -8,6 +8,7 @@ import { cn } from '../lib/cn';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { registerSnippets } from '../lib/editor-snippets';
+import { codeHash } from '../core/utils';
 
 /** 根据 <html data-theme> 当前值，把对应的 monaco 主题应用上 */
 function applyMonacoTheme(monaco: Monaco) {
@@ -35,6 +36,11 @@ export function CodeEditor() {
   const file = files.find((f) => f.id === activeId);
 
   const result = analysisByProblem[scope];
+  const resultFresh =
+    !!result &&
+    !!file &&
+    (!result.fileId || result.fileId === file.id) &&
+    (!result.codeHash || result.codeHash === codeHash(file.content));
 
   // markdown 预览开关
   const [mdPreview, setMdPreview] = useState(false);
@@ -315,16 +321,15 @@ export function CodeEditor() {
     setAskBtn(null);
   };
 
-  // 切文件 / 切题 → 重置 issues + decoration（避免行号错位）
   useEffect(() => {
-    if (file && (file.language === 'cpp' || file.language === 'c' || file.language === 'python') && result) {
+    if (file && (file.language === 'cpp' || file.language === 'c' || file.language === 'python') && resultFresh) {
       activeIssuesRef.current = result.issues.slice();
     } else {
       activeIssuesRef.current = [];
     }
     renderDecorations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId, result]);
+  }, [activeId, file?.content, result, resultFresh]);
 
   if (!file) {
     return (
@@ -363,8 +368,12 @@ export function CodeEditor() {
             animate={{ scale: 1, opacity: 1 }}
             className="ml-auto flex items-center gap-2"
           >
-            <span>已分析 ·</span>
-            {result.issues.length === 0 ? (
+            <span>{resultFresh ? '已分析' : '旧分析'} ·</span>
+            {!resultFresh ? (
+              <span className="chip-warn text-[9px] px-1 py-0" title="代码已变更，请重新分析">
+                需重跑
+              </span>
+            ) : result.issues.length === 0 ? (
               <span className="chip-ok text-[9px] px-1 py-0">无问题</span>
             ) : (
               <>

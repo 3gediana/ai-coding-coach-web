@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock } from 'lucide-react';
+import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock, Plus, Search } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { Dashboard } from './Dashboard';
@@ -23,6 +23,8 @@ export function Sidebar() {
   const deleteProblem = useStore((s) => s.deleteProblem);
   const deleteMistake = useStore((s) => s.deleteMistake);
   const markMistakeReviewed = useStore((s) => s.markMistakeReviewed);
+  const setProblemEditorOpen = useStore((s) => s.setProblemEditorOpen);
+  const setProblemBrowserOpen = useStore((s) => s.setProblemBrowserOpen);
 
   const [mistakeSort, setMistakeSort] = useState<MistakeSort>('recent');
   const [panelWidth, setPanelWidth] = usePersistedWidth('aicc.layout.sidebarWidth', 320, 240, 700);
@@ -133,7 +135,30 @@ export function Sidebar() {
               <div className="flex-1 overflow-y-auto p-2">
                 {tab === 'problems' && (
                   <ul className="space-y-1">
-                    {problems.length === 0 && <Empty text="还没录入题目，点顶部 + 录入" />}
+                    {problems.length === 0 && (
+                      <li className="px-3 py-8 text-center">
+                        <div className="text-sm font-semibold text-ink mb-1">还没有题目</div>
+                        <div className="text-xs text-ink-mute mb-4 leading-relaxed">
+                          先录入一道题，AI 才能结合题面分析代码和错误。
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          <button
+                            onClick={() => setProblemEditorOpen(true)}
+                            className="btn-primary justify-center text-xs py-2"
+                          >
+                            <Plus size={13} />
+                            手动录入题面
+                          </button>
+                          <button
+                            onClick={() => setProblemBrowserOpen(true)}
+                            className="btn justify-center text-xs py-2"
+                          >
+                            <Search size={13} />
+                            打开 OJ 题库
+                          </button>
+                        </div>
+                      </li>
+                    )}
                     {problems.map((p) => (
                       <li
                         key={p.id}

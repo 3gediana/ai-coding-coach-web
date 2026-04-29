@@ -962,8 +962,14 @@ export const useStore = create<State>((set, get) => {
           onSuccess: async (result) => {
             const r = result as AnalysisResult;
             const pid = problem?.id ?? DRAFT_SCOPE;
+            const stamped: AnalysisResult = {
+              ...r,
+              fileId: file.id,
+              codeHash: codeHash(file.content),
+              analyzedAt: Date.now(),
+            };
             set((s) => ({
-              analysisByProblem: { ...s.analysisByProblem, [pid]: r },
+              analysisByProblem: { ...s.analysisByProblem, [pid]: stamped },
             }));
             await storage.appendEvent({
               ts: Date.now(),
@@ -974,20 +980,20 @@ export const useStore = create<State>((set, get) => {
                 reason: opts?.reason ?? 'manual',
                 fileId: file.id,
                 fileName: file.name,
-                issueCount: r.issues.length,
-                issuesSnapshot: r.issues.slice(0, 10).map((i) => ({
+                issueCount: stamped.issues.length,
+                issuesSnapshot: stamped.issues.map((i) => ({
                   line: i.line,
                   severity: i.severity,
                   category: i.category,
-                  message: i.message.slice(0, 120),
+                  message: i.message,
                 })),
-                overallComment: r.overallComment?.slice(0, 200),
+                overallComment: stamped.overallComment,
                 codeHash: codeHash(file.content),
                 codeLineCount: file.content.split('\n').length,
               },
             });
             toast.success(
-              `分析完成：${r.issues.length === 0 ? '没发现明显问题' : `${r.issues.length} 个问题`}`,
+              `分析完成：${stamped.issues.length === 0 ? '没发现明显问题' : `${stamped.issues.length} 个问题`}`,
             );
           },
         },

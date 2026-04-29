@@ -9,12 +9,14 @@ import {
   ExternalLink,
   MessageCircle,
   ChevronDown,
+  AlertTriangle,
 } from 'lucide-react';
 import { MathMarkdown } from './MathMarkdown';
 import { QAPanel } from './QAPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
 import { useState } from 'react';
+import { codeHash } from '../core/utils';
 
 export function FeedbackPanel() {
   const [width, setWidth] = usePersistedWidth('aicc.layout.feedbackWidth', 400, 280, 900);
@@ -23,6 +25,8 @@ export function FeedbackPanel() {
   const tasks = useStore((s) => s.tasks);
   const streamPreview = useStore((s) => s.streamPreviewById);
   const problems = useStore((s) => s.problems);
+  const filesByScope = useStore((s) => s.filesByScope);
+  const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
   const qaByProblem = useStore((s) => s.qaByProblem);
   const qaPendingProblemId = useStore((s) => s.qaPendingProblemId);
   // tab 状态升到 store：CodeEditor 框选「问 AI」时能从外面切到 ask
@@ -32,6 +36,12 @@ export function FeedbackPanel() {
   const key = activeProblemId ?? '__draft__';
   const result = analysisByProblem[key];
   const problem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
+  const activeFile = (filesByScope[key] ?? []).find((f) => f.id === activeFileIdByScope[key]);
+  const resultFresh =
+    !!result &&
+    !!activeFile &&
+    (!result.fileId || result.fileId === activeFile.id) &&
+    (!result.codeHash || result.codeHash === codeHash(activeFile.content));
   const qaCount = (qaByProblem[key] ?? []).filter((m) => m.role === 'user').length;
   const qaActive = qaPendingProblemId === key;
 
@@ -118,7 +128,7 @@ export function FeedbackPanel() {
 
           {/* 历史结果 */}
           {result ? (
-            <ResultView result={result} />
+            <ResultView result={result} stale={!resultFresh} />
           ) : !runningAnalysis ? (
             <EmptyState />
           ) : null}
@@ -218,11 +228,29 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   );
 }
 
-function ResultView({ result }: { result: import('../core/types').AnalysisResult }) {
+function ResultView({
+  result,
+  stale,
+}: {
+  result: import('../core/types').AnalysisResult;
+  stale: boolean;
+}) {
   const issues = result.issues;
   const route = result.routeInfo;
   return (
     <div className="p-4 space-y-3">
+      {stale && (
+        <div className="rounded-lg border border-warn/35 bg-warn/10 px-3 py-2 text-xs text-warn flex items-start gap-2">
+          <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+          <div>
+            <div className="font-semibold">这份分析来自旧代码</div>
+            <div className="text-[11px] opacity-85 mt-0.5">
+              你已经修改过当前文件，行内批注已隐藏。请重新点击「分析代码」获取当前版本反馈。
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* 路由标签：让用户一眼看到这次反馈是本地还是云端 */}
       {route && (
         <div

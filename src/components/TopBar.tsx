@@ -186,12 +186,15 @@ export function TopBar() {
       <button
         onClick={() => setSettingsOpen(true)}
         className={cn(
-          'btn-ghost relative',
-          !apiOk && '!text-warn hover:!text-warn',
+          'relative',
+          apiOk
+            ? 'btn-ghost'
+            : 'btn border-warn/50 bg-warn/10 text-warn hover:bg-warn/15 hover:border-warn/70',
         )}
         title={apiOk ? 'AI 设置' : 'AI 未配置 — 点击配置'}
       >
         <Settings size={14} />
+        {!apiOk && <span className="hidden md:inline text-xs font-semibold">配置 AI</span>}
         {!apiOk && (
           <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-warn animate-pulseGlow" />
         )}

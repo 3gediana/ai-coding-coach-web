@@ -47,6 +47,9 @@ export interface AnalysisResult {
   issues: CodeIssue[];
   complexitySummary?: string;
   overallComment?: string;
+  fileId?: string;
+  codeHash?: string;
+  analyzedAt?: number;
   /** 路由决策信息（用于 UI 展示"用了哪个模型"） */
   routeInfo?: {
     /** 是否走 fastLane */
