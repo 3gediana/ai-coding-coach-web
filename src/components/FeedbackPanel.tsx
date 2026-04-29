@@ -1,3 +1,13 @@
+/**
+ * 右侧栏：题目 & 分析 / 问教练 双 tab + 底部嵌入 Agent 行动日志（可拖动调高度）。
+ *
+ * 布局（自上而下）：
+ *  - h-9 标题行：Coach 状态 + 进度
+ *  - h-9 Tab 行：题目 / 问教练
+ *  - flex-1：tab 内容（题目 → ProblemSummary + 实时流 + ResultView；问教练 → QAPanel）
+ *  - 1px row resize handle（拖动改变下方 trace 区高度）
+ *  - 固定 height：AgentTracePanel
+ */
 import { motion, AnimatePresence } from 'framer-motion';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
@@ -14,12 +24,19 @@ import {
 import { MathMarkdown } from './MathMarkdown';
 import { QAPanel } from './QAPanel';
 import { ResizeHandle } from './ResizeHandle';
+import { AgentTracePanel } from './AgentTracePanel';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { codeHash } from '../core/utils';
 
 export function FeedbackPanel() {
-  const [width, setWidth] = usePersistedWidth('aicc.layout.feedbackWidth', 400, 280, 900);
+  const [width, setWidth] = usePersistedWidth('aicc.layout.feedbackWidth', 420, 280, 900);
+  const [traceH, setTraceH] = usePersistedWidth(
+    'aicc.layout.traceHeight',
+    180,
+    80,
+    640,
+  );
   const activeProblemId = useStore((s) => s.activeProblemId);
   const analysisByProblem = useStore((s) => s.analysisByProblem);
   const tasks = useStore((s) => s.tasks);
@@ -29,13 +46,14 @@ export function FeedbackPanel() {
   const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
   const qaByProblem = useStore((s) => s.qaByProblem);
   const qaPendingProblemId = useStore((s) => s.qaPendingProblemId);
-  // tab 状态升到 store：CodeEditor 框选「问 AI」时能从外面切到 ask
   const tab = useStore((s) => s.feedbackTab);
   const setTab = useStore((s) => s.setFeedbackTab);
 
   const key = activeProblemId ?? '__draft__';
   const result = analysisByProblem[key];
-  const problem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
+  const problem = activeProblemId
+    ? problems.find((p) => p.id === activeProblemId) ?? null
+    : null;
   const activeFile = (filesByScope[key] ?? []).find((f) => f.id === activeFileIdByScope[key]);
   const resultFresh =
     !!result &&
@@ -45,7 +63,6 @@ export function FeedbackPanel() {
   const qaCount = (qaByProblem[key] ?? []).filter((m) => m.role === 'user').length;
   const qaActive = qaPendingProblemId === key;
 
-  // 找到正在跑的相关任务
   const runningAnalysis = tasks.find(
     (t) => t.kind === 'analyze-code' && t.status === 'running',
   );
@@ -57,97 +74,159 @@ export function FeedbackPanel() {
         className="border-l border-line bg-bg flex flex-col min-h-0 flex-shrink-0"
         style={{ width: `${width}px` }}
       >
-      {/* Tab toolbar */}
-      <div className="h-9 border-b border-line bg-bg-elev flex items-stretch text-xs">
-        <button
-          onClick={() => setTab('analyze')}
-          className={cn(
-            'px-3 flex items-center gap-1.5 border-b-2 transition',
-            tab === 'analyze'
-              ? 'border-accent text-accent-glow font-semibold'
-              : 'border-transparent text-ink-dim hover:text-ink',
-          )}
-        >
-          <Sparkles size={13} />
-          分析
-          {runningAnalysis && (
-            <Loader2 size={11} className="animate-spin text-accent" />
-          )}
-        </button>
-        <button
-          onClick={() => setTab('ask')}
-          className={cn(
-            'px-3 flex items-center gap-1.5 border-b-2 transition',
-            tab === 'ask'
-              ? 'border-accent text-accent-glow font-semibold'
-              : 'border-transparent text-ink-dim hover:text-ink',
-          )}
-        >
-          <MessageCircle size={13} />
-          问 AI
+        <div className="h-9 border-b border-line bg-bg-elev flex items-center px-3 gap-2 text-xs shrink-0">
+          <div className="flex items-center gap-1.5 text-accent-glow font-semibold">
+            <Sparkles size={13} />
+            Coach
+          </div>
+          <div className="flex-1" />
           {qaCount > 0 && (
-            <span className="chip text-[9px] px-1.5 py-0">{qaCount}</span>
+            <span className="chip text-[9px] px-1.5 py-0">{qaCount} 问</span>
           )}
-          {qaActive && (
+          {(qaActive || runningAnalysis) && (
             <Loader2 size={11} className="animate-spin text-accent" />
           )}
-        </button>
-        <div className="flex-1" />
-      </div>
-
-      {/* Tab 内容（题目摘要 + 实时流 + 历史结果共用滚动容器，避免长题目顶死） */}
-      {tab === 'ask' ? (
-        <QAPanel />
-      ) : (
-        <div className="flex-1 overflow-y-auto min-h-0">
-          {/* 题目摘要（放进滚动容器，长题目可滚 + 可折叠） */}
-          {problem && <ProblemSummary problem={problem} />}
-
-          {/* 实时流（如果在跑） */}
-          <AnimatePresence>
-            {runningAnalysis && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                className="border-b border-line/60 bg-accent/5"
-              >
-                <div className="px-4 py-3">
-                  <div className="flex items-center gap-2 text-xs text-accent-glow font-semibold mb-2">
-                    <Activity size={12} className="animate-pulse" />
-                    实时流式输出
-                  </div>
-                  <pre className="text-[11px] text-ink-dim font-mono leading-relaxed max-h-48 overflow-y-auto whitespace-pre-wrap">
-                    {streamPreview[runningAnalysis.id] || '正在思考…'}
-                    <span className="inline-block w-1.5 h-3 bg-accent ml-0.5 animate-pulse" />
-                  </pre>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-
-          {/* 历史结果 */}
-          {result ? (
-            <ResultView result={result} stale={!resultFresh} />
-          ) : !runningAnalysis ? (
-            <EmptyState />
-          ) : null}
-
-          {/* 底部留白：让最后一行能滚到 TaskTray 上方（避免被任务队列浮窗遮挡） */}
-          <div className="h-20 shrink-0" aria-hidden="true" />
         </div>
-      )}
+
+        <div className="h-9 border-b border-line bg-bg-elev/60 flex items-stretch shrink-0">
+          <TabButton
+            active={tab === 'analyze'}
+            onClick={() => setTab('analyze')}
+            icon={<ScrollText size={12} />}
+            label="题目 & 分析"
+            badge={result && result.issues.length > 0 ? result.issues.length : undefined}
+          />
+          <TabButton
+            active={tab === 'ask'}
+            onClick={() => setTab('ask')}
+            icon={<MessageCircle size={12} />}
+            label="问教练"
+            badge={qaCount > 0 ? qaCount : undefined}
+            pulsing={qaActive}
+          />
+        </div>
+
+        <div className="flex-1 flex flex-col min-h-0">
+          {tab === 'analyze' ? (
+            <AnalyzeTabContent
+              problem={problem}
+              result={result}
+              resultFresh={resultFresh}
+              runningAnalysis={runningAnalysis}
+              streamPreview={streamPreview}
+            />
+          ) : (
+            <QAPanel />
+          )}
+        </div>
+
+        <RowResizeHandle currentHeight={traceH} onResize={setTraceH} min={80} max={640} />
+        <div
+          className="border-t border-line shrink-0 overflow-hidden"
+          style={{ height: `${traceH}px` }}
+        >
+          <AgentTracePanel />
+        </div>
       </aside>
     </>
   );
 }
 
-/** 题目摘要：去嵌套卡片，靠标题 + 字距分隔。学生主要时间看代码不看摘要，紧凑优先 */
+function TabButton({
+  active,
+  onClick,
+  icon,
+  label,
+  badge,
+  pulsing,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label: string;
+  badge?: number;
+  pulsing?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        'flex-1 flex items-center justify-center gap-1.5 text-xs font-medium border-b-2 transition',
+        active
+          ? 'border-accent text-accent-glow bg-accent/5'
+          : 'border-transparent text-ink-dim hover:text-ink hover:bg-bg-elev2',
+      )}
+    >
+      <span className="shrink-0">{icon}</span>
+      <span>{label}</span>
+      {pulsing && (
+        <Loader2 size={10} className="animate-spin text-accent shrink-0" />
+      )}
+      {!pulsing && badge !== undefined && (
+        <span
+          className={cn(
+            'chip text-[9px] px-1.5 py-0',
+            active ? 'border-accent/60 text-accent' : '',
+          )}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function AnalyzeTabContent({
+  problem,
+  result,
+  resultFresh,
+  runningAnalysis,
+  streamPreview,
+}: {
+  problem: import('../core/types').Problem | null;
+  result?: import('../core/types').AnalysisResult;
+  resultFresh: boolean;
+  runningAnalysis: import('../lib/store').Task | undefined;
+  streamPreview: Record<string, string>;
+}) {
+  return (
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      {problem && <ProblemSummary problem={problem} />}
+      <AnimatePresence>
+        {runningAnalysis && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="border-b border-line/60 bg-accent/5"
+          >
+            <div className="px-4 py-3">
+              <div className="flex items-center gap-2 text-xs text-accent-glow font-semibold mb-2">
+                <Activity size={12} className="animate-pulse" />
+                实时流式输出
+              </div>
+              <pre className="text-[11px] text-ink-dim font-mono leading-relaxed max-h-32 overflow-y-auto whitespace-pre-wrap">
+                {streamPreview[runningAnalysis.id] || '正在思考…'}
+                <span className="inline-block w-1.5 h-3 bg-accent ml-0.5 animate-pulse" />
+              </pre>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      {result ? (
+        <ResultView result={result} stale={!resultFresh} />
+      ) : !runningAnalysis ? (
+        <EmptyState problemActive={!!problem} />
+      ) : null}
+    </div>
+  );
+}
+
+/** 题目摘要：去嵌套卡片，靠标题 + 字距分隔 */
 function ProblemSummary({ problem }: { problem: import('../core/types').Problem }) {
   const [open, setOpen] = useState(true);
   return (
     <div className="border-b border-line/60 bg-bg">
-      {/* sticky header：滚动到下方时标题仍然可见，便于折叠 */}
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -166,55 +245,66 @@ function ProblemSummary({ problem }: { problem: import('../core/types').Problem 
         {problem.tags && problem.tags.length > 0 && (
           <span className="flex gap-1 shrink-0">
             {problem.tags.slice(0, 2).map((t) => (
-              <span key={t} className="chip text-[9px] px-1.5 py-0">{t}</span>
+              <span key={t} className="chip text-[9px] px-1.5 py-0">
+                {t}
+              </span>
             ))}
           </span>
         )}
       </button>
       {open && (
-      <div className="px-4 py-3 text-xs text-ink-dim space-y-3">
-        <MathMarkdown compact className="leading-relaxed">
-          {problem.statement}
-        </MathMarkdown>
+        <div className="px-4 py-3 text-xs text-ink-dim space-y-3">
+          <MathMarkdown compact className="leading-relaxed">
+            {problem.statement}
+          </MathMarkdown>
 
-        {problem.constraints && (
-          <div>
-            <SectionHeader>约束</SectionHeader>
-            <div className="text-[11px] mt-1">
-              <MathMarkdown compact>{problem.constraints}</MathMarkdown>
+          {problem.constraints && (
+            <div>
+              <SectionHeader>约束</SectionHeader>
+              <div className="text-[11px] mt-1">
+                <MathMarkdown compact>{problem.constraints}</MathMarkdown>
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {problem.examples && problem.examples.length > 0 && (
-          <div>
-            <SectionHeader>示例</SectionHeader>
-            <div className="space-y-2 mt-1">
-              {problem.examples.slice(0, 2).map((ex, i) => (
-                <div key={i} className="font-mono text-[11px] border-l-2 border-line pl-2.5">
-                  <div className="text-cyan/80 text-[10px] mb-0.5">输入</div>
-                  <div className="whitespace-pre-wrap">{ex.input}</div>
-                  <div className="text-ok/80 text-[10px] mt-1.5 mb-0.5">输出</div>
-                  <div className="whitespace-pre-wrap">{ex.output}</div>
-                </div>
-              ))}
+          {problem.examples && problem.examples.length > 0 && (
+            <div>
+              <SectionHeader>示例</SectionHeader>
+              <div className="space-y-2 mt-1">
+                {problem.examples.slice(0, 2).map((ex, i) => (
+                  <div key={i} className="font-mono text-[11px] border-l-2 border-line pl-2.5">
+                    <div className="text-cyan/80 text-[10px] mb-0.5">输入</div>
+                    <div className="whitespace-pre-wrap">{ex.input}</div>
+                    <div className="text-ok/80 text-[10px] mt-1.5 mb-0.5">输出</div>
+                    <div className="whitespace-pre-wrap">{ex.output}</div>
+                  </div>
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {problem.source && /^https?:\/\//.test(problem.source) && (
-          <a
-            href={problem.source}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-[11px] text-accent hover:text-accent-glow transition"
-            title={problem.source}
-          >
-            <ExternalLink size={11} />
-            打开原题页
-          </a>
-        )}
-      </div>
+          {problem.plainExplanation && (
+            <div className="rounded-lg border border-accent/20 bg-accent/5 px-3 py-2">
+              <SectionHeader>白话</SectionHeader>
+              <div className="text-[12px] text-ink-dim leading-relaxed mt-1">
+                <MathMarkdown compact>{problem.plainExplanation}</MathMarkdown>
+              </div>
+            </div>
+          )}
+
+          {problem.source && /^https?:\/\//.test(problem.source) && (
+            <a
+              href={problem.source}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-[11px] text-accent hover:text-accent-glow transition"
+              title={problem.source}
+            >
+              <ExternalLink size={11} />
+              打开原题页
+            </a>
+          )}
+        </div>
       )}
     </div>
   );
@@ -245,13 +335,12 @@ function ResultView({
           <div>
             <div className="font-semibold">这份分析来自旧代码</div>
             <div className="text-[11px] opacity-85 mt-0.5">
-              你已经修改过当前文件，行内批注已隐藏。请重新点击「分析代码」获取当前版本反馈。
+              你已经修改过当前文件，行内批注已隐藏。可以直接问 Coach「帮我看看哪里错了」获取当前版本反馈。
             </div>
           </div>
         </div>
       )}
 
-      {/* 路由标签：让用户一眼看到这次反馈是本地还是云端 */}
       {route && (
         <div
           className={cn(
@@ -285,7 +374,6 @@ function ResultView({
         </div>
       )}
 
-      {/* 按 severity 分类的小计（不再展开列表，详细 issue 已 inline 显示在代码里） */}
       <div className="flex items-center gap-2 text-[11px] text-ink-mute flex-wrap">
         <span className="label">本次发现</span>
         {issues.length === 0 ? (
@@ -311,9 +399,7 @@ function ResultView({
                 </span>
               );
             })}
-            <span className="text-ink-mute italic ml-1">
-              （详情见代码行末批注）
-            </span>
+            <span className="text-ink-mute italic ml-1">（详情见代码行末批注）</span>
           </>
         )}
       </div>
@@ -328,13 +414,68 @@ const SEV_LABEL: Record<string, string> = {
   hint: '风格',
 };
 
-
-function EmptyState() {
+function EmptyState({ problemActive }: { problemActive: boolean }) {
   return (
     <div className="px-4 py-6 text-center text-[11px] text-ink-mute leading-relaxed">
-      写完代码点顶部「分析代码」即可，问题会以
-      <span className="text-accent"> // 批注 </span>
-      形式直接出现在代码行末。
+      {problemActive ? (
+        <>
+          写完代码可以直接问 Coach「帮我看看哪里错了」，问题会以
+          <span className="text-accent"> // 批注 </span>
+          形式直接出现在代码行末。
+        </>
+      ) : (
+        <>从左侧选一道题激活。激活后这里会显示题面和 AI 分析。</>
+      )}
+    </div>
+  );
+}
+
+// ───────── 行 resize handle（顶边拖动改下方区高度） ─────────
+
+function RowResizeHandle({
+  currentHeight,
+  onResize,
+  min,
+  max,
+}: {
+  currentHeight: number;
+  onResize: (h: number) => void;
+  min: number;
+  max: number;
+}) {
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  const onMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragRef.current = { startY: e.clientY, startH: currentHeight };
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const delta = dragRef.current.startY - ev.clientY;
+      const next = Math.max(min, Math.min(max, dragRef.current.startH + delta));
+      onResize(next);
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+  };
+
+  return (
+    <div
+      onMouseDown={onMouseDown}
+      className="group relative h-1 cursor-row-resize shrink-0 hover:bg-accent/30 active:bg-accent/50 transition-colors"
+      title="拖动调整 Agent 行动区高度"
+    >
+      <div className="absolute inset-x-0 -inset-y-px group-hover:bg-accent/30 group-active:bg-accent/50 transition-colors" />
     </div>
   );
 }

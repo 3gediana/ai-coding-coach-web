@@ -52,6 +52,7 @@ export function ProblemBrowserModal() {
   const problems = useStore((s) => s.problems);
   const refreshProblems = useStore((s) => s.refreshProblems);
   const setActiveProblem = useStore((s) => s.setActiveProblem);
+  const requestPlainExplanation = useStore((s) => s.requestPlainExplanation);
 
   const [activeSite, setActiveSite] = useState<ListSite>('luogu');
   // 当前 site 的全部缓存项（按 pid 排序）
@@ -211,6 +212,8 @@ export function ProblemBrowserModal() {
       await setActiveProblem(problem.id);
       toast.success(`已加入题库：${preview.title}`);
       setOpen(false);
+      // OJ 抓回的题没有 plainExplanation，后台静默调 AI 补一段白话；失败也不打扰
+      void requestPlainExplanation(problem.id);
     } catch (e) {
       toast.error('入库失败', { description: String((e as any)?.message || e) });
     } finally {

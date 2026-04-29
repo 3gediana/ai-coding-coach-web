@@ -35,18 +35,34 @@ interface OutputLine {
   text: string;
 }
 
+/** 样例对比：去除行首/尾空白、归一换行，逐行 trim 比较 */
+function normalizeSampleText(s: string): string {
+  return s
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.replace(/[\t ]+$/g, '').replace(/^\s+/, ''))
+    .join('\n')
+    .trim();
+}
+
 export function RuntimePane() {
   const open = useStore((s) => s.runtimePaneOpen);
   const setOpen = useStore((s) => s.setRuntimePaneOpen);
   const filesByScope = useStore((s) => s.filesByScope);
   const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
   const activeProblemId = useStore((s) => s.activeProblemId);
+  const problems = useStore((s) => s.problems);
   const setAskPrefill = useStore((s) => s.setAskPrefill);
   const setFeedbackTab = useStore((s) => s.setFeedbackTab);
+  const setCoachDraft = useStore((s) => s.setCoachDraft);
   const setLastRun = useStore((s) => s.setLastRun);
+  const enqueueHackCase = useStore((s) => s.enqueueHackCase);
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const file = (filesByScope[scope] ?? []).find((f) => f.id === activeFileIdByScope[scope]);
+  const activeProblem = activeProblemId
+    ? problems.find((p) => p.id === activeProblemId)
+    : null;
 
   const [stdin, setStdin] = useState('');
   const [output, setOutput] = useState<OutputLine[]>([]);
@@ -54,6 +70,10 @@ export function RuntimePane() {
   const [progress, setProgress] = useState<string>('');
   const [duration, setDuration] = useState<number | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
+
+  // hack case 触发去抖：同一文件 30s 内只触发一次主动出题
+  const lastHackTriggerRef = useRef<{ fileId: string; ts: number } | null>(null);
+  const pendingHackRunRef = useRef(false);
 
   const outputRef = useRef<HTMLDivElement | null>(null);
   // auto-scroll
@@ -67,12 +87,13 @@ export function RuntimePane() {
     setOutput((prev) => [...prev, { kind, text }]);
   };
 
-  const onRun = async () => {
+  const onRun = async (forceStdin?: string) => {
     if (!file) return;
     if (!isRuntimeSupported(file.language)) {
       toast.error(`${file.language} 文件不支持运行`);
       return;
     }
+    const stdinForRun = forceStdin ?? stdin;
     setRunning(true);
     setOutput([]);
     setDuration(null);
@@ -94,9 +115,9 @@ export function RuntimePane() {
 
       let result;
       if (file.language === 'python') {
-        result = await runPython(file.content, stdin, opts);
+        result = await runPython(file.content, stdinForRun, opts);
       } else {
-        result = await runCpp(file.content, stdin, { ...opts, language: file.language as 'cpp' | 'c' });
+        result = await runCpp(file.content, stdinForRun, { ...opts, language: file.language as 'cpp' | 'c' });
       }
       setDuration(result.durationMs);
       setExitCode(result.exitCode);
@@ -111,7 +132,7 @@ export function RuntimePane() {
         fileName: file.name,
         language: file.language,
         exitCode: result.exitCode,
-        stdin,
+        stdin: stdinForRun,
         stdout: result.stdout || '',
         stderr: result.stderr || '',
         durationMs: result.durationMs,
@@ -124,9 +145,29 @@ export function RuntimePane() {
           duration: 7000,
         });
       }
+      // ───── 主动 hack case 触发 ─────
+      // 条件：当前样例输入与 examples[0].input 一致，输出与 examples[0].output 一致，
+      //       且同 file 30s 内未触发过 hack case，且本次不是由 hack case 自动跑触发的
+      const sample = activeProblem?.examples?.[0];
+      if (
+        result.exitCode === 0 &&
+        sample &&
+        sample.input.trim() &&
+        normalizeSampleText(stdinForRun) === normalizeSampleText(sample.input) &&
+        normalizeSampleText(result.stdout || '') === normalizeSampleText(sample.output) &&
+        !pendingHackRunRef.current
+      ) {
+        const last = lastHackTriggerRef.current;
+        if (!last || last.fileId !== file.id || Date.now() - last.ts > 30_000) {
+          lastHackTriggerRef.current = { fileId: file.id, ts: Date.now() };
+          enqueueHackCase({ reason: 'sample-passed' });
+        }
+      }
+      pendingHackRunRef.current = false;
     } catch (e: any) {
       append('stderr', `运行时错误：${e?.message ?? e}`);
       setExitCode(-1);
+      pendingHackRunRef.current = false;
       toast.error('运行抛出异常', {
         description: '点终端右上「让 AI 看看错误」按钮，AI 会帮你分析',
         duration: 7000,
@@ -137,24 +178,31 @@ export function RuntimePane() {
     }
   };
 
+  // 监听 HackCaseCard 触发的 stdin 灌入 + 自动跑事件
+  useEffect(() => {
+    const onHackRun = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail as { stdin?: string } | undefined;
+      const newStdin = detail?.stdin ?? '';
+      if (!newStdin) return;
+      setStdin(newStdin);
+      pendingHackRunRef.current = true; // 防止本次结果再次触发出 hack
+      void onRun(newStdin);
+    };
+    window.addEventListener('aicc:hack-case-run', onHackRun as EventListener);
+    return () => window.removeEventListener('aicc:hack-case-run', onHackRun as EventListener);
+    // onRun 闭包里依赖 file/stdin，但每次 effect 重建会 lose 监听 → 忽略 deps，仅挂一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const onAskAI = () => {
     if (!file) return;
-    // 收集 stderr + system 输出（运行失败的关键信息）
-    const errorLines = output
-      .filter((l) => l.kind === 'stderr' || l.kind === 'system')
-      .map((l) => l.text)
-      .join('\n')
-      .slice(-2000); // 只保留最后 2000 字，避免 prompt 过大
-    const codePreview = file.content.slice(0, 1500);
-    const prefill =
-      `运行 \`${file.name}\` 失败（退出码 ${exitCode}）。\n\n` +
-      `**输入 (stdin)**:\n\`\`\`\n${stdin || '(空)'}\n\`\`\`\n\n` +
-      `**错误输出**:\n\`\`\`\n${errorLines || '(无 stderr)'}\n\`\`\`\n\n` +
-      `**代码** (${file.language}):\n\`\`\`${file.language}\n${codePreview}${file.content.length > 1500 ? '\n// ... [中段省略]' : ''}\n\`\`\`\n\n` +
-      `请帮我分析这个错误的原因，给出最小的修改建议。`;
-    setAskPrefill(prefill);
+    setCoachDraft({ source: 'runtime-error' });
+    setAskPrefill('帮我看看这次运行错误');
     setFeedbackTab('ask');
-    toast.info('已把错误信息发给 AI', { description: '右栏「问 AI」会自动展开输入框' });
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('[data-coach-input]')?.focus();
+    });
+    toast.info('Coach 会自动带上 stderr、stdin 和当前代码');
   };
 
   const onClear = () => {
@@ -207,15 +255,15 @@ export function RuntimePane() {
           </span>
         )}
 
-        {/* 失败时显示「让 AI 看」按钮：把 stderr + 代码 prefill 到问 AI */}
+        {/* 失败时显示 Coach 入口 */}
         {exitCode !== null && exitCode !== 0 && !running && (
           <button
             onClick={onAskAI}
             className="ml-2 px-2 py-0.5 text-[11px] rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 hover:border-accent/60 transition flex items-center gap-1 font-semibold"
-            title="把错误输出 + 代码 + stdin 发给 AI 分析"
+            title="让 Coach 自动结合错误输出、输入和代码分析"
           >
             <Sparkles size={11} />
-            让 AI 看看错误
+            问教练
           </button>
         )}
 
@@ -223,7 +271,7 @@ export function RuntimePane() {
           {!running ? (
             <button
               data-runtime-pane-run
-              onClick={onRun}
+              onClick={() => void onRun()}
               className="btn-primary py-1 text-xs"
               disabled={!supported || !file?.content?.trim()}
               title={

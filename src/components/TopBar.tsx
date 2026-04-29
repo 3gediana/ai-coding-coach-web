@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion';
 import { useEffect } from 'react';
-import { Settings, Sparkles, Plus, Play, CheckCircle2, PlayCircle, Library, Lightbulb } from 'lucide-react';
+import { Settings, Sparkles, Plus, CheckCircle2, PlayCircle, Library, MessageCircleQuestion } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { isRuntimeSupported } from '../lib/runtime';
@@ -26,8 +26,11 @@ export function TopBar() {
   const setCmdPaletteOpen = useStore((s) => s.setCmdPaletteOpen);
   const setSubmitModalOpen = useStore((s) => s.setSubmitModalOpen);
   const setRuntimePaneOpen = useStore((s) => s.setRuntimePaneOpen);
-  const enqueueAnalyze = useStore((s) => s.enqueueAnalyze);
-  const enqueueStuckHint = useStore((s) => s.enqueueStuckHint);
+  const setAskPrefill = useStore((s) => s.setAskPrefill);
+  const setCoachDraft = useStore((s) => s.setCoachDraft);
+  const setFeedbackTab = useStore((s) => s.setFeedbackTab);
+  const askCoach = useStore((s) => s.askCoach);
+  const onboardingStep = useStore((s) => s.onboardingStep);
   const activeProblemId = useStore((s) => s.activeProblemId);
   const problems = useStore((s) => s.problems);
   const filesByScope = useStore((s) => s.filesByScope);
@@ -48,6 +51,19 @@ export function TopBar() {
     activeFile &&
     (activeFile.language === 'cpp' || activeFile.language === 'c' || activeFile.language === 'python');
   const canRun = activeFile && isRuntimeSupported(activeFile.language);
+  const openCoach = () => {
+    setFeedbackTab('ask');
+    setCoachDraft({ source: 'topbar' });
+    // Onboarding wait-analyze：直接发起一次代码审查，不让新用户卡在 "该问什么"
+    if (onboardingStep === 'wait-analyze' && activeFile) {
+      void askCoach({ text: '帮我看看我的代码哪里错了', source: 'topbar' });
+      return;
+    }
+    setAskPrefill(activeFile ? '帮我看看我现在应该注意什么' : '我现在有点卡住了，帮我理一下');
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('[data-coach-input]')?.focus();
+    });
+  };
 
   // Ctrl+Enter 全局：展开终端 + 触发运行
   useEffect(() => {
@@ -131,36 +147,19 @@ export function TopBar() {
         <PlayCircle size={15} />
       </button>
 
-      {/* 求助：苏格拉底引导（学生主动按，不打扰） */}
-      {activeProblemId && (
-        <button
-          onClick={() => enqueueStuckHint()}
-          className="btn-ghost hover:!text-warn"
-          disabled={!canAnalyze}
-          title="卡住了？让 AI 给 1-2 个苏格拉底问题（不直接给答案）"
-        >
-          <Lightbulb size={15} />
-        </button>
-      )}
-
-      {/* 主操作：分析代码（唯一 primary，视觉焦点） */}
       <button
         data-onboarding="analyze"
-        onClick={() => enqueueAnalyze({ reason: 'manual' })}
+        onClick={openCoach}
         className="btn-primary"
-        disabled={!canAnalyze}
+        disabled={!apiOk}
         title={
           !apiOk
             ? '请先配置 AI'
-            : !activeFile
-              ? '没有活跃文件'
-              : activeFile.language === 'markdown' || activeFile.language === 'plaintext'
-                ? '当前文件不是代码（请切到 .cpp/.py）'
-                : '触发 AI 分析（异步、流式）'
+            : '打开 Coach：直接说题意、思路、报错或代码问题'
         }
       >
-        <Play size={14} />
-        <span className="hidden md:inline">分析代码</span>
+        <MessageCircleQuestion size={14} />
+        <span className="hidden md:inline">问教练</span>
         {tasksRunning > 0 && (
           <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-white/20">
             {tasksRunning}

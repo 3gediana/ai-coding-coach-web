@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.2.9
-// @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach 项目（http://127.0.0.1:5173）。点击右下角「📤 推送」按钮触发，不自动推。
+// @version      0.3.0
+// @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach，并支持 Coach 推回代码、清空编辑器、自动提交、回传 verdict。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
 // @match        https://www.educoder.net/*
@@ -18,7 +18,7 @@
   'use strict';
   if (window.top !== window.self) return;
 
-  const COACH_URL = 'http://127.0.0.1:5173/__import';
+  const COACH_ORIGINS = ['http://127.0.0.1:5173', 'http://127.0.0.1:5174'];
 
   // ─────────── 站点检测 ───────────
 
@@ -476,31 +476,237 @@
     return 'cpp';
   }
 
-  // ─────────── 推送 ───────────
+  // ─────────── 本地桥接 HTTP ───────────
+
+  function gmRequestJson(path, { method = 'GET', data, timeout = 30_000 } = {}) {
+    return new Promise((resolve, reject) => {
+      let idx = 0;
+      const tryOne = () => {
+        const origin = COACH_ORIGINS[idx++];
+        GM_xmlhttpRequest({
+          method,
+          url: origin + path,
+          headers: { 'content-type': 'application/json' },
+          data: data === undefined ? undefined : JSON.stringify(data),
+          timeout,
+          onload: (r) => {
+            if (r.status >= 200 && r.status < 300) {
+              try {
+                resolve(JSON.parse(r.responseText || '{}'));
+              } catch {
+                resolve({ ok: true });
+              }
+            } else if (idx < COACH_ORIGINS.length) {
+              tryOne();
+            } else {
+              reject(new Error(`HTTP ${r.status}: ${r.responseText?.slice(0, 200)}`));
+            }
+          },
+          onerror: () => {
+            if (idx < COACH_ORIGINS.length) tryOne();
+            else reject(new Error('网络错误：AI Coach 是否在 5173/5174 端口运行？'));
+          },
+          ontimeout: () => {
+            if (idx < COACH_ORIGINS.length) tryOne();
+            else reject(new Error('超时（30s）'));
+          },
+        });
+      };
+      tryOne();
+    });
+  }
 
   function pushPayload(payload) {
-    return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'POST',
-        url: COACH_URL,
-        headers: { 'content-type': 'application/json' },
-        data: JSON.stringify(payload),
-        timeout: 30_000,
-        onload: (r) => {
-          if (r.status >= 200 && r.status < 300) {
-            try {
-              resolve(JSON.parse(r.responseText));
-            } catch {
-              resolve({ ok: true });
-            }
-          } else {
-            reject(new Error(`HTTP ${r.status}: ${r.responseText?.slice(0, 200)}`));
-          }
-        },
-        onerror: (e) => reject(new Error('网络错误：AI Coach 是否在 5173 端口运行？')),
-        ontimeout: () => reject(new Error('超时（30s）')),
+    return gmRequestJson('/__import', { method: 'POST', data: payload });
+  }
+
+  async function pollOjCommand(site) {
+    if (!isProblemPage(site)) return null;
+    const q = `?source=${encodeURIComponent(site)}&url=${encodeURIComponent(location.href)}`;
+    const data = await gmRequestJson(`/__oj-next-command${q}`, { timeout: 8_000 }).catch(() => null);
+    return data?.command || null;
+  }
+
+  function postOjResult(result) {
+    return gmRequestJson('/__oj-result', { method: 'POST', data: result, timeout: 15_000 });
+  }
+
+  // ─────────── OJ 回填 / 提交 ───────────
+
+  async function executeOjCommand(command) {
+    showToast(`收到 AI Coach 提交命令：${command.problemTitle || command.fileName}`, 'info');
+    try {
+      if (command.source === 'educoder') {
+        await setEducoderCode(command.code);
+      } else if (command.source === 'school-oj') {
+        await setSchoolOjCode(command.code);
+      } else {
+        throw new Error(`不支持的 OJ：${command.source}`);
+      }
+      showToast('已清空编辑器并写入 AI Coach 代码，准备提交…', 'ok');
+      if (command.autoSubmit) await clickSubmitButton(command.source);
+      const verdict = await waitForVerdict(command.source, 5 * 60_000);
+      await postOjResult({
+        id: command.id,
+        source: command.source,
+        url: location.href,
+        status: 'done',
+        verdict: verdict.verdict,
+        rawText: verdict.rawText,
+        message: verdict.message,
+        finishedAt: Date.now(),
       });
+      showToast(`OJ 判题完成：${verdict.verdict}`, verdict.verdict === 'AC' ? 'ok' : 'err');
+    } catch (err) {
+      await postOjResult({
+        id: command.id,
+        source: command.source,
+        url: location.href,
+        status: 'failed',
+        verdict: 'OTHER',
+        rawText: '',
+        message: err.message || String(err),
+        finishedAt: Date.now(),
+      }).catch(() => {});
+      showToast(`自动提交失败：${err.message || err}`, 'err');
+    }
+  }
+
+  async function setEducoderCode(code) {
+    const editors = window.monaco?.editor?.getEditors?.() || [];
+    for (const ed of editors) {
+      if (ed?.setValue && ed?.getDomNode?.()) {
+        ed.setValue('');
+        await sleep(50);
+        ed.setValue(code);
+        ed.focus?.();
+        return;
+      }
+    }
+
+    const models = window.monaco?.editor?.getModels?.() || [];
+    if (models.length > 0 && models[0]?.setValue) {
+      models[0].setValue('');
+      await sleep(50);
+      models[0].setValue(code);
+      return;
+    }
+
+    const ta = document.querySelector('[class*="my-monaco-editor"] textarea, .monaco-editor textarea');
+    if (!ta) throw new Error('未找到头歌 Monaco 编辑器 textarea');
+    ta.focus();
+    await clearAndPasteIntoFocused(code);
+  }
+
+  async function setSchoolOjCode(code) {
+    const cmEls = document.querySelectorAll('.CodeMirror');
+    for (const cm of cmEls) {
+      if (cm.CodeMirror?.setValue) {
+        cm.CodeMirror.setValue('');
+        await sleep(50);
+        cm.CodeMirror.setValue(code);
+        cm.CodeMirror.focus?.();
+        return;
+      }
+    }
+    const ta = document.querySelector('.vue-codemirror-wrap textarea, textarea');
+    if (!ta) throw new Error('未找到校内 OJ 代码编辑器');
+    ta.focus();
+    await clearAndPasteIntoFocused(code);
+  }
+
+  async function clearAndPasteIntoFocused(code) {
+    try {
+      GM_setClipboard(code);
+    } catch {
+      /* ignore */
+    }
+    document.execCommand('selectAll');
+    document.execCommand('delete');
+    await sleep(50);
+    if (!document.execCommand('insertText', false, code)) {
+      document.activeElement.value = code;
+      document.activeElement.dispatchEvent(new Event('input', { bubbles: true }));
+      document.activeElement.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+  }
+
+  async function clickSubmitButton(site) {
+    const patterns = site === 'educoder'
+      ? [/提交评测/, /评测/, /提交/, /运行评测/, /保存并评测/]
+      : [/提交/, /评测/, /运行/];
+    const btn = findClickableByText(patterns);
+    if (!btn) throw new Error('未找到提交/评测按钮');
+    btn.click();
+    await sleep(1000);
+  }
+
+  function findClickableByText(patterns) {
+    const candidates = [...document.querySelectorAll('button, a, [role="button"], .ant-btn, .el-button')];
+    return candidates.find((el) => {
+      const text = (el.innerText || el.textContent || '').replace(/\s+/g, '');
+      if (!text) return false;
+      const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true' || /disabled/.test(el.className || '');
+      return !disabled && patterns.some((p) => p.test(text));
     });
+  }
+
+  async function waitForVerdict(site, timeoutMs) {
+    const start = Date.now();
+    let lastText = '';
+    while (Date.now() - start < timeoutMs) {
+      await sleep(1500);
+      const rawText = collectVerdictText(site);
+      lastText = rawText || lastText;
+      const verdict = parseVerdict(rawText);
+      if (verdict) return { verdict, rawText, message: rawText.slice(0, 300) };
+    }
+    return { verdict: 'OTHER', rawText: lastText, message: '等待判题结果超时' };
+  }
+
+  function collectVerdictText(site) {
+    const selectors = site === 'educoder'
+      ? ['[class*="result"]', '[class*="test"]', '[class*="grade"]', '[class*="evaluate"]', '.ant-message', '.ant-modal', '.task-right-panel']
+      : ['[class*="result"]', '[class*="status"]', '[class*="judge"]', '.el-message', '.el-card'];
+    const parts = [];
+    for (const sel of selectors) {
+      for (const el of document.querySelectorAll(sel)) {
+        const t = (el.innerText || '').trim();
+        if (t && t.length < 4000) parts.push(t);
+      }
+    }
+    parts.push((document.body.innerText || '').slice(-3000));
+    return [...new Set(parts)].join('\n---\n');
+  }
+
+  function parseVerdict(text) {
+    if (!text) return null;
+    if (/编译(错误|失败)|Compilation Error|\bCE\b/i.test(text)) return 'CE';
+    if (/运行时错误|Runtime Error|\bRE\b|段错误|signal|exception/i.test(text)) return 'RE';
+    if (/时间超限|超时|Time Limit|\bTLE\b/i.test(text)) return 'TLE';
+    if (/内存超限|Memory Limit|\bMLE\b/i.test(text)) return 'MLE';
+    if (/答案错误|Wrong Answer|\bWA\b|测试未通过|未通过|不通过|结果错误/i.test(text)) return 'WA';
+    if (/评测通过|通过评测|恭喜.*通过|Accepted|\bAC\b|Congratulations|全部通过|测试通过/i.test(text)) return 'AC';
+    return null;
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  let commandRunning = false;
+  async function pollCommandsTick() {
+    if (commandRunning) return;
+    const site = detectSite();
+    if (!site || !isProblemPage(site)) return;
+    const cmd = await pollOjCommand(site);
+    if (!cmd) return;
+    commandRunning = true;
+    try {
+      await executeOjCommand(cmd);
+    } finally {
+      commandRunning = false;
+    }
   }
 
   // ─────────── UI ───────────
@@ -640,8 +846,11 @@
     };
     window.addEventListener('popstate', () => setTimeout(checkAndUpdate, 100));
     window.addEventListener('hashchange', () => setTimeout(checkAndUpdate, 100));
+    setInterval(() => {
+      pollCommandsTick().catch((err) => console.warn('[aicc-pusher] 轮询提交命令失败', err));
+    }, 2_000);
 
-    console.log('[aicc-pusher] 已加载，进入题目页右下角会出现「📤 推送」按钮');
+    console.log('[aicc-pusher] 已加载：支持题目推送 + AI Coach 推回代码自动提交');
   }
 
   if (document.readyState === 'loading') {

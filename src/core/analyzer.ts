@@ -8,11 +8,15 @@ import {
   buildAnalyzeCodePrompt,
   buildAskQuestionPrompt,
   buildExplainPastePrompt,
+  buildHackCasePrompt,
   buildParseProblemPrompt,
+  buildPlainExplanationPrompt,
   buildStuckHintPrompt,
   buildSummarizePrompt,
 } from './ai/prompts';
 import { pickRoute, type RouteHints, type RouteDecision, type RouterHints } from './ai/router';
+import { buildCoachPrompt } from './coach/prompts';
+import type { CoachRoute } from './coach/types';
 import type {
   AnalysisHistoryEntry,
   AnalysisResult,
@@ -89,6 +93,7 @@ export class Coach {
       inputFormat?: string;
       outputFormat?: string;
       constraints?: string;
+      plainExplanation?: string;
       examples?: Array<{ input: string; output: string; explanation?: string }>;
       tags?: string[];
       difficulty?: 'easy' | 'medium' | 'hard';
@@ -108,11 +113,34 @@ export class Coach {
       inputFormat: data.inputFormat,
       outputFormat: data.outputFormat,
       constraints: data.constraints,
+      plainExplanation: data.plainExplanation?.trim(),
       examples: data.examples,
       tags: data.tags ?? [],
       difficulty: data.difficulty,
       createdAt: Date.now(),
     };
+  }
+
+  /**
+   * 仅生成「白话解释」。
+   * 用于已经从 OJ（如洛谷）抓回结构化字段、但 plainExplanation 字段空缺的题目。
+   * 一次性返回（非流式）以便后台静默补齐。
+   */
+  async generatePlainExplanation(args: {
+    title: string;
+    statement: string;
+    examples?: Array<{ input: string; output: string }>;
+  }): Promise<string> {
+    const { system, user } = buildPlainExplanationPrompt(args);
+    const text = await this.ai.chat({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      maxTokens: 600,
+      temperature: 0.4,
+    });
+    return text.trim();
   }
 
   /** 分析当前代码（流式） */
@@ -248,6 +276,40 @@ export class Coach {
     return acc;
   }
 
+  async askCoach(
+    args: {
+      route: CoachRoute;
+      context: string;
+      userText: string;
+      problem?: Problem;
+      code?: string;
+      history?: { role: 'user' | 'assistant'; content: string }[];
+    },
+    opts: StreamOpts = {},
+  ): Promise<string> {
+    const { messages, maxTokens } = buildCoachPrompt(args);
+    const { client } = this.pick({
+      taskKind: 'ask',
+      problem: args.problem,
+      codeLength: args.code?.length,
+      codeLineCount: args.code?.split('\n').length,
+      questionLength: args.userText.length,
+    });
+    let acc = '';
+    for await (const _ of client.chatStream({
+      messages,
+      maxTokens,
+      temperature: 0.35,
+      ...opts,
+      onChunk: (delta, accumulated) => {
+        acc = accumulated;
+        opts.onChunk?.(delta, accumulated);
+      },
+    })) {
+    }
+    return acc;
+  }
+
   /** 错题总结（流式） */
   async summarizeMistake(
     args: {
@@ -370,6 +432,62 @@ export class Coach {
       fitsContext: !!data.fitsContext,
       concerns: data.concerns ?? [],
       suggestion: data.suggestion ?? '',
+    };
+  }
+
+  /**
+   * 主动出 hack case：跑通样例后让 Coach 自己挑战边界。
+   * 返回结构化 JSON，让上层可以直接把 stdin 灌进运行终端。
+   */
+  async generateHackCase(
+    args: {
+      problem: Problem;
+      code: string;
+      language: Lang;
+      passedSamples?: Array<{ input: string; output: string }>;
+    },
+    opts: StreamOpts = {},
+  ): Promise<{
+    stdin: string;
+    expectedOutput?: string;
+    rationale: string;
+    severity: 'edge' | 'large' | 'degenerate' | 'tricky';
+  }> {
+    const { system, user } = buildHackCasePrompt(args);
+    // 路由：hack case 偏创造性，优先用主模型（云端），代码很短再考虑 fast
+    const { client } = this.pick({
+      taskKind: 'analyze',
+      problem: args.problem,
+      codeLength: args.code.length,
+      codeLineCount: args.code.split('\n').length,
+    });
+    const data = await client.chatJsonStream<{
+      stdin?: string;
+      expectedOutput?: string;
+      rationale?: string;
+      severity?: string;
+    }>({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      maxTokens: 1200,
+      ...opts,
+    });
+    const allowed: Array<'edge' | 'large' | 'degenerate' | 'tricky'> = [
+      'edge',
+      'large',
+      'degenerate',
+      'tricky',
+    ];
+    const severity = (allowed as string[]).includes(data.severity ?? '')
+      ? (data.severity as 'edge' | 'large' | 'degenerate' | 'tricky')
+      : 'edge';
+    return {
+      stdin: (data.stdin ?? '').replace(/\r\n/g, '\n').trim(),
+      expectedOutput: data.expectedOutput?.trim() || undefined,
+      rationale: (data.rationale ?? '').trim() || '边界 case 挑战',
+      severity,
     };
   }
 }

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../lib/store';
 import type { CodeIssue, FileLang } from '../core/types';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Eye, Code2, MessageCircleQuestion, BookOpen, Bug } from 'lucide-react';
+import { Eye, Code2, MessageCircleQuestion } from 'lucide-react';
 import { cn } from '../lib/cn';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -48,7 +48,13 @@ export function CodeEditor() {
   const showPreview = isMd && mdPreview;
 
   // 框选「问 AI」浮按钮：选区非空且 ≥ 2 字符时浮起
-  const [askBtn, setAskBtn] = useState<{ x: number; y: number; text: string } | null>(null);
+  const [askBtn, setAskBtn] = useState<{
+    x: number;
+    y: number;
+    text: string;
+    startLine: number;
+    endLine: number;
+  } | null>(null);
   // 容器 ref：浮按钮的绝对定位用容器坐标系
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -287,37 +293,33 @@ export function CodeEditor() {
       // 容器坐标 = 视口坐标 - 容器视口左上
       const x = editorRect.left - containerRect.left + pos.left + 8;
       const y = editorRect.top - containerRect.top + pos.top - 30;
-      setAskBtn({ x, y, text });
+      const start = Math.min(sel.startLineNumber, sel.endLineNumber);
+      const end = Math.max(sel.startLineNumber, sel.endLineNumber);
+      setAskBtn({ x, y, text, startLine: start, endLine: end });
     });
 
     // 编辑器失焦也保留按钮（让用户能点）
     // 但选区清空（点别处）会通过上面的 onDidChangeCursorSelection 自动隐藏
   };
 
-  /**
-   * 框选浮按钮三种动作：
-   * - ask: 把代码 prefill 到输入框，让用户继续打具体问题
-   * - explain: 直接发预设"解释这段代码"问题，不需打字
-   * - bug:    直接发预设"找 bug"问题，不需打字
-   */
-  const handleAction = (action: 'ask' | 'explain' | 'bug') => {
+  const handleAction = () => {
     if (!askBtn) return;
-    const lang = file?.language ?? '';
-    const codeBlock = `\`\`\`${lang}\n${askBtn.text}\n\`\`\``;
     const st = useStore.getState();
-
-    if (action === 'ask') {
-      // prefill 到输入框，光标停在末尾，用户接着打具体问题
-      st.setAskPrefill(`关于这段代码：\n${codeBlock}\n\n`);
-    } else {
-      // 直接发预设问题，不打字
-      const presets: Record<'explain' | 'bug', string> = {
-        explain: `请简要解释下面这段代码在做什么 / 思路是什么：\n${codeBlock}`,
-        bug: `下面这段代码可能有什么 bug 或潜在问题？请指出最可能的 1-2 处：\n${codeBlock}`,
-      };
-      st.askQuestion(presets[action]);
-    }
+    st.setCoachDraft({
+      source: 'selection',
+      selection: {
+        text: askBtn.text,
+        language: file?.language,
+        fileName: file?.name,
+        startLine: askBtn.startLine,
+        endLine: askBtn.endLine,
+      },
+    });
+    st.setAskPrefill('帮我看看这段代码');
     st.setFeedbackTab('ask');
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>('[data-coach-input]')?.focus();
+    });
     setAskBtn(null);
   };
 
@@ -399,7 +401,7 @@ export function CodeEditor() {
       </div>
 
       <div ref={containerRef} className="flex-1 min-h-0 flex relative">
-        {/* 框选浮按钮组：问 AI / 解释 / 找 bug */}
+        {/* 框选浮按钮组 */}
         <AnimatePresence>
           {askBtn && (
             <motion.div
@@ -412,28 +414,12 @@ export function CodeEditor() {
               style={{ left: askBtn.x, top: Math.max(askBtn.y, 0) }}
             >
               <button
-                onClick={() => handleAction('ask')}
+                onClick={handleAction}
                 className="flex items-center gap-1 px-2 py-1 bg-accent text-bg hover:brightness-110 transition cursor-pointer"
-                title="把这段代码塞到输入框，自己写具体问题"
+                title="围绕这段代码问 Coach"
               >
                 <MessageCircleQuestion size={11} />
-                问 AI
-              </button>
-              <button
-                onClick={() => handleAction('explain')}
-                className="flex items-center gap-1 px-2 py-1 text-ink hover:bg-cyan/15 hover:text-cyan transition cursor-pointer border-l border-line"
-                title="解释这段代码做什么"
-              >
-                <BookOpen size={11} />
-                解释
-              </button>
-              <button
-                onClick={() => handleAction('bug')}
-                className="flex items-center gap-1 px-2 py-1 text-ink hover:bg-bad/15 hover:text-bad transition cursor-pointer border-l border-line"
-                title="找出可能的 bug / 潜在问题"
-              >
-                <Bug size={11} />
-                找 bug
+                问这段
               </button>
             </motion.div>
           )}

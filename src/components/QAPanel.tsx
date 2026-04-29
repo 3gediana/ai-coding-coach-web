@@ -14,20 +14,23 @@ import { Loader2, Trash2, User, Sparkles, Send, AlertTriangle, MessageCircle } f
 import { useStore } from '../lib/store';
 import { MathMarkdown } from './MathMarkdown';
 import { cn } from '../lib/cn';
+import type { CoachRoute } from '../core/coach/types';
 
 const DRAFT_SCOPE = '__draft__';
 
 export function QAPanel() {
   const activeProblemId = useStore((s) => s.activeProblemId);
   const qaByProblem = useStore((s) => s.qaByProblem);
-  const askQuestion = useStore((s) => s.askQuestion);
+  const askCoach = useStore((s) => s.askCoach);
   const clearQA = useStore((s) => s.clearQA);
   const pending = useStore((s) => s.qaPendingProblemId);
   const aiOk = useStore((s) =>
-    s.aiConfig.provider === 'ollama' ? !!s.aiConfig.baseUrl : !!s.aiConfig.apiKey,
+    s.aiConfig.provider === 'ollama' ? !!s.aiConfig.baseUrl.trim() : !!s.aiConfig.apiKey.trim(),
   );
   const askPrefill = useStore((s) => s.askPrefill);
   const setAskPrefill = useStore((s) => s.setAskPrefill);
+  const coachDraft = useStore((s) => s.coachDraft);
+  const setCoachDraft = useStore((s) => s.setCoachDraft);
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const messages = qaByProblem[scope] ?? [];
@@ -69,8 +72,9 @@ export function QAPanel() {
   const onSubmit = () => {
     const q = input.trim();
     if (!q || isPending) return;
-    askQuestion(q);
+    askCoach({ text: q, source: coachDraft?.source ?? 'manual', selection: coachDraft?.selection });
     setInput('');
+    setCoachDraft(null);
   };
 
   return (
@@ -85,7 +89,7 @@ export function QAPanel() {
             <div className="text-sm font-medium text-ink-dim">问点什么</div>
             <div className="text-[11px] max-w-[280px] leading-relaxed">
               {activeProblemId
-                ? '可以问这题的思路、卷面中的知识点、代码为什么 WA… AI 会结合题面 + 当前代码回答'
+                ? '直接说你的困惑：题意、思路、报错、哪里错了，Coach 会自己判断要看哪些上下文'
                 : '没激活题目也能问一般性问题：什么是 KMP？什么是单调队列？'}
             </div>
           </div>
@@ -97,6 +101,7 @@ export function QAPanel() {
               content={m.content}
               streaming={m.streaming}
               error={m.error}
+              route={m.route}
             />
           ))
         )}
@@ -128,6 +133,7 @@ export function QAPanel() {
       {/* 输入框：置底 */}
       <div className="px-3 py-2 border-t border-line bg-bg-elev/30 flex gap-2 items-end">
         <textarea
+          data-coach-input
           ref={taRef}
           rows={1}
           value={input}
@@ -171,11 +177,13 @@ function MessageBubble({
   content,
   streaming,
   error,
+  route,
 }: {
   role: 'user' | 'assistant';
   content: string;
   streaming?: boolean;
   error?: string;
+  route?: CoachRoute;
 }) {
   const isUser = role === 'user';
   return (
@@ -200,6 +208,12 @@ function MessageBubble({
             <span className="font-mono">{error}</span>
           </div>
         )}
+        {!isUser && route && (
+          <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-ink-mute">
+            <span className="chip px-1.5 py-0">{ROUTE_LABEL[route.intent] ?? route.intent}</span>
+            <span>{route.routedBy === 'ai' ? 'AI 判断' : '规则判断'}</span>
+          </div>
+        )}
         {isUser ? (
           <div className="whitespace-pre-wrap">{content}</div>
         ) : (
@@ -214,3 +228,13 @@ function MessageBubble({
     </div>
   );
 }
+
+const ROUTE_LABEL: Record<string, string> = {
+  understand_problem: '读题',
+  check_idea: '思路',
+  debug_runtime_error: '报错',
+  review_code: '查代码',
+  explain_selection: '选区',
+  stuck_hint: '卡住',
+  general_question: '问答',
+};

@@ -17,6 +17,7 @@ export interface Problem {
   inputFormat?: string;
   outputFormat?: string;
   constraints?: string;
+  plainExplanation?: string;
   examples?: ProblemExample[];
   source?: string;
   difficulty?: 'easy' | 'medium' | 'hard';
@@ -204,6 +205,18 @@ export interface AIConfig {
     questionCharLimit?: number;
     pasteCharLimit?: number;
     heavyTags?: string[];
+  };
+  /**
+   * Coach 意图路由（独立的轻量模型，用于规则识别不出意图时的兜底）。
+   * - 不启用时只走规则路由
+   * - 启用且配置好时，按 baseUrl/apiKey/model 调用一次小模型返回 JSON
+   */
+  intentRouter?: {
+    enabled: boolean;
+    provider?: AIProvider;
+    baseUrl: string;
+    apiKey?: string;
+    model: string;
   };
 }
 

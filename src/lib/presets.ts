@@ -134,9 +134,50 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
   timeoutMs: 180_000,
   maxRetries: 2,
   // FastLane 默认值（用户在 Settings 勾选 enabled 即可启用）
+  // model 用 ollama library 公共模型 qwen3:4b（≈4GB 显存，TTFT < 500ms）
+  // 用户也可换 qwen3:8b / qwen2.5:7b / deepseek-coder:6.7b 等
   fastLane: {
     enabled: false,
     baseUrl: 'http://localhost:11434',
-    model: 'sam:latest',
+    model: 'qwen3:4b',
+  },
+  // Coach 意图路由（兜底用的小模型）。默认关闭，开启后用本地 ollama 上的小模型判断意图。
+  // 复用 fastLane 同款 qwen3:4b 避免用户多 pull 一个模型
+  intentRouter: {
+    enabled: false,
+    provider: 'ollama',
+    baseUrl: 'http://localhost:11434',
+    apiKey: '',
+    model: 'qwen3:4b',
   },
 };
+
+/**
+ * Ollama library 上公共可 pull 的推荐模型（FastLane / intentRouter 用）。
+ * 全部为 ollama 官方仓库已发布的纯文本对话模型；用户在 SettingsModal 里能直接复制 pull 命令。
+ */
+export const RECOMMENDED_OLLAMA_MODELS: Array<{
+  name: string;
+  size: string;
+  vramHint: string;
+  desc: string;
+}> = [
+  { name: 'qwen3:4b', size: '~2.6 GB', vramHint: '4 GB+', desc: '默认推荐：速度/质量平衡，TTFT < 500ms' },
+  { name: 'qwen3:8b', size: '~5.2 GB', vramHint: '6 GB+', desc: '更强推理；适合复杂题分析' },
+  { name: 'qwen2.5:7b', size: '~4.7 GB', vramHint: '6 GB+', desc: '稳定老牌，对中文友好' },
+  { name: 'deepseek-coder:6.7b', size: '~3.8 GB', vramHint: '5 GB+', desc: '代码任务专长；批注更精准' },
+  { name: 'qwen3:1.7b', size: '~1.1 GB', vramHint: '2 GB+', desc: '极低显存可用；质量略弱' },
+];
+
+/**
+ * 视觉模型（importProcessor 给 OJ 题面图片识别用）。仅在启用 OJ 桥接 + 配置后端时需要。
+ */
+export const RECOMMENDED_VISION_MODELS: Array<{
+  name: string;
+  size: string;
+  desc: string;
+}> = [
+  { name: 'minicpm-v:latest', size: '~5.5 GB', desc: '推荐：识图 + OCR 在 7B 级别里第一档' },
+  { name: 'llava:7b', size: '~4.7 GB', desc: '老牌多模态；中文 OCR 偏弱' },
+  { name: 'llama3.2-vision:11b', size: '~7.9 GB', desc: 'Meta 官方 vision；显存够再上' },
+];

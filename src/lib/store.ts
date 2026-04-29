@@ -14,6 +14,7 @@ import { toast } from 'sonner';
 
 import type {
   AIConfig,
+  AIProvider,
   AnalysisHistoryEntry,
   AnalysisResult,
   CodeFile,
@@ -32,6 +33,10 @@ import { storage } from './storage';
 import { DEFAULT_AI_CONFIG } from './presets';
 import { isLocalOllamaUrl } from './ollama';
 import { buildLearnerProfile, codeHash } from '../core/utils';
+import { buildCoachContext, formatAnalysisAsCoachMessage } from '../core/coach/context';
+import { routeCoachRequest } from '../core/coach/router';
+import type { CoachAskInput, CoachDraft, CoachRoute } from '../core/coach/types';
+import { submitToOj, type OjSubmitResult } from './ojBridge';
 import {
   buildLearningEngine,
   type BankProblem,
@@ -78,6 +83,23 @@ function hasUsableAIConfig(cfg: AIConfig): boolean {
   return cfg.provider === 'ollama' ? !!cfg.baseUrl.trim() : !!cfg.apiKey.trim();
 }
 
+function createIntentRouterClient(cfg: AIConfig): AIClient | null {
+  const ir = cfg.intentRouter;
+  if (!ir?.enabled || !ir.baseUrl?.trim() || !ir.model?.trim()) return null;
+  const provider: AIProvider = ir.provider ?? (isLocalOllamaUrl(ir.baseUrl) ? 'ollama' : cfg.provider);
+  return new AIClient({
+    provider,
+    baseUrl: ir.baseUrl.trim(),
+    apiKey: ir.apiKey?.trim() ?? '',
+    model: ir.model.trim(),
+    maxTokens: 256,
+    temperature: 0,
+    timeoutMs: 8_000,
+    maxRetries: 0,
+    numCtx: 4096,
+  });
+}
+
 /** 提交结果选项（错题或 AC 总结） */
 /** 学生提问历史一条消息：用户问 / AI 答（流式时 streaming=true） */
 export interface QAMessage {
@@ -85,6 +107,7 @@ export interface QAMessage {
   role: 'user' | 'assistant';
   content: string;
   ts: number;
+  route?: CoachRoute;
   /** assistant 消息流式中标记，结束后置 false。用户消息无此字段 */
   streaming?: boolean;
   /** 失败时的错误（仅 assistant 消息可能有） */
@@ -111,9 +134,36 @@ export type TaskKind =
   | 'parse-problem'
   | 'analyze-code'
   | 'summarize-mistake'
+  | 'oj-submit'
   | 'compare-files'
   | 'stuck-hint'
-  | 'explain-paste';
+  | 'explain-paste'
+  | 'hack-case';
+
+// ============== Agent Trace ==============
+
+/**
+ * Agent 行动日志：让评委/学生一眼看到 Coach 在「自己做事」。
+ * 关键瞬间（感知 / 决策 / 行动 / 反馈）按时间线追加，UI 实时渲染。
+ * 仅保留最近 80 条，避免内存膨胀。
+ */
+export type AgentTraceKind = 'perceive' | 'decide' | 'act' | 'feedback';
+export type AgentTraceLevel = 'info' | 'success' | 'warn' | 'error';
+
+export interface AgentTraceEvent {
+  id: string;
+  ts: number;
+  kind: AgentTraceKind;
+  level: AgentTraceLevel;
+  /** 一句话标题，UI 主显示 */
+  title: string;
+  /** 可选展开详情（命令体 / 提示词摘要 / 结果片段） */
+  detail?: string;
+  problemId?: string;
+  taskId?: string;
+}
+
+const AGENT_TRACE_LIMIT = 80;
 export type TaskStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 
 export interface Task {
@@ -207,6 +257,7 @@ interface State {
   stuckHintEnabled: boolean;
   /** QA 输入框预填字符串（CodeEditor 框选 "问 AI" 时把代码 prefill 到 QAPanel） */
   askPrefill: string | null;
+  coachDraft: CoachDraft | null;
   /** FeedbackPanel 当前 tab（'analyze' / 'ask'），升到 store 让外部能切 */
   feedbackTab: 'analyze' | 'ask';
   /** Onboarding 当前步骤 */
@@ -257,8 +308,32 @@ interface State {
 
   enqueueParseProblem: (rawText: string) => string;
   enqueueAnalyze: (opts?: { reason?: string }) => string | null;
+  /** 后台静默补齐题目的「白话解释」字段（已有则跳过；失败静默） */
+  requestPlainExplanation: (problemId: string) => Promise<void>;
   enqueueSummarize: (arg: boolean | SubmitOpts) => string | null;
   enqueueDiff: () => string | null;
+  /** 主动出 hack case：检测样例已通过后由 Coach 自己挑战边界 */
+  enqueueHackCase: (opts?: { reason?: string }) => string | null;
+  /** 待用户处理的 hack case（生成成功后写入，UI 浮卡读取） */
+  pendingHackCase:
+    | {
+        problemId: string;
+        fileId: string;
+        stdin: string;
+        expectedOutput?: string;
+        rationale: string;
+        severity: 'edge' | 'large' | 'degenerate' | 'tricky';
+        createdAt: number;
+      }
+    | null;
+  dismissHackCase: () => void;
+
+  // Agent 行动日志
+  agentTrace: AgentTraceEvent[];
+  recordAgentTrace: (
+    e: Omit<AgentTraceEvent, 'id' | 'ts'> & { id?: string; ts?: number },
+  ) => void;
+  clearAgentTrace: () => void;
 
   cancelTask: (id: string) => void;
   retryTask: (id: string) => void;
@@ -276,6 +351,7 @@ interface State {
 
   /** 学生在做题时问问题：流式回答到 qaByProblem[scope] */
   askQuestion: (question: string) => Promise<void>;
+  askCoach: (input: CoachAskInput) => Promise<void>;
   /** 清空当前 scope 的提问历史 */
   clearQA: (scope: string) => void;
   setCmdPaletteOpen: (v: boolean) => void;
@@ -287,7 +363,8 @@ interface State {
   setStuckHintEnabled: (v: boolean) => void;
   dismissHint: () => void;
   enqueueStuckHint: () => string | null;
-  setAskPrefill: (s: string | null) => void;
+  setAskPrefill: (v: string | null) => void;
+  setCoachDraft: (v: CoachDraft | null) => void;
   setFeedbackTab: (t: 'analyze' | 'ask') => void;
 
   // Onboarding actions
@@ -309,26 +386,63 @@ interface State {
   // 外部导入（Tampermonkey 推送）
   /** 接收 TM 推送的 payload，去重 / 调 sam 多模态 / parseProblem / 入库 / 激活 */
   handleImportPayload: (payload: import('./importReceiver').ImportPayload) => Promise<void>;
+  /** 推送当前代码到原 OJ，由 Tampermonkey 清空编辑器、粘贴、提交并回传 verdict */
+  enqueueOjSubmit: () => string | null;
 }
 
 // ============== 初始化 ==============
 
+/**
+ * 从 .env.local 读取项目级默认 AI 配置（vite envPrefix 已开放 AI_COACH_*）。
+ * 用于：localStorage 还没保存过用户改动时，避免每次部署/换浏览器都得重新填密钥。
+ * 用户在 SettingsModal 修改后，仍以 localStorage 为准。
+ */
+function readEnvAIConfig(): Partial<AIConfig> {
+  const env = (import.meta as any).env ?? {};
+  const out: Partial<AIConfig> = {};
+  const provider = env.AI_COACH_PROVIDER as AIProvider | undefined;
+  const baseUrl = env.AI_COACH_BASE_URL as string | undefined;
+  const apiKey = env.AI_COACH_KEY as string | undefined;
+  const model = env.AI_COACH_MODEL as string | undefined;
+  if (provider) out.provider = provider;
+  if (baseUrl) out.baseUrl = baseUrl;
+  if (apiKey) out.apiKey = apiKey;
+  if (model) out.model = model;
+  return out;
+}
+
 const initialAIConfig: AIConfig = (() => {
+  const envCfg = readEnvAIConfig();
   try {
     const raw = localStorage.getItem(LS_AI_CFG);
     if (raw) {
       const parsed = JSON.parse(raw);
-      // 浅合并 + fastLane 嵌套兜底（老用户 localStorage 里没 fastLane 字段时用默认值预填）
+      // 浅合并：默认 → .env → localStorage（用户保存的优先级最高）
+      // fastLane / intentRouter 做嵌套兜底
       return {
         ...DEFAULT_AI_CONFIG,
+        ...envCfg,
         ...parsed,
         fastLane: { ...DEFAULT_AI_CONFIG.fastLane!, ...(parsed.fastLane ?? {}) },
+        intentRouter: {
+          ...DEFAULT_AI_CONFIG.intentRouter!,
+          ...(parsed.intentRouter ?? {}),
+        },
       };
     }
   } catch {
     /* ignore */
   }
-  return DEFAULT_AI_CONFIG;
+  // 没有 localStorage 存档：用默认 + .env，并立刻写回（让设置面板里 hint「保存在浏览器」是真的）
+  const merged: AIConfig = { ...DEFAULT_AI_CONFIG, ...envCfg };
+  try {
+    if (envCfg.apiKey) {
+      localStorage.setItem(LS_AI_CFG, JSON.stringify(merged));
+    }
+  } catch {
+    /* ignore */
+  }
+  return merged;
 })();
 
 const initialDefaultLang: Lang = ((): Lang => {
@@ -338,6 +452,7 @@ const initialDefaultLang: Lang = ((): Lang => {
 })();
 
 const sessionId = nanoid();
+const problemStartedAtById = new Map<string, number>();
 
 // ============== 默认模板 ==============
 
@@ -493,6 +608,46 @@ export const useStore = create<State>((set, get) => {
     return 'cpp'; // markdown/plaintext 文件分析时按 cpp 走（应该不会触发）
   };
 
+  const recordSubmissionSession = async (
+    problem: Problem,
+    file: CodeFile,
+    outcome: 'pass' | 'mistake',
+  ) => {
+    const now = Date.now();
+    // 兜底：onboarding 等绕过 setActiveProblem 的入口也能拿到合理 startedAt
+    const startedAt =
+      problemStartedAtById.get(problem.id) ??
+      (problem.createdAt && problem.createdAt < now ? problem.createdAt : now);
+    problemStartedAtById.set(problem.id, startedAt);
+    const events = await storage.listEvents({ sessionId, sinceTs: startedAt });
+    const relatedEvents = events.filter((e) => e.problemId === problem.id);
+    const session: Session = {
+      id: `${sessionId}:${problem.id}`,
+      problemId: problem.id,
+      problemTitle: problem.title,
+      startedAt,
+      endedAt: now,
+      effectiveMs: Math.max(0, now - startedAt),
+      awayMs: 0,
+      stuckCount: relatedEvents.filter((e) => e.type === 'hint_pushed').length,
+      analyzeCount: relatedEvents.filter((e) => e.type === 'analysis' || e.type === 'manual_analyze').length,
+      hintCount: relatedEvents.filter((e) => e.type === 'hint_pushed' || e.type === 'hint_taken').length,
+      outcome,
+      language: langOfFile(file.language),
+      finalCode: file.content,
+    };
+    await storage.saveSession(session);
+    await storage.appendEvent({
+      ts: now,
+      sessionId,
+      problemId: problem.id,
+      type: 'session_end',
+      payload: { outcome, sessionId: session.id },
+    });
+    await get().refreshSessions();
+    get().refreshLearningEngine();
+  };
+
   return {
     aiConfig: initialAIConfig,
     ai,
@@ -514,6 +669,26 @@ export const useStore = create<State>((set, get) => {
     qaPendingProblemId: null,
 
     tasks: [],
+    agentTrace: [],
+    pendingHackCase: null,
+    dismissHackCase: () => set({ pendingHackCase: null }),
+
+    recordAgentTrace: (e) => {
+      const event: AgentTraceEvent = {
+        id: e.id ?? nanoid(),
+        ts: e.ts ?? Date.now(),
+        kind: e.kind,
+        level: e.level,
+        title: e.title,
+        detail: e.detail,
+        problemId: e.problemId,
+        taskId: e.taskId,
+      };
+      set((s) => ({
+        agentTrace: [event, ...s.agentTrace].slice(0, AGENT_TRACE_LIMIT),
+      }));
+    },
+    clearAgentTrace: () => set({ agentTrace: [] }),
 
     sidebarTab: 'problems',
     settingsOpen: false,
@@ -529,6 +704,7 @@ export const useStore = create<State>((set, get) => {
     // 卡住引导默认 OFF（学生想认真思考时不被打扰；用 TopBar 的「求助」按钮主动召唤）
     stuckHintEnabled: localStorage.getItem('aicc.stuckHint.v1') === 'on',
     askPrefill: null,
+    coachDraft: null,
     feedbackTab: 'analyze',
     // Onboarding：localStorage 已标记完成 → idle；否则 wait-analyze 状态会在 App 启动时由触发器决定是否进 inject
     onboardingStep: localStorage.getItem('aicc.onboarding.v1') === 'done' ? 'idle' : 'idle',
@@ -570,6 +746,9 @@ export const useStore = create<State>((set, get) => {
 
     setActiveProblem: async (id) => {
       const st = get();
+      if (id && !problemStartedAtById.has(id)) {
+        problemStartedAtById.set(id, Date.now());
+      }
       set({ activeProblemId: id, diffSelection: [] });
       const scope = id ?? DRAFT_SCOPE;
       const list = st.filesByScope[scope] ?? [];
@@ -581,6 +760,13 @@ export const useStore = create<State>((set, get) => {
         set((s) => ({
           activeFileIdByScope: { ...s.activeFileIdByScope, [scope]: list[0].id },
         }));
+      }
+      // 懒补齐：如果该题缺白话解释，后台静默调 AI 生成（成功后右侧栏会自动出现）
+      if (id) {
+        const target = get().problems.find((p) => p.id === id);
+        if (target && (!target.plainExplanation || !target.plainExplanation.trim())) {
+          void get().requestPlainExplanation(id);
+        }
       }
     },
 
@@ -842,6 +1028,47 @@ export const useStore = create<State>((set, get) => {
       });
     },
 
+    requestPlainExplanation: async (problemId) => {
+      const st = get();
+      const problem = st.problems.find((p) => p.id === problemId);
+      if (!problem) return;
+      if (problem.plainExplanation && problem.plainExplanation.trim().length > 0) return;
+      const needsKey = st.aiConfig.provider !== 'ollama';
+      if (needsKey && !st.aiConfig.apiKey) return; // 没配 AI 就不打扰
+      get().recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: `补齐白话解释：${problem.title}`,
+        problemId: problem.id,
+      });
+      try {
+        const text = await st.coach.generatePlainExplanation({
+          title: problem.title,
+          statement: problem.statement,
+          examples: problem.examples?.map((e) => ({ input: e.input, output: e.output })),
+        });
+        if (!text) return;
+        const updated = { ...problem, plainExplanation: text };
+        await storage.saveProblem(updated);
+        await get().refreshProblems();
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'success',
+          title: `白话解释已补齐：${problem.title}`,
+          detail: text.slice(0, 240),
+          problemId: problem.id,
+        });
+      } catch (e: any) {
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'warn',
+          title: `白话生成失败：${problem.title}`,
+          detail: String(e?.message ?? e).slice(0, 240),
+          problemId: problem.id,
+        });
+      }
+    },
+
     enqueueAnalyze: (opts) => {
       const st = get();
       // ollama 等本地服务不需要 apiKey
@@ -893,6 +1120,14 @@ export const useStore = create<State>((set, get) => {
       const label = problem
         ? `分析：${problem.title} · ${file.name}`
         : `分析：${file.name}`;
+
+      get().recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: '调用代码审查',
+        detail: `原因：${opts?.reason ?? 'manual'}\n文件：${file.name}（${file.language}, ${file.content.split('\n').length} 行）${problem ? `\n题目：${problem.title}` : ''}`,
+        problemId: problem?.id,
+      });
 
       return enqueue(
         'analyze-code',
@@ -996,6 +1231,15 @@ export const useStore = create<State>((set, get) => {
                 codeLineCount: file.content.split('\n').length,
               },
             });
+            const errCount = stamped.issues.filter((i) => i.severity === 'error').length;
+            const warnCount = stamped.issues.filter((i) => i.severity === 'warning').length;
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: errCount > 0 ? 'warn' : warnCount > 0 ? 'info' : 'success',
+              title: stamped.issues.length === 0 ? '审查完成：未发现明显问题' : `审查完成：${stamped.issues.length} 处批注`,
+              detail: stamped.overallComment ? stamped.overallComment.slice(0, 240) : undefined,
+              problemId: problem?.id,
+            });
             toast.success(
               `分析完成：${stamped.issues.length === 0 ? '没发现明显问题' : `${stamped.issues.length} 个问题`}`,
             );
@@ -1033,6 +1277,13 @@ export const useStore = create<State>((set, get) => {
       const label = opts.isMistake
         ? `${verdictTag}入错题：${problem.title}`
         : `通过总结：${problem.title}`;
+      get().recordAgentTrace({
+        kind: 'decide',
+        level: opts.isMistake ? 'warn' : 'success',
+        title: opts.isMistake ? `判定：${opts.verdict ?? 'WA'} → 入错题流程` : `判定：AC → 总结知识点`,
+        detail: opts.userNote ? `用户备注：${opts.userNote.slice(0, 120)}` : undefined,
+        problemId: problem.id,
+      });
       return enqueue('summarize-mistake', label, {
         run: (onChunk, onRetry, signal) =>
           get().coach.summarizeMistake(
@@ -1047,12 +1298,26 @@ export const useStore = create<State>((set, get) => {
             { onChunk, onRetry, signal },
           ),
         onSuccess: async (result) => {
+          await recordSubmissionSession(problem, file, opts.isMistake ? 'mistake' : 'pass');
           if (opts.isMistake) {
             const m = result as Mistake;
             await storage.saveMistake(m);
             await get().refreshMistakes();
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: 'warn',
+              title: `已写入错题本：${m.category}`,
+              detail: m.rootCause?.slice(0, 240),
+              problemId: problem.id,
+            });
             toast.success(`已加入错题本：${m.category}`);
           } else {
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: 'success',
+              title: 'AC 总结：已沉淀知识点',
+              problemId: problem.id,
+            });
             toast.success(`已总结知识点`);
             // 错题本联动：这题之前如果在错题本里且未复习 → 自动标记
             // 真正的"复习"不是手动按按钮，是 AC 通过
@@ -1122,6 +1387,109 @@ export const useStore = create<State>((set, get) => {
           toast.success(`对拍完成：${f1.name} ↔ ${f2.name}`);
         },
       });
+    },
+
+    enqueueHackCase: (opts) => {
+      const st = get();
+      if (!st.activeProblemId) {
+        toast.error('请先激活一道题目');
+        return null;
+      }
+      if (!hasUsableAIConfig(st.aiConfig)) {
+        toast.error('请先配置 AI 服务');
+        set({ settingsOpen: true });
+        return null;
+      }
+      const problem = st.problems.find((p) => p.id === st.activeProblemId);
+      if (!problem) return null;
+      const scopeKey = problem.id;
+      const fileId = st.activeFileIdByScope[scopeKey];
+      const file = (st.filesByScope[scopeKey] ?? []).find((f) => f.id === fileId);
+      if (!file || (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python')) {
+        toast.error('当前活跃文件不是代码文件');
+        return null;
+      }
+      // 防重：同题已有 in-flight 的 hack-case 任务则不再排队
+      const existing = st.tasks.find(
+        (t) =>
+          t.kind === 'hack-case' &&
+          (t.status === 'queued' || t.status === 'running') &&
+          t.label.endsWith(`· ${problem.title}`),
+      );
+      if (existing) return existing.id;
+
+      const samples = (problem.examples ?? [])
+        .filter((ex) => ex.input && ex.output)
+        .map((ex) => ({ input: ex.input, output: ex.output }));
+
+      get().recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: '主动出 hack case',
+        detail: `检测样例已通过 / 学生触发：${opts?.reason ?? 'manual'}\n题目：${problem.title}`,
+        problemId: problem.id,
+      });
+
+      return enqueue(
+        'hack-case',
+        `主动出 hack case · ${problem.title}`,
+        {
+          run: (onChunk, onRetry, signal) =>
+            get().coach.generateHackCase(
+              {
+                problem,
+                code: file.content,
+                language: langOfFile(file.language),
+                passedSamples: samples,
+              },
+              { onChunk, onRetry, signal },
+            ),
+          onSuccess: async (result) => {
+            const r = result as {
+              stdin: string;
+              expectedOutput?: string;
+              rationale: string;
+              severity: 'edge' | 'large' | 'degenerate' | 'tricky';
+            };
+            if (!r.stdin?.trim()) {
+              toast.warning('Coach 没生成有效 hack case，可以再试一次');
+              return;
+            }
+            set({
+              pendingHackCase: {
+                problemId: problem.id,
+                fileId: file.id,
+                stdin: r.stdin,
+                expectedOutput: r.expectedOutput,
+                rationale: r.rationale,
+                severity: r.severity,
+                createdAt: Date.now(),
+              },
+            });
+            get().recordAgentTrace({
+              kind: 'act',
+              level: 'success',
+              title: `已生成 hack case（${r.severity}）`,
+              detail: `理由：${r.rationale}\nstdin:\n${r.stdin.slice(0, 240)}`,
+              problemId: problem.id,
+            });
+            toast.message('Coach 给你出了一个 hack case', {
+              description: r.rationale.slice(0, 60),
+              duration: 5000,
+            });
+          },
+          onFailure: (err) => {
+            get().recordAgentTrace({
+              kind: 'act',
+              level: 'error',
+              title: 'hack case 生成失败',
+              detail: err.message,
+              problemId: problem.id,
+            });
+          },
+        },
+        { problemId: problem.id, fileId: file.id, reason: opts?.reason },
+      );
     },
 
     cancelTask: (id) => {
@@ -1206,8 +1574,10 @@ export const useStore = create<State>((set, get) => {
     setProblemEditorOpen: (v) => set({ problemEditorOpen: v }),
     setProblemBrowserOpen: (v) => set({ problemBrowserOpen: v }),
 
-    askQuestion: async (question) => {
-      const trimmed = question.trim();
+    askQuestion: async (question) => get().askCoach({ text: question, source: 'manual' }),
+
+    askCoach: async (input) => {
+      const trimmed = input.text.trim();
       if (!trimmed) return;
       const s = get();
       if (!hasUsableAIConfig(s.aiConfig)) {
@@ -1225,6 +1595,63 @@ export const useStore = create<State>((set, get) => {
       const file = files.find((f) => f.id === activeFileId) ?? files[0];
       const code = file?.content ?? '';
       const language: Lang = langOfFile(file?.language ?? 'cpp');
+      const runSnap = get().lastRunByScope[scope];
+      const runtimeContext =
+        runSnap &&
+        file &&
+        runSnap.fileId === file.id &&
+        Date.now() - runSnap.timestamp < 30 * 60 * 1000
+          ? {
+              exitCode: runSnap.exitCode,
+              stdin: runSnap.stdin,
+              stdout: runSnap.stdout,
+              stderr: runSnap.stderr,
+              durationMs: runSnap.durationMs,
+              timestamp: runSnap.timestamp,
+            }
+          : undefined;
+      const idleSeconds = Math.max(0, Math.round((Date.now() - s.lastEditAt) / 1000));
+      const sessionsForProblem = problem
+        ? s.sessions.filter((sn) => sn.problemId === problem.id)
+        : [];
+      const acCount = sessionsForProblem.filter((sn) => sn.outcome === 'pass').length;
+      const sessionWrongCount = sessionsForProblem.filter((sn) => sn.outcome === 'mistake').length;
+      const mistakesForProblem = problem
+        ? s.mistakes.filter((m) => m.problemId === problem.id)
+        : [];
+      const wrongCount = sessionWrongCount + mistakesForProblem.length;
+      const inMistakeBook = mistakesForProblem.some((m) => !m.reviewedAt);
+      const cachedAnalysis = s.analysisByProblem[scope];
+      const unresolvedIssueCount =
+        cachedAnalysis &&
+        file &&
+        (!cachedAnalysis.fileId || cachedAnalysis.fileId === file.id) &&
+        (!cachedAnalysis.codeHash || cachedAnalysis.codeHash === codeHash(file.content))
+          ? cachedAnalysis.issues.length
+          : 0;
+      const behavior = {
+        idleSeconds,
+        acCount,
+        wrongCount,
+        inMistakeBook,
+        unresolvedIssueCount,
+      };
+      const route = await routeCoachRequest(
+        {
+          text: trimmed,
+          source: input.source,
+          hasProblem: !!problem,
+          hasSelection: !!input.selection?.text.trim(),
+          codeLength: code.length,
+          codeLineCount: code ? code.split('\n').length : 0,
+          lastRun: runtimeContext
+            ? { exitCode: runtimeContext.exitCode, stderrBrief: runtimeContext.stderr?.slice(-500) }
+            : undefined,
+          recentAction: runtimeContext ? (runtimeContext.exitCode === 0 ? 'run_ok' : 'run_failed') : undefined,
+          behavior,
+        },
+        createIntentRouterClient(s.aiConfig),
+      );
 
       const userMsg: QAMessage = {
         id: nanoid(),
@@ -1238,6 +1665,7 @@ export const useStore = create<State>((set, get) => {
         content: '',
         ts: Date.now(),
         streaming: true,
+        route,
       };
 
       set((st) => ({
@@ -1246,20 +1674,158 @@ export const useStore = create<State>((set, get) => {
           [scope]: [...(st.qaByProblem[scope] ?? []), userMsg, assistMsg],
         },
         qaPendingProblemId: scope,
+        feedbackTab: 'ask',
+        coachDraft: null,
       }));
 
-      // 发起流式调用
       const history = (get().qaByProblem[scope] ?? [])
-        .slice(0, -2)  // 排除刚塞进去的 userMsg + assistMsg
+        .slice(0, -2)
         .map((m) => ({ role: m.role, content: m.content }));
 
       try {
-        await get().coach.askQuestion(
+        if (
+          route.outputMode === 'chat_with_inline_issues' &&
+          file &&
+          (file.language === 'cpp' || file.language === 'c' || file.language === 'python')
+        ) {
+          set((st) => {
+            const list = st.qaByProblem[scope] ?? [];
+            const idx = list.findIndex((m) => m.id === assistMsg.id);
+            if (idx < 0) return st;
+            const next = list.slice();
+            next[idx] = { ...next[idx], content: '我在结合题面、代码和最近运行结果检查。' };
+            return { qaByProblem: { ...st.qaByProblem, [scope]: next } };
+          });
+          const events = await storage.listEvents({ sessionId, limit: 200 });
+          const profile: LearnerProfile = buildLearnerProfile({
+            sessions: get().sessions,
+            problems: get().problems,
+            mistakes: get().mistakes,
+            events,
+            currentProblemTags: problem?.tags,
+          });
+          const analysisHistory: AnalysisHistoryEntry[] = events
+            .filter(
+              (e) =>
+                e.problemId === problem?.id &&
+                (e.type === 'analysis' || e.type === 'manual_analyze'),
+            )
+            .slice(-2)
+            .map((e) => {
+              const p = e.payload as any;
+              return {
+                ts: e.ts,
+                reason: p?.reason ?? 'coach',
+                issuesSnapshot: p?.issuesSnapshot ?? [],
+                overallComment: p?.overallComment,
+                codeHash: p?.codeHash,
+                codeLineCount: p?.codeLineCount,
+              };
+            });
+          const siblings = files
+            .filter((f) => f.id !== file.id && f.content.trim().length > 0)
+            .slice(0, 5)
+            .map((f) => ({ name: f.name, language: f.language, content: f.content }));
+          const result = await get().coach.analyzeCode(
+            {
+              problem,
+              code: file.content,
+              language,
+              profile,
+              history: analysisHistory,
+              siblings,
+              runtimeContext,
+            },
+            {
+              onChunk: (_delta, accumulated) => {
+                const tokens = accumulated.length;
+                const phase =
+                  tokens < 200
+                    ? '正在读题…'
+                    : tokens < 800
+                      ? '正在比对样例与代码…'
+                      : tokens < 2000
+                        ? '正在生成行内批注…'
+                        : '正在收尾…';
+                set((st) => {
+                  const list = st.qaByProblem[scope] ?? [];
+                  const idx = list.findIndex((m) => m.id === assistMsg.id);
+                  if (idx < 0) return st;
+                  const next = list.slice();
+                  next[idx] = {
+                    ...next[idx],
+                    content: `${phase}\n\n_已生成 ${tokens} 字_`,
+                  };
+                  return { qaByProblem: { ...st.qaByProblem, [scope]: next } };
+                });
+              },
+            },
+          );
+          const stamped: AnalysisResult = {
+            ...result,
+            fileId: file.id,
+            codeHash: codeHash(file.content),
+            analyzedAt: Date.now(),
+          };
+          set((st) => ({
+            analysisByProblem: { ...st.analysisByProblem, [scope]: stamped },
+          }));
+          await storage.appendEvent({
+            ts: Date.now(),
+            sessionId,
+            problemId: problem?.id,
+            type: 'manual_analyze',
+            payload: {
+              reason: 'coach',
+              fileId: file.id,
+              fileName: file.name,
+              issueCount: stamped.issues.length,
+              issuesSnapshot: stamped.issues.map((i) => ({
+                line: i.line,
+                severity: i.severity,
+                category: i.category,
+                message: i.message,
+              })),
+              overallComment: stamped.overallComment,
+              codeHash: codeHash(file.content),
+              codeLineCount: file.content.split('\n').length,
+            },
+          });
+          set((st) => {
+            const list = st.qaByProblem[scope] ?? [];
+            const idx = list.findIndex((m) => m.id === assistMsg.id);
+            if (idx < 0) return st;
+            const next = list.slice();
+            next[idx] = {
+              ...next[idx],
+              content: formatAnalysisAsCoachMessage(stamped),
+              streaming: false,
+            };
+            return {
+              qaByProblem: { ...st.qaByProblem, [scope]: next },
+              qaPendingProblemId: null,
+            };
+          });
+          return;
+        }
+        const context = buildCoachContext({
+          route,
+          userText: trimmed,
+          problem,
+          code,
+          language,
+          fileName: file?.name,
+          selection: input.selection,
+          lastRun: runtimeContext,
+          behavior,
+        });
+        await get().coach.askCoach(
           {
             problem,
             code,
-            language,
-            question: trimmed,
+            route,
+            context,
+            userText: trimmed,
             history,
           },
           {
@@ -1275,7 +1841,6 @@ export const useStore = create<State>((set, get) => {
             },
           },
         );
-        // 完成：清除 streaming 标记
         set((st) => {
           const list = st.qaByProblem[scope] ?? [];
           const idx = list.findIndex((m) => m.id === assistMsg.id);
@@ -1338,27 +1903,20 @@ export const useStore = create<State>((set, get) => {
       const fileId = st.activeFileIdByScope[st.activeProblemId];
       const file = (st.filesByScope[st.activeProblemId] ?? []).find((f) => f.id === fileId);
       if (!file) return null;
-      // 只对代码文件提示
       if (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python') return null;
-
+      // 已有 Coach 流式回答时不打扰
+      if (st.qaPendingProblemId) return null;
       set({ lastHintAt: Date.now() });
-      return enqueue('stuck-hint', `卡住引导：${problem.title}`, {
-        run: async (onChunk, onRetry, signal) => {
-          const text = await get().coach.getStuckHint(
-            { problem, code: file.content, language: langOfFile(file.language) },
-            { onChunk, onRetry, signal },
-          );
-          return text;
-        },
-        onSuccess: (result) => {
-          const text = (result as string)?.trim();
-          if (text) set({ currentHint: text });
-        },
+      void get().askCoach({
+        text: '我有点卡住了，帮我点拨一下下一步该想什么',
+        source: 'stuck',
       });
+      return null;
     },
 
     // ───── 框选问 AI / FeedbackPanel tab ─────
     setAskPrefill: (s) => set({ askPrefill: s }),
+    setCoachDraft: (s) => set({ coachDraft: s }),
     setFeedbackTab: (t) => set({ feedbackTab: t }),
 
     // ───── Onboarding ─────
@@ -1427,7 +1985,7 @@ int main() {
         onboardingStep: 'wait-analyze',
       }));
       toast.info('👋 跟我做一遍 Two Sum，3 步看完核心流程', {
-        description: '点高亮的「分析代码」按钮开始',
+        description: '点高亮的「问教练」按钮，AI 会自动检查这段代码',
         duration: 5000,
       });
     },
@@ -1457,20 +2015,129 @@ int main() {
       set({ learningCardDismissedDate: t });
     },
 
+    enqueueOjSubmit: () => {
+      const st = get();
+      if (!st.activeProblemId) {
+        toast.error('请先激活一道从 OJ 导入的题目');
+        return null;
+      }
+      const problem = st.problems.find((p) => p.id === st.activeProblemId);
+      if (!problem) return null;
+      if (!problem.source || !/^https?:\/\//.test(problem.source)) {
+        toast.error('这道题没有原 OJ 链接，请先从油猴脚本推送导入');
+        return null;
+      }
+      const scopeKey = problem.id;
+      const fileId = st.activeFileIdByScope[scopeKey];
+      const file = (st.filesByScope[scopeKey] ?? []).find((f) => f.id === fileId);
+      if (!file || (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python')) {
+        toast.error('当前活跃文件不是可提交代码文件');
+        return null;
+      }
+      const source = inferOjSource(problem.source);
+      if (source === 'unknown') {
+        toast.error('暂不支持把这道题自动提交回原 OJ');
+        return null;
+      }
+      get().recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: `下发 OJ 提交命令（${source}）`,
+        detail: `目标：${problem.source}\n文件：${file.name}（${file.content.length} 字符）`,
+        problemId: problem.id,
+      });
+      return enqueue('oj-submit', `OJ 提交：${problem.title}`, {
+        run: async (onChunk, _onRetry, signal) => {
+          onChunk('', '等待油猴脚本接收命令，请保持原 OJ 题目页打开…');
+          get().recordAgentTrace({
+            kind: 'act',
+            level: 'info',
+            title: '等待油猴脚本拾取命令',
+            problemId: problem.id,
+          });
+          const result = await submitToOj(
+            {
+              source,
+              targetUrl: problem.source!,
+              problemId: problem.id,
+              problemTitle: problem.title,
+              fileName: file.name,
+              language: file.language,
+              code: file.content,
+              autoSubmit: true,
+            },
+            { signal, timeoutMs: 8 * 60_000 },
+          );
+          if (result.status !== 'done') {
+            throw new Error(result.message || 'OJ 自动提交失败');
+          }
+          onChunk('', `OJ 返回结果：${result.verdict ?? 'OTHER'}`);
+          return result;
+        },
+        onSuccess: async (result) => {
+          const r = result as OjSubmitResult;
+          const verdict: SubmissionVerdict = r.verdict ?? 'OTHER';
+          const isMistake = verdict !== 'AC';
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: verdict === 'AC' ? 'success' : 'warn',
+            title: `OJ verdict：${verdict}`,
+            detail: r.rawText ? r.rawText.slice(0, 240) : undefined,
+            problemId: problem.id,
+          });
+          await storage.appendEvent({
+            ts: Date.now(),
+            sessionId,
+            problemId: problem.id,
+            type: 'submit',
+            payload: {
+              source: 'oj-bridge',
+              ojSource: source,
+              url: r.url,
+              verdict,
+              status: r.status,
+              rawText: r.rawText,
+            },
+          });
+          toast.success(`OJ 判题返回：${verdict}`, {
+            description: isMistake ? '已自动进入错题流程' : '已自动进入通过总结',
+          });
+          get().enqueueSummarize({
+            isMistake,
+            verdict,
+            userNote: r.rawText || r.message,
+          });
+          if (isMistake) {
+            get().enqueueAnalyze({ reason: `oj-${verdict}` });
+          }
+        },
+      }, { problemId: problem.id, fileId: file.id, source });
+    },
+
     handleImportPayload: async (payload) => {
       // payload 是 Node 端 importProcessor 处理后的 processed payload
       // - rawText 已含 sam 识别结果（[图 N 识别] xxx）
       // - imageRecognitions 字段记录每张图的识别详情
       // 前端职责：去重、调 cloud AI parseProblem（可选）、入库、激活
       const st = get();
+      get().recordAgentTrace({
+        kind: 'perceive',
+        level: 'info',
+        title: `收到 OJ 推送：${payload.title || payload.url}`,
+        detail: `来源：${payload.source}\n图片：${payload.images?.length ?? 0} 张`,
+      });
       const id = 'import-' + payload.url.replace(/[^a-zA-Z0-9]/g, '_').slice(-50);
       const existing = st.problems.find((p) => p.id === id);
       const hasRecognition = !!(payload as any).imageRecognitions?.length;
 
       if (existing) {
         // 已存在 → 用最新的 rawText 更新（让重新推送能刷新识别结果）
-        if (payload.rawText && payload.rawText !== existing.statement) {
-          const updated = { ...existing, statement: payload.rawText };
+        if ((payload.rawText && payload.rawText !== existing.statement) || existing.source !== payload.url) {
+          const updated = {
+            ...existing,
+            statement: payload.rawText || existing.statement,
+            source: payload.url || existing.source,
+          };
           await storage.saveProblem(updated);
           set((s) => ({
             problems: s.problems.map((p) => (p.id === id ? updated : p)),
@@ -1496,6 +2163,7 @@ int main() {
             id,
             title: payload.title || parsed.title || '导入的题目',
             statement: parsed.statement || statement,
+            source: payload.url,
             createdAt: Date.now(),
           };
         } catch (err: any) {
@@ -1504,6 +2172,7 @@ int main() {
             id,
             title: payload.title || '导入的题目',
             statement,
+            source: payload.url,
             tags: [],
             createdAt: Date.now(),
           };
@@ -1513,6 +2182,7 @@ int main() {
           id,
           title: payload.title || '导入的题目',
           statement,
+          source: payload.url,
           tags: [],
           createdAt: Date.now(),
         };
@@ -1543,6 +2213,13 @@ int main() {
       await get().setActiveProblem(problem.id);
       const imgCount = payload.images?.length ?? 0;
       const recogCount = (payload as any).imageRecognitions?.filter((r: any) => r.description)?.length ?? 0;
+      get().recordAgentTrace({
+        kind: 'feedback',
+        level: 'success',
+        title: `已导入并激活：${problem.title}`,
+        detail: imgCount > 0 ? `识别 ${recogCount}/${imgCount} 张题面图` : undefined,
+        problemId: problem.id,
+      });
       toast.success(`📥 已导入：${problem.title}`, {
         description: `来自 ${payload.source}${imgCount > 0 ? ` · ${recogCount}/${imgCount} 张图已识别` : ''}`,
       });
@@ -1637,6 +2314,17 @@ function guessLang(code: string): FileLang {
   if (/^\s*#include/.test(code) || /\bint\s+main\s*\(/.test(code)) return 'cpp';
   if (/^\s*def\s+|^\s*import\s+|if __name__/.test(code)) return 'python';
   return 'cpp';
+}
+
+function inferOjSource(url: string): 'educoder' | 'school-oj' | 'unknown' {
+  try {
+    const u = new URL(url);
+    if (u.hostname === 'www.educoder.net') return 'educoder';
+    if (u.hostname === '10.11.219.21') return 'school-oj';
+  } catch {
+    /* ignore */
+  }
+  return 'unknown';
 }
 
 // 启动时拉取数据 + 迁移

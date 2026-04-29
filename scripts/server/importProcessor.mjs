@@ -24,7 +24,9 @@ import { resolve as pathResolve, basename, dirname, join } from 'node:path';
 // ─────────── 配置 ───────────
 
 const OLLAMA_BASE = process.env.AICC_OLLAMA_BASE || 'http://127.0.0.1:11434';
-const SAM_MODEL = process.env.AICC_VISION_MODEL || 'sam:latest';
+// 视觉模型默认 ollama library 公共多模态 minicpm-v；
+// 用户可通过 AICC_VISION_MODEL 换成 llava / llama3.2-vision 等。
+const SAM_MODEL = process.env.AICC_VISION_MODEL || 'minicpm-v:latest';
 const VISION_PROMPT =
   '请简要描述这张图的内容。' +
   '如果是文字截图（题面/样例/公式）请逐字识别原文；' +

@@ -28,6 +28,61 @@ interface PromptPair {
 }
 
 /**
+ * 主动出 hack case：学生跑通样例后，由 Coach 自己挑战边界。
+ * 让 AI 给一个最有可能让当前代码挂掉的小输入（边界 / 最大值 / 反例 / 退化情况）。
+ *
+ * 输出 JSON：{ stdin, expectedOutput?, rationale, severity }
+ *  - stdin：直接可丢进运行终端的输入（必须满足题目输入格式）
+ *  - expectedOutput：能算就给（短样例），不确定就留空
+ *  - rationale：为什么这个 case 容易让代码挂（≤ 60 字）
+ *  - severity：'edge' | 'large' | 'degenerate' | 'tricky'
+ */
+export function buildHackCasePrompt(args: {
+  problem: Problem;
+  code: string;
+  language: Lang;
+  passedSamples?: Array<{ input: string; output: string }>;
+}): PromptPair {
+  const samplesBlock = args.passedSamples && args.passedSamples.length > 0
+    ? `\n【已经通过的样例（不要重复，要给一个不同维度的挑战）】\n` +
+      args.passedSamples
+        .slice(0, 2)
+        .map((s, i) => `样例 ${i + 1}\n输入：\n${s.input}\n输出：\n${s.output}`)
+        .join('\n\n') +
+      '\n'
+    : '';
+  return {
+    system:
+      `${SYSTEM_CODING_COACH}\n\n你的任务：学生刚跑通了样例，但样例往往覆盖不到边界。请你**主动**构造一个 hack case 挑战这份代码。${SYSTEM_JSON_OUTPUT}`,
+    user: `【题目】${args.problem.title}
+${clip(args.problem.statement, STATEMENT_MAX)}
+${args.problem.constraints ? '【约束】' + clip(args.problem.constraints, CONSTRAINTS_MAX) : ''}
+${samplesBlock}
+【学生当前 ${args.language} 代码】
+\`\`\`${args.language}
+${args.code.slice(0, 4500)}
+\`\`\`
+
+请构造 1 个最有可能让这份代码挂掉的输入。重点考虑：
+- 边界值（最小 / 最大 / 0 / 1 / 题目允许的极端规模）
+- 退化结构（已排序 / 全相同 / 一条链 / 极不平衡）
+- 整数溢出 / 越界 / 浮点精度
+- 题面里容易忽略的特殊情况
+
+输出严格 JSON：
+{
+  "stdin": "直接可粘进 stdin 的字符串（必须符合输入格式）",
+  "expectedOutput": "如果你能心算出正确答案就给，不确定置空字符串",
+  "rationale": "为什么这个 case 容易挂（≤ 60 字，**不要泄露最终答案**）",
+  "severity": "edge | large | degenerate | tricky"
+}
+
+⚠ 输入要简短可读（最好 ≤ 20 行），让学生能直接粘进终端跑。
+直接输出 JSON。`,
+  };
+}
+
+/**
  * 卡住引导：苏格拉底式提问，**不直接给答案**。
  * 输出 1-2 个引导性问题，帮学生意识到自己的卡点。
  */
@@ -211,6 +266,33 @@ export function buildAskQuestionPrompt(args: {
   return { system, messages, kind, maxTokens: profile.maxTokens };
 }
 
+/**
+ * 仅生成「白话解释」，用于已经从 OJ 抓回结构化题目但缺 plainExplanation 的情况。
+ * 比 buildParseProblemPrompt 轻得多：只让模型读一段题面、出 ≤150 字白话。
+ */
+export function buildPlainExplanationPrompt(args: {
+  title: string;
+  statement: string;
+  examples?: Array<{ input: string; output: string }>;
+}): PromptPair {
+  const exampleText =
+    args.examples && args.examples[0]
+      ? `\n样例输入：\n${args.examples[0].input}\n样例输出：\n${args.examples[0].output}`
+      : '';
+  return {
+    system:
+      '你是讲题助教，用大学新生听得懂的话解释题目要干什么。' +
+      '不要复述原题长句，不要给算法/解法/思路，不要泄露答案。150 字以内，纯文本不带 Markdown。',
+    user: `题目：${args.title}
+
+题面：
+${args.statement.slice(0, 1500)}
+${exampleText}
+
+请用白话告诉我这题到底要做什么、输入给了什么、输出要算什么、样例为什么是这个值。150 字以内，不要谈解法。`,
+  };
+}
+
 export function buildParseProblemPrompt(rawText: string): PromptPair {
   return {
     system:
@@ -222,6 +304,7 @@ export function buildParseProblemPrompt(rawText: string): PromptPair {
   "inputFormat": "输入格式",
   "outputFormat": "输出格式",
   "constraints": "数据范围/时空限制",
+  "plainExplanation": "白话解释：用大学新生也能听懂的话说明这题到底要做什么、输入给了什么、输出要算什么、样例为什么这样，不要给算法答案，150 字以内",
   "examples": [{"input": "...", "output": "...", "explanation": "..."}],
   "tags": ["算法/数据结构知识点"],
   "difficulty": "easy | medium | hard"
@@ -234,6 +317,7 @@ statement 关键要求：
 - 不要保留「1、」「2、」中文编号
 - 不要保留 UI 文字（"样例查看模式"/"正常显示"/"复制"等）
 - 段落之间空一行
+- plainExplanation 要放在题目解析底部展示，必须是白话，不要复述原题长句，不要提前泄露完整解法
 
 字段缺失置空字符串或空数组。
 

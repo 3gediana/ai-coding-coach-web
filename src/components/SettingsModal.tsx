@@ -1,10 +1,25 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../lib/store';
-import { PRESETS } from '../lib/presets';
+import { PRESETS, DEFAULT_AI_CONFIG, RECOMMENDED_OLLAMA_MODELS } from '../lib/presets';
 import type { AIConfig, AIProvider } from '../core/types';
 import { cn } from '../lib/cn';
-import { X, Eye, EyeOff, ExternalLink, Check, Loader2, Sparkles, Zap, Settings2, Lightbulb } from 'lucide-react';
+import {
+  X,
+  Eye,
+  EyeOff,
+  ExternalLink,
+  Check,
+  Loader2,
+  Sparkles,
+  Zap,
+  Settings2,
+  Lightbulb,
+  Copy,
+  RefreshCw,
+  Download,
+  AlertTriangle,
+} from 'lucide-react';
 import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
 import { DEFAULT_ROUTER_HINTS } from '../core/ai/router';
@@ -269,8 +284,7 @@ export function SettingsModal() {
                       setDraft({
                         ...draft,
                         fastLane: {
-                          baseUrl: 'http://localhost:11434',
-                          model: 'sam:latest',
+                          ...DEFAULT_AI_CONFIG.fastLane!,
                           ...(draft.fastLane ?? {}),
                           enabled: e.target.checked,
                         },
@@ -279,19 +293,23 @@ export function SettingsModal() {
                   />
                   <Zap size={14} className="text-warn" />
                   <span className="text-sm font-semibold">本地快车道（FastLane）</span>
+                  <span className="chip text-[9px] px-1.5 py-0 ml-1">可选</span>
                   <span className="text-[10px] text-ink-mute ml-auto">实时类任务走本地 Ollama</span>
                 </label>
-                <p className="text-[11px] text-ink-mute mb-3 pl-6">
-                  代码批注 / 答疑 / 卡住引导 / 粘贴解释 走本地 Ollama；
-                  题面解析 / 错题总结仍走主云端。命中下方"路由策略"任一阈值则跳云端保稳。
+                <p className="text-[11px] text-ink-mute mb-3 pl-6 leading-relaxed">
+                  <span className="text-ok">不启用也能完整使用 Coach</span>
+                  ：所有任务走主云端服务。启用后，
+                  代码批注 / 答疑 / 卡住引导 / 粘贴解释 走本地 Ollama（零成本、低延迟）；
+                  题面解析 / 错题总结仍走主云端。命中下方「路由策略」任一阈值则跳云端保稳。
                 </p>
 
                 {draft.fastLane?.enabled && (
                   <div className="pl-6 space-y-3">
+                    <OllamaSetupHint />
                     <Field label="Base URL" hint="必须本地（localhost / 127.* / 局域网）">
                       <input
                         className="input font-mono text-xs"
-                        placeholder="http://localhost:11434"
+                        placeholder={DEFAULT_AI_CONFIG.fastLane!.baseUrl}
                         value={draft.fastLane.baseUrl}
                         onChange={(e) =>
                           setDraft({
@@ -301,15 +319,14 @@ export function SettingsModal() {
                         }
                       />
                     </Field>
-                    <Field label="模型" hint="ollama 已 pull 过的模型名">
-                      <input
-                        className="input font-mono text-xs"
-                        placeholder="sam:latest"
+                    <Field label="模型" hint="必须是 Ollama 已 pull 的模型；点「探测」自动列出">
+                      <OllamaModelPicker
+                        baseUrl={draft.fastLane.baseUrl}
                         value={draft.fastLane.model}
-                        onChange={(e) =>
+                        onChange={(model) =>
                           setDraft({
                             ...draft,
-                            fastLane: { ...draft.fastLane!, model: e.target.value },
+                            fastLane: { ...draft.fastLane!, model },
                           })
                         }
                       />
@@ -458,6 +475,79 @@ export function SettingsModal() {
                 </details>
               )}
 
+              {/* ━━ 🧭 Coach 意图路由 ━━ */}
+              <div className="border-t border-line pt-4">
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
+                  <input
+                    type="checkbox"
+                    className="accent-cyan"
+                    checked={!!draft.intentRouter?.enabled}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        intentRouter: {
+                          ...DEFAULT_AI_CONFIG.intentRouter!,
+                          ...(draft.intentRouter ?? {}),
+                          enabled: e.target.checked,
+                        },
+                      })
+                    }
+                  />
+                  <span className="text-sm font-semibold">Coach 意图路由（AI 兜底）</span>
+                  <span className="chip text-[9px] px-1.5 py-0 ml-1">可选</span>
+                  <span className="text-[10px] text-ink-mute ml-auto">
+                    规则识别不到时，让一个轻模型再判一遍
+                  </span>
+                </label>
+                <p className="text-[11px] text-ink-mute mb-3 pl-6 leading-relaxed">
+                  <span className="text-ok">不启用也能正常用</span>
+                  ：只走规则路由（速度最快、无成本）。开启后，模糊问题再调一次该模型返回 JSON
+                  分类（intent / contextTemplate / outputMode），失败自动回落到规则。
+                </p>
+                {draft.intentRouter?.enabled && (
+                  <div className="pl-6 space-y-3">
+                    <Field label="Base URL" hint="OpenAI 兼容 chat 接口或本地 ollama">
+                      <input
+                        className="input font-mono text-xs"
+                        placeholder={DEFAULT_AI_CONFIG.intentRouter!.baseUrl}
+                        value={draft.intentRouter.baseUrl}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            intentRouter: { ...draft.intentRouter!, baseUrl: e.target.value },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="模型" hint="本地 Ollama 模型可点「探测」自动列出">
+                      <OllamaModelPicker
+                        baseUrl={draft.intentRouter.baseUrl}
+                        value={draft.intentRouter.model}
+                        onChange={(model) =>
+                          setDraft({
+                            ...draft,
+                            intentRouter: { ...draft.intentRouter!, model },
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="API Key（可选）" hint="ollama 等本地服务可留空">
+                      <input
+                        className="input font-mono text-xs"
+                        placeholder=""
+                        value={draft.intentRouter.apiKey ?? ''}
+                        onChange={(e) =>
+                          setDraft({
+                            ...draft,
+                            intentRouter: { ...draft.intentRouter!, apiKey: e.target.value },
+                          })
+                        }
+                      />
+                    </Field>
+                  </div>
+                )}
+              </div>
+
               {/* ━━ 💡 学习辅助 ━━ */}
               <div className="border-t border-line pt-4">
                 <label className="flex items-center gap-2 cursor-pointer mb-2">
@@ -542,6 +632,214 @@ function Field({
         {hint && <span className="text-[10px] text-ink-mute">{hint}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+// ───────── Ollama 引导横幅 ─────────
+
+/**
+ * 引导用户安装 Ollama + pull 推荐模型。
+ * 紧凑横幅样式：左上 icon，右上「打开官网」链接，下方 pull 命令列表。
+ */
+function OllamaSetupHint() {
+  return (
+    <div className="rounded-lg border border-cyan/30 bg-cyan/5 px-3 py-2.5 text-[11px] leading-relaxed">
+      <div className="flex items-start gap-2">
+        <Download size={13} className="text-cyan shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <div className="font-semibold text-cyan-glow mb-1">需要先安装 Ollama 并 pull 一个模型</div>
+          <div className="text-ink-dim">
+            没有 Ollama 也能完整使用 Coach（走主云端）。装好后从下面任选一个 pull：
+          </div>
+          <div className="mt-2 space-y-1">
+            {RECOMMENDED_OLLAMA_MODELS.slice(0, 3).map((m) => (
+              <PullCommandRow key={m.name} model={m} />
+            ))}
+          </div>
+        </div>
+        <a
+          href="https://ollama.com/download"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-cyan hover:text-cyan-glow flex items-center gap-1 shrink-0 text-[11px]"
+          title="打开 Ollama 官网下载页"
+        >
+          <ExternalLink size={11} />
+          安装
+        </a>
+      </div>
+    </div>
+  );
+}
+
+function PullCommandRow({
+  model,
+}: {
+  model: { name: string; size: string; vramHint?: string; desc: string };
+}) {
+  const cmd = `ollama pull ${model.name}`;
+  const onCopy = () => {
+    navigator.clipboard.writeText(cmd).then(
+      () => toast.success(`已复制：${cmd}`),
+      () => toast.error('复制失败'),
+    );
+  };
+  return (
+    <div className="flex items-center gap-2 text-[11px]">
+      <code className="font-mono bg-bg-elev2 px-1.5 py-0.5 rounded text-ink whitespace-nowrap">
+        {cmd}
+      </code>
+      <span className="text-ink-mute shrink-0">{model.size}</span>
+      <span className="text-ink-dim text-[10px] truncate">{model.desc}</span>
+      <button
+        onClick={onCopy}
+        className="text-cyan hover:text-cyan-glow shrink-0 ml-auto"
+        title="复制命令"
+        type="button"
+      >
+        <Copy size={11} />
+      </button>
+    </div>
+  );
+}
+
+// ───────── 本地 Ollama 模型选择器 ─────────
+
+/**
+ * 探测本地 Ollama 已 pull 的模型并以下拉框展示。
+ *
+ * - 默认：纯 input + 「探测」按钮
+ * - 探测成功：替换为 select 下拉，列出 ollama 上实际存在的模型
+ * - 探测失败：保持 input + 显示「未连上 Ollama」+ 推荐 pull 命令
+ *
+ * 走 vite dev 中间件 /ai-proxy 避开 CORS；prod 部署直连（用户需要 OLLAMA_ORIGINS=*）。
+ */
+function OllamaModelPicker({
+  baseUrl,
+  value,
+  onChange,
+}: {
+  baseUrl: string;
+  value: string;
+  onChange: (model: string) => void;
+}) {
+  const [models, setModels] = useState<string[] | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const probe = useCallback(async () => {
+    if (!baseUrl?.trim()) return;
+    setProbing(true);
+    setError(null);
+    try {
+      const target = baseUrl.replace(/\/+$/, '') + '/api/tags';
+      const url = import.meta.env.DEV
+        ? `/ai-proxy/${encodeURIComponent(target)}`
+        : target;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 4000);
+      const r = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      if (!Array.isArray(data?.models)) throw new Error('响应格式异常');
+      const names: string[] = data.models
+        .map((m: any) => m?.name)
+        .filter((n: any): n is string => typeof n === 'string');
+      setModels(names);
+    } catch (e: any) {
+      const msg =
+        e?.name === 'AbortError'
+          ? '连接超时（4s）'
+          : String(e?.message ?? e).slice(0, 100);
+      setError(msg);
+      setModels(null);
+    } finally {
+      setProbing(false);
+    }
+  }, [baseUrl]);
+
+  // baseUrl 变化时清空旧探测结果（避免误导）
+  useEffect(() => {
+    setModels(null);
+    setError(null);
+  }, [baseUrl]);
+
+  const hasOptions = models !== null && models.length > 0;
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-stretch gap-2">
+        {hasOptions ? (
+          <select
+            className="input font-mono text-xs flex-1"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+          >
+            {value && !models!.includes(value) && (
+              <option value={value}>{value}（未安装）</option>
+            )}
+            {models!.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className="input font-mono text-xs flex-1"
+            placeholder={DEFAULT_AI_CONFIG.fastLane!.model}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+          />
+        )}
+        <button
+          type="button"
+          onClick={probe}
+          disabled={probing || !baseUrl?.trim()}
+          className="btn shrink-0"
+          title="探测本地 Ollama 已 pull 的模型"
+        >
+          {probing ? (
+            <Loader2 size={12} className="animate-spin" />
+          ) : (
+            <RefreshCw size={12} />
+          )}
+          探测
+        </button>
+      </div>
+      {error && (
+        <div className="rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn flex items-start gap-2">
+          <AlertTriangle size={11} className="shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            未连上 Ollama（{error}）。请确认已运行 <code className="font-mono">ollama serve</code>
+            ，或在{' '}
+            <a
+              href="https://ollama.com/download"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              ollama.com
+            </a>{' '}
+            安装。
+          </div>
+        </div>
+      )}
+      {models !== null && models.length === 0 && (
+        <div className="rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn flex items-start gap-2">
+          <AlertTriangle size={11} className="shrink-0 mt-0.5" />
+          已连上 Ollama 但还没 pull 任何模型。请从下方任选一个：
+        </div>
+      )}
+      {(error || (models !== null && models.length === 0)) && (
+        <div className="space-y-1 pl-1">
+          {RECOMMENDED_OLLAMA_MODELS.map((m) => (
+            <PullCommandRow key={m.name} model={m} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

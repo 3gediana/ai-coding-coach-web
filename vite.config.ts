@@ -55,9 +55,15 @@ async function waitOllamaReady(maxMs = 20_000): Promise<boolean> {
 /**
  * 探测 11434 端口；若不通则 spawn `ollama serve`，并轮询到就绪。
  * 重复并发调用复用同一个 promise。
+ *
+ * **默认 opt-in**：仅当环境变量 `AICC_AUTO_OLLAMA=1` 时才自动 spawn；
+ * 没装 ollama 的二次开发者就不会被强行拉起一个不存在的进程。
  */
 async function ensureOllamaRunning(): Promise<boolean> {
   if (await probePort('127.0.0.1', 11434, 300)) return true;
+  if (process.env.AICC_AUTO_OLLAMA !== '1') {
+    return false; // 用户没显式 opt-in，不做事
+  }
   if (ensuringPromise) return ensuringPromise;
   ensuringPromise = (async () => {
     console.log('\x1b[33m[aicc-ollama]\x1b[0m 端口 11434 未在监听，自动启动 `ollama serve` ...');
@@ -124,6 +130,8 @@ const ollamaAutostartPlugin: Plugin = {
 };
 
 export default defineConfig({
+  // 让 .env.local 里 AI_COACH_* 也能在前端访问（保持与已有变量命名一致）
+  envPrefix: ['VITE_', 'AI_COACH_'],
   plugins: [
     react(),
     ollamaAutostartPlugin,
@@ -306,8 +314,204 @@ export default defineConfig({
           language?: string;
           meta?: Record<string, unknown>;
         };
+        type OjCommand = {
+          id: string;
+          source: string;
+          targetUrl: string;
+          targetKey: string;
+          problemId: string;
+          problemTitle: string;
+          fileName: string;
+          language: string;
+          code: string;
+          autoSubmit: boolean;
+          createdAt: number;
+        };
+        type OjResult = {
+          id: string;
+          source: string;
+          url: string;
+          status: 'done' | 'failed' | 'timeout';
+          verdict?: string;
+          rawText?: string;
+          message?: string;
+          finishedAt?: number;
+        };
         const queue: ImportPayload[] = [];
         const sseClients = new Set<import('http').ServerResponse>();
+        const ojCommands = new Map<string, OjCommand>();
+        const ojResultQueue: OjResult[] = [];
+        const ojResultClients = new Set<import('http').ServerResponse>();
+
+        const readJsonBody = <T,>(req: any): Promise<T> =>
+          new Promise((resolve, reject) => {
+            const chunks: Buffer[] = [];
+            req.on('data', (c: Buffer) => chunks.push(c));
+            req.on('end', () => {
+              try {
+                resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as T);
+              } catch (err) {
+                reject(err);
+              }
+            });
+            req.on('error', reject);
+          });
+        const normalizeOjUrl = (raw: string): string => {
+          try {
+            const u = new URL(raw);
+            if (u.hostname === 'www.educoder.net') return `${u.origin}${u.pathname}`;
+            if (u.hostname === '10.11.219.21') return `${u.origin}${u.pathname}${u.hash}`;
+            return `${u.origin}${u.pathname}${u.hash}`;
+          } catch {
+            return raw;
+          }
+        };
+        const setCors = (res: any, methods = 'GET, POST, OPTIONS') => {
+          res.setHeader('access-control-allow-origin', '*');
+          res.setHeader('access-control-allow-methods', methods);
+          res.setHeader('access-control-allow-headers', 'content-type');
+        };
+
+        server.middlewares.use('/__oj-submit-command', async (req, res) => {
+          setCors(res, 'POST, OPTIONS');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          try {
+            const payload = await readJsonBody<Omit<OjCommand, 'id' | 'targetKey' | 'createdAt'>>(req);
+            if (!payload.source || !payload.targetUrl || !payload.code) {
+              res.statusCode = 400;
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify({ error: 'missing source/targetUrl/code' }));
+              return;
+            }
+            const id = `oj-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+            const command: OjCommand = {
+              ...payload,
+              id,
+              targetKey: normalizeOjUrl(payload.targetUrl),
+              createdAt: Date.now(),
+            };
+            ojCommands.set(id, command);
+            res.statusCode = 200;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: true, id, targetKey: command.targetKey }));
+            console.log(`\x1b[35m[aicc-oj]\x1b[0m command ${id} → ${command.source} ${command.targetKey}`);
+          } catch (err: any) {
+            res.statusCode = 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: String(err?.message || err) }));
+          }
+        });
+
+        server.middlewares.use('/__oj-next-command', (req, res) => {
+          setCors(res, 'GET, OPTIONS');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'GET') {
+            res.statusCode = 405;
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          const parsed = new URL(req.url ?? '', 'http://127.0.0.1');
+          const source = parsed.searchParams.get('source') ?? '';
+          const url = parsed.searchParams.get('url') ?? '';
+          const key = normalizeOjUrl(url);
+          const now = Date.now();
+          for (const [id, cmd] of [...ojCommands]) {
+            if (now - cmd.createdAt > 10 * 60_000) {
+              ojCommands.delete(id);
+              continue;
+            }
+            if (cmd.source === source && cmd.targetKey === key) {
+              ojCommands.delete(id);
+              res.statusCode = 200;
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify({ command: cmd }));
+              console.log(`\x1b[35m[aicc-oj]\x1b[0m picked ${id}`);
+              return;
+            }
+          }
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json');
+          res.end(JSON.stringify({ command: null }));
+        });
+
+        server.middlewares.use('/__oj-result', async (req, res) => {
+          setCors(res, 'POST, OPTIONS');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          try {
+            const result = await readJsonBody<OjResult>(req);
+            if (!result.id) {
+              res.statusCode = 400;
+              res.end(JSON.stringify({ error: 'missing id' }));
+              return;
+            }
+            const payload: OjResult = { ...result, finishedAt: result.finishedAt ?? Date.now() };
+            const msg = `data: ${JSON.stringify(payload)}\n\n`;
+            let pushed = 0;
+            for (const c of ojResultClients) {
+              try { c.write(msg); pushed++; } catch { /* ignore */ }
+            }
+            if (pushed === 0) {
+              ojResultQueue.push(payload);
+              if (ojResultQueue.length > 50) ojResultQueue.shift();
+            }
+            res.statusCode = 200;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: true, pushed }));
+            console.log(`\x1b[35m[aicc-oj]\x1b[0m result ${payload.id} ${payload.status}/${payload.verdict ?? '-'}`);
+          } catch (err: any) {
+            res.statusCode = 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: String(err?.message || err) }));
+          }
+        });
+
+        server.middlewares.use('/__oj-result-sse', (req, res) => {
+          if (req.method !== 'GET') {
+            res.statusCode = 405;
+            res.end();
+            return;
+          }
+          res.setHeader('content-type', 'text/event-stream');
+          res.setHeader('cache-control', 'no-cache');
+          res.setHeader('connection', 'keep-alive');
+          res.setHeader('access-control-allow-origin', '*');
+          (res as any).flushHeaders?.();
+          res.write(': connected\n\n');
+          ojResultClients.add(res);
+          while (ojResultQueue.length > 0) {
+            const p = ojResultQueue.shift()!;
+            res.write(`data: ${JSON.stringify(p)}\n\n`);
+          }
+          const ping = setInterval(() => {
+            try { res.write(': ping\n\n'); } catch { /* ignore */ }
+          }, 30_000);
+          req.on('close', () => {
+            clearInterval(ping);
+            ojResultClients.delete(res);
+          });
+        });
 
         // POST /__import → 入队 + 推送给 SSE 客户端
         server.middlewares.use('/__import', (req, res) => {
@@ -432,5 +636,7 @@ export default defineConfig({
   server: {
     port: 5173,
     host: '127.0.0.1',
+    // 端口被占用时直接报错，避免 fallback 到 5174 导致 localStorage origin 漂移、AI 配置看似丢失
+    strictPort: true,
   },
 });

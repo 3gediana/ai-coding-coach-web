@@ -1,0 +1,131 @@
+/**
+ * Agent 行动日志面板 — 让评委/学生一眼看到 Coach 在「自己做事」。
+ *
+ * 嵌入版：放在 FeedbackPanel 底部固定区域里，外部控制高度。
+ *  - 4 类标签：感知 / 决策 / 行动 / 反馈，颜色区分
+ *  - 单条点击展开详情
+ *  - level=error 强制 bad 边框
+ */
+import { Activity, Eye, Lightbulb, Hand, CheckCircle2, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { useStore } from '../lib/store';
+import type { AgentTraceEvent, AgentTraceKind, AgentTraceLevel } from '../lib/store';
+import { cn } from '../lib/cn';
+
+const KIND_META: Record<
+  AgentTraceKind,
+  { label: string; icon: typeof Eye; color: string }
+> = {
+  perceive: { label: '感知', icon: Eye, color: 'text-cyan' },
+  decide: { label: '决策', icon: Lightbulb, color: 'text-accent' },
+  act: { label: '行动', icon: Hand, color: 'text-warn' },
+  feedback: { label: '反馈', icon: CheckCircle2, color: 'text-ok' },
+};
+
+const LEVEL_BORDER: Record<AgentTraceLevel, string> = {
+  info: 'border-line/60',
+  success: 'border-ok/40',
+  warn: 'border-warn/40',
+  error: 'border-bad/60',
+};
+
+function formatTime(ts: number): string {
+  const d = new Date(ts);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+export function AgentTracePanel() {
+  const trace = useStore((s) => s.agentTrace);
+  const clear = useStore((s) => s.clearAgentTrace);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  return (
+    <div className="flex flex-col min-h-0 h-full bg-bg-elev/40">
+      {/* Header */}
+      <div className="h-7 px-3 flex items-center gap-2 border-b border-line/60 shrink-0 bg-bg-elev">
+        <Activity size={11} className="text-accent" />
+        <span className="text-[11px] font-semibold text-accent-glow">Agent 行动</span>
+        <span className="text-[10px] text-ink-mute">{trace.length} 条</span>
+        <span className="ml-auto text-[10px] text-ink-mute">
+          感知 · 决策 · 行动 · 反馈
+        </span>
+        {trace.length > 0 && (
+          <button
+            onClick={clear}
+            className="text-ink-mute hover:text-bad transition flex items-center text-[10px]"
+            title="清空 Agent 日志"
+          >
+            <Trash2 size={10} />
+          </button>
+        )}
+      </div>
+      {/* List */}
+      <div className="flex-1 overflow-y-auto min-h-0">
+        {trace.length === 0 ? (
+          <div className="h-full flex items-center justify-center text-[11px] text-ink-mute py-6 px-4 text-center leading-relaxed">
+            还没有行动。<br />
+            激活一道题、点「问教练」或者跑一次代码，Coach 的每一步决策都会出现在这里。
+          </div>
+        ) : (
+          trace.map((ev) => (
+            <TraceItem
+              key={ev.id}
+              ev={ev}
+              expanded={expandedId === ev.id}
+              onToggle={() =>
+                setExpandedId((id) => (id === ev.id ? null : ev.id))
+              }
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TraceItem({
+  ev,
+  expanded,
+  onToggle,
+}: {
+  ev: AgentTraceEvent;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const meta = KIND_META[ev.kind];
+  const Icon = meta.icon;
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className={cn(
+        'w-full text-left px-3 py-1.5 border-b border-l-2 transition hover:bg-bg-elev2',
+        LEVEL_BORDER[ev.level],
+        'border-b-line/30',
+      )}
+    >
+      <div className="flex items-start gap-2">
+        <Icon size={11} className={cn('mt-0.5 shrink-0', meta.color)} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className={cn('uppercase tracking-wider font-semibold', meta.color)}>
+              {meta.label}
+            </span>
+            <span className="text-[10px] text-ink-mute font-mono">
+              {formatTime(ev.ts)}
+            </span>
+          </div>
+          <div className="text-[11px] text-ink mt-0.5 leading-snug break-words">
+            {ev.title}
+          </div>
+          {expanded && ev.detail && (
+            <pre className="mt-1 text-[10px] text-ink-dim font-mono whitespace-pre-wrap leading-relaxed bg-bg-elev/40 border border-line/40 rounded px-2 py-1 max-h-32 overflow-y-auto">
+              {ev.detail}
+            </pre>
+          )}
+        </div>
+      </div>
+    </button>
+  );
+}
