@@ -122,6 +122,9 @@ export function FeedbackPanel() {
           ) : !runningAnalysis ? (
             <EmptyState />
           ) : null}
+
+          {/* 底部留白：让最后一行能滚到 TaskTray 上方（避免被任务队列浮窗遮挡） */}
+          <div className="h-20 shrink-0" aria-hidden="true" />
         </div>
       )}
       </aside>

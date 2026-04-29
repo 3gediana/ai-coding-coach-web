@@ -13,6 +13,8 @@ import {
   X,
   Trash2,
   Sparkles,
+  Minus,
+  ListChecks,
 } from 'lucide-react';
 import type { Task } from '../lib/store';
 
@@ -23,6 +25,8 @@ export function TaskTray() {
   const clearFinishedTasks = useStore((s) => s.clearFinishedTasks);
 
   const [expanded, setExpanded] = useState(false);
+  // 最小化：只显示右下角一个圆形小图标，避免遮挡 FeedbackPanel/编辑器
+  const [minimized, setMinimized] = useState(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
 
   if (tasks.length === 0) return null;
@@ -33,6 +37,32 @@ export function TaskTray() {
 
   const previewTask = previewId ? tasks.find((t) => t.id === previewId) : null;
 
+  // 最小化模式：只显示一个 36x36 的浮动小图标
+  if (minimized) {
+    return (
+      <motion.button
+        initial={{ scale: 0.8, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        onClick={() => setMinimized(false)}
+        className="fixed bottom-4 right-4 z-40 w-9 h-9 rounded-full glass-card flex items-center justify-center hover:scale-110 transition shadow-lg"
+        title={`任务队列 (${tasks.length}) — 点击展开`}
+      >
+        {running > 0 ? (
+          <Loader2 size={16} className="text-accent animate-spin" />
+        ) : failed > 0 ? (
+          <XCircle size={16} className="text-bad" />
+        ) : (
+          <ListChecks size={16} className="text-ink-dim" />
+        )}
+        {(running > 0 || failed > 0) && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-[14px] px-1 rounded-full text-[9px] font-bold text-white bg-accent flex items-center justify-center">
+            {running + failed}
+          </span>
+        )}
+      </motion.button>
+    );
+  }
+
   return (
     <>
       <motion.div
@@ -40,33 +70,46 @@ export function TaskTray() {
         animate={{ y: 0, opacity: 1 }}
         className="fixed bottom-4 right-4 z-40 w-[380px] glass-card overflow-hidden"
       >
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-bg-elev2 transition"
-        >
-          <div className="relative">
-            {running > 0 ? (
-              <Loader2 size={18} className="text-accent animate-spin" />
-            ) : failed > 0 ? (
-              <XCircle size={18} className="text-bad" />
-            ) : (
-              <CheckCircle2 size={18} className="text-ok" />
-            )}
-          </div>
-          <div className="flex-1 text-left text-sm">
-            <div className="font-semibold flex items-center gap-2">
-              任务队列
-              {running > 0 && (
-                <span className="chip-accent text-[10px]">{running} 进行中</span>
-              )}
-              {failed > 0 && <span className="chip-bad text-[10px]">{failed} 失败</span>}
-              {done > 0 && expanded === false && (
-                <span className="text-[10px] text-ink-mute">{done} 完成</span>
+        <div className="w-full flex items-stretch hover:bg-bg-elev2 transition">
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="flex-1 px-4 py-2.5 flex items-center gap-3"
+          >
+            <div className="relative">
+              {running > 0 ? (
+                <Loader2 size={18} className="text-accent animate-spin" />
+              ) : failed > 0 ? (
+                <XCircle size={18} className="text-bad" />
+              ) : (
+                <CheckCircle2 size={18} className="text-ok" />
               )}
             </div>
-          </div>
-          {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
-        </button>
+            <div className="flex-1 text-left text-sm">
+              <div className="font-semibold flex items-center gap-2">
+                任务队列
+                {running > 0 && (
+                  <span className="chip-accent text-[10px]">{running} 进行中</span>
+                )}
+                {failed > 0 && <span className="chip-bad text-[10px]">{failed} 失败</span>}
+                {done > 0 && expanded === false && (
+                  <span className="text-[10px] text-ink-mute">{done} 完成</span>
+                )}
+              </div>
+            </div>
+            {expanded ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          </button>
+          {/* 最小化按钮（独立 button，不触发 expanded 切换） */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setMinimized(true);
+            }}
+            className="px-2.5 flex items-center text-ink-mute hover:text-ink hover:bg-bg-elev2 border-l border-line/40 transition"
+            title="最小化（避免遮挡）"
+          >
+            <Minus size={14} />
+          </button>
+        </div>
 
         <AnimatePresence>
           {expanded && (
