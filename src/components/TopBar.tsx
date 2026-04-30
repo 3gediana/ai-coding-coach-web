@@ -12,6 +12,8 @@ import {
   WifiOff,
   Plane,
   ChevronDown,
+  FileText,
+  FolderTree,
 } from 'lucide-react';
 import { useOnlineStatus, setForcedOffline } from '../lib/offlineMode';
 import { toast } from 'sonner';
@@ -49,6 +51,8 @@ export function TopBar() {
   const problems = useStore((s) => s.problems);
   const filesByScope = useStore((s) => s.filesByScope);
   const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
+  const multiFileMode = useStore((s) => s.multiFileMode);
+  const setMultiFileMode = useStore((s) => s.setMultiFileMode);
   const tasksRunning = useStore((s) =>
     s.tasks.filter((t) => t.status === 'running' || t.status === 'queued').length,
   );
@@ -138,8 +142,36 @@ export function TopBar() {
       {/* Offline / Airplane chip */}
       <OfflineChip />
 
-      {/* Active file badge */}
-      {activeFile && (
+      {/* 单文件 / 多文件 模式切换：默认单文件不显示 FileTree；切到多文件时 FileTree 出现，AI 也会感知多文件耦合 */}
+      <button
+        type="button"
+        onClick={() => {
+          const next = !multiFileMode;
+          setMultiFileMode(next);
+          toast.message(next ? '已切到多文件模式 · 文件树已显示' : '已切到单文件模式 · 文件树已隐藏', {
+            description: next
+              ? 'AI 分析会考虑多文件耦合（头文件 / include / 跨文件引用）'
+              : '只编辑当前一个文件，界面更专注',
+          });
+        }}
+        className={cn(
+          'hidden md:flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-medium transition',
+          multiFileMode
+            ? 'bg-cyan/10 border-cyan/40 text-cyan'
+            : 'bg-bg-elev2 border-line text-ink-mute hover:text-ink',
+        )}
+        title={
+          multiFileMode
+            ? '当前：多文件模式（文件树已展开，AI 会感知文件间耦合）· 点击切回单文件'
+            : '当前：单文件模式（文件树已隐藏）· 多文件场景请点击切换'
+        }
+      >
+        {multiFileMode ? <FolderTree size={11} /> : <FileText size={11} />}
+        <span>{multiFileMode ? '多文件' : '单文件'}</span>
+      </button>
+
+      {/* Active file badge：仅多文件模式显示（单文件时跟 toggle 信息冗余） */}
+      {activeFile && multiFileMode && (
         <div className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-bg-elev2 border border-line">
           <span className="text-[10px] font-mono text-ink-dim uppercase">{activeFile.language}</span>
           <span className="text-xs font-mono text-ink truncate max-w-[140px]">{activeFile.name}</span>

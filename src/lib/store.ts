@@ -444,6 +444,9 @@ interface State {
 
   // UI
   sidebarTab: 'problems' | 'mistakes' | 'sessions' | 'dashboard' | null;
+  /** 单文件 / 多文件模式：默认 false（单文件，FileTree 不渲染）。多文件场景才打开。 */
+  multiFileMode: boolean;
+  setMultiFileMode: (v: boolean) => void;
   settingsOpen: boolean;
   problemEditorOpen: boolean;
   problemBrowserOpen: boolean;
@@ -1025,7 +1028,12 @@ export const useStore = create<State>((set, get) => {
     },
     clearAgentTrace: () => set({ agentTrace: [] }),
 
-    sidebarTab: 'problems',
+    sidebarTab: null,
+    multiFileMode: localStorage.getItem('aicc.multiFile.v1') === 'on',
+    setMultiFileMode: (v: boolean) => {
+      localStorage.setItem('aicc.multiFile.v1', v ? 'on' : 'off');
+      set({ multiFileMode: v });
+    },
     settingsOpen: false,
     feynmanOpen: false,
     openFeynman: () => set({ feynmanOpen: true }),

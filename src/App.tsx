@@ -32,6 +32,7 @@ export default function App() {
   const aiConfig = useStore((s) => s.aiConfig);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const startOnboarding = useStore((s) => s.startOnboarding);
+  const multiFileMode = useStore((s) => s.multiFileMode);
 
   // ?seed=demo：清空 IndexedDB 并注入 5 题 + 错题 + 7 天学习记录，然后 reload
   useEffect(() => {
@@ -111,7 +112,7 @@ export default function App() {
       <div className="flex-1 flex min-h-0">
         <Sidebar />
         <main className="flex-1 flex min-w-0">
-          <FileTree />
+          {multiFileMode && <FileTree />}
           <div className="flex-1 min-w-0 flex flex-col relative">
             {/* P1 题眼速读卡：激活题目时云端生成的「头条 + 注意点」，固定在编辑器顶部 */}
             <ProblemOverviewCard />
