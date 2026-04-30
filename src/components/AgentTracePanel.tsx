@@ -82,9 +82,12 @@ export function AgentTracePanel() {
       {view === 'list' && (
         <div className="flex-1 overflow-y-auto min-h-0">
           {trace.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-[11px] text-ink-mute py-6 px-4 text-center leading-relaxed">
-              还没有行动。<br />
-              激活一道题、点「问教练」或者跑一次代码，Coach 的每一步决策都会出现在这里。
+            // 空状态紧凑化：避免占据右下大片屏幕。提示一行就够，详细解释挪到 title。
+            <div
+              className="text-[10.5px] text-ink-mute px-3 py-2 italic"
+              title="激活一道题、点「问教练」或跑一次代码，Coach 的每一步决策（哪个 agent / 走云端还是本地 / 耗时多少）都会出现在这里。"
+            >
+              暂无行动 · 跑一次代码或问一次教练即可激活
             </div>
           ) : (
             trace.map((ev) => (

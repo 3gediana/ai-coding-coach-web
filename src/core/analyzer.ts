@@ -420,20 +420,20 @@ export class Coach {
     todayFocus: string;
   } | null> {
     const { system, user } = buildDiagnosisAgentPrompt(args);
-    try {
-      // 小模型同义字段兜底（weak / weaknesses / weakAreas; strong / strongAreas; focus / today）
-      const data = await this.ai.chatJson<{
-        weakConcepts?: unknown;
-        weak?: unknown;
-        weaknesses?: unknown;
-        weakAreas?: unknown;
-        strengths?: unknown;
-        strong?: unknown;
-        strongAreas?: unknown;
-        todayFocus?: string;
-        focus?: string;
-        today?: string;
-      }>({
+    type DiagRaw = {
+      weakConcepts?: unknown;
+      weak?: unknown;
+      weaknesses?: unknown;
+      weakAreas?: unknown;
+      strengths?: unknown;
+      strong?: unknown;
+      strongAreas?: unknown;
+      todayFocus?: string;
+      focus?: string;
+      today?: string;
+    };
+    const callWith = (client: AIClient, isCloud: boolean) =>
+      client.chatJson<DiagRaw>({
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -441,7 +441,37 @@ export class Coach {
         maxTokens: 400,
         temperature: 0.3,
         signal: args.signal,
+        // 云端只 1 次 retry：失败立即降级 fastLane（不浪费时间）
+        jsonAttempts: isCloud ? 1 : 3,
       });
+    let data: DiagRaw;
+    try {
+      data = await callWith(this.ai, true);
+    } catch (e) {
+      // 云端挂了 → fastLane 兜底
+      if (this.aiFast) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug(
+            `[Coach.generateLearningDiagnosis] cloud failed (${(e as any)?.message?.slice?.(0, 80)}), trying fastLane`,
+          );
+        }
+        try {
+          data = await callWith(this.aiFast, false);
+        } catch (e2) {
+          if (typeof console !== 'undefined' && console.debug) {
+            console.debug('[Coach.generateLearningDiagnosis] fastLane also failed', e2);
+          }
+          return null;
+        }
+      } else {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach.generateLearningDiagnosis] failed', e);
+        }
+        return null;
+      }
+    }
+    try {
+      // 小模型同义字段兜底（weak / weaknesses / weakAreas; strong / strongAreas; focus / today）
       const cleanList = (v: unknown, max: number): string[] =>
         Array.isArray(v)
           ? v
@@ -462,7 +492,7 @@ export class Coach {
       return { weakConcepts, strengths, todayFocus };
     } catch (e) {
       if (typeof console !== 'undefined' && console.debug) {
-        console.debug('[Coach.generateLearningDiagnosis] failed', e);
+        console.debug('[Coach.generateLearningDiagnosis] parse failed', e);
       }
       return null;
     }

@@ -100,7 +100,6 @@ export function TopBar() {
         </div>
         <div className="hidden sm:block">
           <div className="text-sm font-bold leading-none">AI Coding Coach</div>
-          <div className="text-[10px] text-ink-mute leading-none mt-0.5">Web · v0.1</div>
         </div>
       </div>
 
@@ -128,7 +127,11 @@ export function TopBar() {
             )}
           </motion.div>
         ) : (
-          <span className="text-sm text-ink-mute italic">未激活题目</span>
+          <span className="text-sm text-ink-mute">
+            还没激活题目 · 从右上角
+            <span className="mx-1 px-1.5 py-0.5 rounded bg-bg-elev2 border border-line text-[11px] text-ink">题目 ▾</span>
+            录入或选一道
+          </span>
         )}
       </div>
 
@@ -160,8 +163,10 @@ export function TopBar() {
         disabled={!apiOk}
         title={
           !apiOk
-            ? '请先配置 AI'
-            : '打开 Coach：直接说题意、思路、报错或代码问题'
+            ? '请先配置 AI（点右上角齿轮）'
+            : activeProblem
+            ? '问 Coach：题意 / 思路 / 报错 / 代码 都行'
+            : '没题也能问：学习方向 / 配置 / 算法概念都行'
         }
       >
         <MessageCircleQuestion size={14} />
@@ -223,23 +228,33 @@ function OfflineChip() {
     !!aiConfig.fastLane?.model;
 
   if (status === 'online') {
-    // 在线时只挂一个隐藏的「飞行模式」入口（hover 出现），不抢视觉
+    // 在线时：fastLane 启用 → 显一个明显的 ⚡ Local chip；未启用 → 只挂隐藏的「飞行模式」入口
     return (
-      <button
-        type="button"
-        onClick={() => {
-          if (!fastUsable) {
-            toast.warning('飞行模式需要先配本地 FastLane (Ollama)');
-            return;
-          }
-          setForcedOffline(true);
-          toast.success('已进入飞行模式 · AI 全部走本地');
-        }}
-        className="hidden md:flex items-center text-[10px] text-ink-mute hover:text-warn transition px-1.5 py-0.5 rounded opacity-40 hover:opacity-100"
-        title="模拟拔网线 / 飞行模式 — AI 强制走本地 1B 模型"
-      >
-        <Plane size={11} />
-      </button>
+      <div className="hidden md:flex items-center gap-1">
+        {fastUsable && (
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-ok/10 border border-ok/30 text-[10px] font-medium text-ok"
+            title="本地 FastLane (Ollama) 已启用·实时类任务零成本走本地"
+          >
+            ⚡ Local
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (!fastUsable) {
+              toast.warning('飞行模式需要先配本地 FastLane (Ollama)');
+              return;
+            }
+            setForcedOffline(true);
+            toast.success('已进入飞行模式 · AI 全部走本地');
+          }}
+          className="flex items-center text-[10px] text-ink-mute hover:text-warn transition px-1.5 py-0.5 rounded opacity-40 hover:opacity-100"
+          title="模拟拔网线 / 飞行模式 — AI 强制走本地"
+        >
+          <Plane size={11} />
+        </button>
+      </div>
     );
   }
 
@@ -397,6 +412,13 @@ function ProblemMenu({
                     it.onClick();
                   }}
                   disabled={it.disabled}
+                  title={
+                    it.disabled
+                      ? !apiOk
+                        ? '需先配置 AI（右上角齿轮）'
+                        : '需先激活一道题'
+                      : it.desc
+                  }
                   className={cn(
                     'w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-line/40 last:border-b-0',
                     it.disabled

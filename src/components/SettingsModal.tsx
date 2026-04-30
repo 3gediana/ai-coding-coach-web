@@ -267,7 +267,7 @@ export function SettingsModal() {
               {/* Model（dropdown 模式） */}
               <Field
                 label="模型"
-                hint={currentPreset?.modelExamples.length ? '从预设挑或选 \u300c\u5176\u4ed6\u2026\u300d \u81ea\u5b9a\u4e49' : '输入模型名'}
+                hint={currentPreset?.modelExamples.length ? '从预设挑或选 「其他…」 自定义' : '输入模型名'}
               >
                 <ModelDropdown
                   preset={currentPreset}
@@ -292,26 +292,35 @@ export function SettingsModal() {
                   >
                     <div className="font-semibold mb-1 flex items-center gap-2">
                       {testResult.ok ? <Check size={12} /> : <X size={12} />}
-                      {testResult.ok ? '\u8fde\u63a5\u6210\u529f' : '\u8fde\u63a5\u5931\u8d25'}
+                      {testResult.ok ? '连接成功' : '连接失败'}
                     </div>
                     <div className="font-mono text-[11px] text-ink whitespace-pre-wrap">{testResult.msg}</div>
                   </motion.div>
                 )}
               </AnimatePresence>
 
-              {/* \u9ad8\u7ea7\u8bbe\u7f6e\uff08\u9ed8\u8ba4\u6298\u53e0\uff09\u2014\u2014 Base URL / \u8c03\u4f18 / FastLane / \u8fdb\u9636\u80fd\u529b */}
+              {/* 高级设置（默认折叠）—— Base URL / 调优 / FastLane / 进阶能力 */}
               <details className="border-t border-line pt-4 group/adv">
                 <summary className="cursor-pointer flex items-center gap-2 text-sm font-semibold list-none select-none mb-3 hover:text-accent transition">
                   <ChevronDown size={14} className="transition-transform -rotate-90 group-open/adv:rotate-0" />
-                  \u9ad8\u7ea7\u8bbe\u7f6e
-                  <span className="text-[10px] text-ink-mute font-normal ml-1">Base URL \u00b7 \u8c03\u4f18 \u00b7 FastLane \u00b7 \u8fdb\u9636\u80fd\u529b</span>
+                  高级设置
+                  <span className="text-[10px] text-ink-mute font-normal ml-1">Base URL · 调优 · FastLane · 进阶能力</span>
+                  {/* fastLane 未启用时折叠状态下也提示休眠功能：避免用户不知情 */}
+                  {!draft.fastLane?.enabled && (
+                    <span
+                      className="ml-auto px-2 py-0.5 rounded-full bg-warn/15 border border-warn/40 text-[10px] font-medium text-warn"
+                      title="启用本地 FastLane 后自动激活：运行时报错诊断 / 数据范围 sanity check / 题意偏离嗅探"
+                    >
+                      ⚠ 3 项嗅探休眠中
+                    </span>
+                  )}
                 </summary>
 
                 <div className="space-y-5 pt-2">
-                  {/* Base URL（\u4ece\u4e3b\u4f53\u533a\u79fb\u4e0b\u6765\uff09 */}
+                  {/* Base URL（从主体区移下来） */}
                   <Field
-                    label="Base URL\uff08\u5b8c\u6574 endpoint\uff09"
-                    hint="\u5fc5\u987b\u662f\u5b8c\u6574\u7684 chat-completions URL\uff1bOpenAI \u517c\u5bb9\u534f\u8bae"
+                    label="Base URL（完整 endpoint）"
+                    hint="必须是完整的 chat-completions URL；OpenAI 兼容协议"
                   >
                     <input
                       className="input font-mono text-xs"
@@ -321,8 +330,8 @@ export function SettingsModal() {
                     />
                   </Field>
 
-                  {/* \u8c03\u4f18\u5b50\u5206\u533a */}
-                  <div className="text-[11px] text-ink-mute font-semibold pt-1">\u8c03\u4f18\u53c2\u6570</div>
+                  {/* 调优子分区 */}
+                  <div className="text-[11px] text-ink-mute font-semibold pt-1">调优参数</div>
                   <div className="grid grid-cols-2 gap-4">
                 <Field label="Max Tokens" hint="建议 4000-8000">
                   <input

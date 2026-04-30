@@ -93,7 +93,7 @@ export function FeedbackPanel() {
             active={tab === 'analyze'}
             onClick={() => setTab('analyze')}
             icon={<ScrollText size={12} />}
-            label="题目 & 分析"
+            label={result && result.issues.length > 0 ? '题目 · 分析' : '题目'}
             badge={result && result.issues.length > 0 ? result.issues.length : undefined}
           />
           <TabButton
@@ -424,7 +424,11 @@ function EmptyState({ problemActive }: { problemActive: boolean }) {
           形式直接出现在代码行末。
         </>
       ) : (
-        <>从左侧选一道题激活。激活后这里会显示题面和 AI 分析。</>
+        <span>
+          还没激活题目。<br />
+          去右上角 <span className="px-1 py-0.5 rounded bg-bg-elev2 border border-line text-[11px] text-ink mx-0.5">题目 ▾</span>选「题库」或「录入题目」。<br />
+          也可以点上面「问教练」直接聊学习方向 / 算法概念。
+        </span>
       )}
     </div>
   );
