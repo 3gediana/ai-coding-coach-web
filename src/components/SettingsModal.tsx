@@ -23,6 +23,7 @@ import {
   Bug,
   Compass,
   Ruler,
+  ChevronDown,
 } from 'lucide-react';
 import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
@@ -55,6 +56,23 @@ export function SettingsModal() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
+  /**
+   * 智能识别 apiKey 前缀，提示用户是否要切到对应 provider。
+   * 只识别**前缀有歧义**的厂商，sk- 这种通用前缀不识别（DeepSeek/OpenAI/Qwen/Moonshot 都用）。
+   * 返回 null 表示「不识别」或「已经是这个 provider」。
+   */
+  const pasteSuggestion = (() => {
+    const k = draft.apiKey?.trim() ?? '';
+    if (!k || k.length < 8) return null;
+    let detected: AIProvider | null = null;
+    if (k.startsWith('sk-ant-')) detected = 'anthropic';
+    else if (k.startsWith('sk-or-')) detected = 'custom'; // OpenRouter
+    else if (k.startsWith('AIza')) detected = 'google';
+    if (!detected || detected === draft.provider) return null;
+    const p = PRESETS.find((x) => x.id === detected);
+    return p ? { provider: detected, label: p.label } : null;
+  })();
+
   useEffect(() => {
     if (open) {
       setDraft(cfg);
@@ -86,21 +104,37 @@ export function SettingsModal() {
     });
   };
 
-  const onSave = () => {
-    if (!draft.baseUrl.trim()) return toast.error('Base URL 不能为空');
-    if (!draft.apiKey.trim()) return toast.error('API Key 不能为空');
-    if (!draft.model.trim()) return toast.error('Model 不能为空');
-    // fastLane 启用了就必须填全
-    if (draft.fastLane?.enabled) {
-      if (!draft.fastLane.baseUrl?.trim()) return toast.error('FastLane Base URL 不能为空');
-      if (!draft.fastLane.model?.trim()) return toast.error('FastLane 模型不能为空');
+  /**
+   * 保存并测试合一：先做合法性校验 → 跑一次 ping → 通过则 setCfg + 关闭 modal；
+   * 失败则原地展示红条，不关闭，让用户改完再点。
+   *
+   * 这是「主体」最关键的操作：用户填一个 apikey 点一下 → 立刻知道行不行。
+   */
+  const onSaveAndTest = async () => {
+    if (!draft.baseUrl.trim()) {
+      setTestResult({ ok: false, msg: 'Base URL 不能为空（在「高级」里填）' });
+      return;
     }
-    setCfg(draft);
-    toast.success('AI 配置已保存');
-    setOpen(false);
-  };
-
-  const onTest = async () => {
+    // ollama 本地服务可以不要 apiKey
+    const needsKey = draft.provider !== 'ollama';
+    if (needsKey && !draft.apiKey.trim()) {
+      setTestResult({ ok: false, msg: 'API Key 不能为空' });
+      return;
+    }
+    if (!draft.model.trim()) {
+      setTestResult({ ok: false, msg: 'Model 不能为空' });
+      return;
+    }
+    if (draft.fastLane?.enabled) {
+      if (!draft.fastLane.baseUrl?.trim()) {
+        setTestResult({ ok: false, msg: 'FastLane Base URL 不能为空（在「高级」里填）' });
+        return;
+      }
+      if (!draft.fastLane.model?.trim()) {
+        setTestResult({ ok: false, msg: 'FastLane 模型不能为空（在「高级」里填）' });
+        return;
+      }
+    }
     setTesting(true);
     setTestResult(null);
     const client = new AIClient(draft);
@@ -114,7 +148,12 @@ export function SettingsModal() {
         timeoutMs: 30_000,
         maxRetries: 0,
       });
+      // 测试通过 → 保存 + 关闭
+      setCfg(draft);
       setTestResult({ ok: true, msg: `成功：${text.trim().slice(0, 60) || '(空响应)'}` });
+      toast.success('AI 配置已保存', { description: '连接测试通过，可以开始用了' });
+      // 留 600ms 让用户看到绿条，再关闭
+      setTimeout(() => setOpen(false), 600);
     } catch (e: any) {
       setTestResult({ ok: false, msg: String(e?.message || e).slice(0, 200) });
     } finally {
@@ -172,19 +211,6 @@ export function SettingsModal() {
                 )}
               </div>
 
-              {/* Base URL */}
-              <Field
-                label="Base URL（完整 endpoint）"
-                hint="必须是完整的 chat-completions URL；OpenAI 兼容协议"
-              >
-                <input
-                  className="input font-mono text-xs"
-                  placeholder="https://api.deepseek.com/v1/chat/completions"
-                  value={draft.baseUrl}
-                  onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
-                />
-              </Field>
-
               {/* API Key */}
               <Field
                 label="API Key"
@@ -220,38 +246,84 @@ export function SettingsModal() {
                     {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
                   </button>
                 </div>
-              </Field>
-
-              {/* Model */}
-              <Field label="Model" hint="OpenAI 兼容的模型名">
-                <input
-                  className="input font-mono text-xs"
-                  placeholder="deepseek-chat"
-                  value={draft.model}
-                  onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-                  list="model-suggestions"
-                />
-                <datalist id="model-suggestions">
-                  {currentPreset?.modelExamples.map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
-                {currentPreset && currentPreset.modelExamples.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1.5">
-                    {currentPreset.modelExamples.map((m) => (
-                      <button
-                        key={m}
-                        onClick={() => setDraft({ ...draft, model: m })}
-                        className="chip text-[10px] hover:border-accent/40 cursor-pointer"
-                      >
-                        {m}
-                      </button>
-                    ))}
+                {/* 智能粘贴提示：sk-ant- / sk-or- / AIza 前缀检测 */}
+                {pasteSuggestion && (
+                  <div className="mt-1.5 flex items-center gap-2 text-[11px] text-cyan-glow bg-cyan/5 border border-cyan/30 rounded px-2 py-1">
+                    <Sparkles size={11} className="text-cyan shrink-0" />
+                    <span className="flex-1">
+                      看起来是 <strong>{pasteSuggestion.label}</strong> 的 key
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onApplyPreset(pasteSuggestion.provider)}
+                      className="chip text-[10px] px-2 py-0.5 cursor-pointer hover:border-cyan/60 hover:text-cyan-glow"
+                    >
+                      切到 {pasteSuggestion.label}
+                    </button>
                   </div>
                 )}
               </Field>
 
-              <div className="grid grid-cols-2 gap-4">
+              {/* Model（dropdown 模式） */}
+              <Field
+                label="模型"
+                hint={currentPreset?.modelExamples.length ? '从预设挑或选 \u300c\u5176\u4ed6\u2026\u300d \u81ea\u5b9a\u4e49' : '输入模型名'}
+              >
+                <ModelDropdown
+                  preset={currentPreset}
+                  value={draft.model}
+                  onChange={(model) => setDraft({ ...draft, model })}
+                />
+              </Field>
+
+              {/* Test result */}
+              <AnimatePresence>
+                {testResult && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0 }}
+                    className={cn(
+                      'rounded-lg p-3 text-xs',
+                      testResult.ok
+                        ? 'bg-ok/10 border border-ok/40 text-ok'
+                        : 'bg-bad/10 border border-bad/40 text-bad',
+                    )}
+                  >
+                    <div className="font-semibold mb-1 flex items-center gap-2">
+                      {testResult.ok ? <Check size={12} /> : <X size={12} />}
+                      {testResult.ok ? '\u8fde\u63a5\u6210\u529f' : '\u8fde\u63a5\u5931\u8d25'}
+                    </div>
+                    <div className="font-mono text-[11px] text-ink whitespace-pre-wrap">{testResult.msg}</div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* \u9ad8\u7ea7\u8bbe\u7f6e\uff08\u9ed8\u8ba4\u6298\u53e0\uff09\u2014\u2014 Base URL / \u8c03\u4f18 / FastLane / \u8fdb\u9636\u80fd\u529b */}
+              <details className="border-t border-line pt-4 group/adv">
+                <summary className="cursor-pointer flex items-center gap-2 text-sm font-semibold list-none select-none mb-3 hover:text-accent transition">
+                  <ChevronDown size={14} className="transition-transform -rotate-90 group-open/adv:rotate-0" />
+                  \u9ad8\u7ea7\u8bbe\u7f6e
+                  <span className="text-[10px] text-ink-mute font-normal ml-1">Base URL \u00b7 \u8c03\u4f18 \u00b7 FastLane \u00b7 \u8fdb\u9636\u80fd\u529b</span>
+                </summary>
+
+                <div className="space-y-5 pt-2">
+                  {/* Base URL（\u4ece\u4e3b\u4f53\u533a\u79fb\u4e0b\u6765\uff09 */}
+                  <Field
+                    label="Base URL\uff08\u5b8c\u6574 endpoint\uff09"
+                    hint="\u5fc5\u987b\u662f\u5b8c\u6574\u7684 chat-completions URL\uff1bOpenAI \u517c\u5bb9\u534f\u8bae"
+                  >
+                    <input
+                      className="input font-mono text-xs"
+                      placeholder="https://api.deepseek.com/v1/chat/completions"
+                      value={draft.baseUrl}
+                      onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
+                    />
+                  </Field>
+
+                  {/* \u8c03\u4f18\u5b50\u5206\u533a */}
+                  <div className="text-[11px] text-ink-mute font-semibold pt-1">\u8c03\u4f18\u53c2\u6570</div>
+                  <div className="grid grid-cols-2 gap-4">
                 <Field label="Max Tokens" hint="建议 4000-8000">
                   <input
                     className="input font-mono"
@@ -685,45 +757,30 @@ export function SettingsModal() {
                   </div>
                 </label>
               </div>
-
-              {/* Test result */}
-              <AnimatePresence>
-                {testResult && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -4 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0 }}
-                    className={cn(
-                      'rounded-lg p-3 text-xs',
-                      testResult.ok
-                        ? 'bg-ok/10 border border-ok/40 text-ok'
-                        : 'bg-bad/10 border border-bad/40 text-bad',
-                    )}
-                  >
-                    <div className="font-semibold mb-1 flex items-center gap-2">
-                      {testResult.ok ? <Check size={12} /> : <X size={12} />}
-                      {testResult.ok ? '连接成功' : '连接失败'}
-                    </div>
-                    <div className="font-mono text-[11px] text-ink whitespace-pre-wrap">{testResult.msg}</div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                </div>
+              </details>
             </div>
 
             <div className="px-6 py-3 border-t border-line flex items-center justify-end gap-2">
-              <button
-                onClick={onTest}
-                disabled={testing || !draft.baseUrl || !draft.apiKey}
-                className="btn"
-              >
-                {testing ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
-                测试连接
-              </button>
-              <button onClick={() => setOpen(false)} className="btn">
+              <button onClick={() => setOpen(false)} className="btn" disabled={testing}>
                 取消
               </button>
-              <button onClick={onSave} className="btn-primary">
-                保存
+              <button
+                onClick={onSaveAndTest}
+                disabled={
+                  testing ||
+                  !draft.baseUrl.trim() ||
+                  !draft.model.trim() ||
+                  (draft.provider !== 'ollama' && !draft.apiKey.trim())
+                }
+                className="btn-primary"
+              >
+                {testing ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Check size={14} />
+                )}
+                {testing ? '测试中…' : '保存并测试'}
               </button>
             </div>
           </motion.div>
@@ -749,6 +806,83 @@ function Field({
         {hint && <span className="text-[10px] text-ink-mute">{hint}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+// ───────── 模型 dropdown ─────────
+
+const CUSTOM_MODEL_SENTINEL = '__custom__';
+
+/**
+ * 模型选择器：把 preset.modelExamples 列成 select，并附「其他…」选项让用户填自定义模型名。
+ *
+ * 设计意图：
+ * - 新手只看到下拉菜单，挑一个就走（不必知道型号长啥样）
+ * - 老手选「其他…」展开 input，仍可填任意 OpenAI 兼容 model 名
+ * - provider=custom 时无 modelExamples，只显示 input
+ */
+function ModelDropdown({
+  preset,
+  value,
+  onChange,
+}: {
+  preset: { id: string; modelExamples: string[]; defaultModel: string } | undefined;
+  value: string;
+  onChange: (model: string) => void;
+}) {
+  const examples = preset?.modelExamples ?? [];
+  // 当前 value 是不是自定义（不在预设里）
+  const isCustom = examples.length === 0 || (value && !examples.includes(value));
+  // 用户主动展开自定义输入（即使 value 在预设里也想换成空白自定义）
+  const [showCustomInput, setShowCustomInput] = useState(false);
+  const showInput = isCustom || showCustomInput;
+
+  if (examples.length === 0) {
+    // custom provider：直接 input
+    return (
+      <input
+        className="input font-mono text-xs"
+        placeholder="model-name"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <select
+        className="input font-mono text-xs cursor-pointer"
+        value={isCustom ? CUSTOM_MODEL_SENTINEL : value}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === CUSTOM_MODEL_SENTINEL) {
+            setShowCustomInput(true);
+            // 让用户清空重填；保留旧值方便他改
+          } else {
+            setShowCustomInput(false);
+            onChange(v);
+          }
+        }}
+      >
+        {examples.map((m) => (
+          <option key={m} value={m}>
+            {m}
+            {m === preset?.defaultModel ? ' （推荐）' : ''}
+          </option>
+        ))}
+        <option value={CUSTOM_MODEL_SENTINEL}>其他模型…（自定义）</option>
+      </select>
+      {showInput && (
+        <input
+          className="input font-mono text-xs"
+          placeholder="输入自定义模型名"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          autoFocus={showCustomInput}
+        />
+      )}
     </div>
   );
 }

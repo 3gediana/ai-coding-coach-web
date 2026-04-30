@@ -419,6 +419,115 @@ ${exampleText}
   };
 }
 
+/**
+ * P1 题眼速读：激活新题时云端读一遍，缓存为 problem.coachOverview。
+ *
+ * 输出 JSON：
+ *   - headline: 1 句话点题眼，**不剧透解法**（≤ 40 字）
+ *   - notes: 2-3 条注意点（边界 / 易错 / 思路提示，不给具体算法名），每条 ≤ 50 字
+ *
+ * 这个 prompt 必须比 analyze 还谨慎，不能让 AI 把答案吐出来。
+ */
+export function buildProblemOverviewPrompt(args: {
+  title: string;
+  statement: string;
+  constraints?: string;
+  examples?: Array<{ input: string; output: string }>;
+  difficulty?: 'easy' | 'medium' | 'hard';
+  tags?: string[];
+}): PromptPair {
+  const exampleBlock = args.examples?.[0]
+    ? `\n样例输入：\n${args.examples[0].input}\n样例输出：\n${args.examples[0].output}\n`
+    : '';
+  const constraintBlock = args.constraints?.trim()
+    ? `\n约束：\n${args.constraints.slice(0, 600)}\n`
+    : '';
+  const tagBlock = args.tags?.length ? `\n标签：${args.tags.join(', ')}` : '';
+  return {
+    system:
+      '你是讲题教练。学生刚激活一道新题，给他一个**简短的题眼速读**：' +
+      '一句话点出题目本质 + 2-3 条值得提前注意的点。' +
+      '\n\n硬性禁止：' +
+      '\n- 不许给完整解法、伪代码、具体算法名（"用动归"、"双指针"这种点到为止可以；"用 Kadane 算法"这种禁止）。' +
+      '\n- 不许复述题面，不许翻译题面。' +
+      '\n- 不许给样例答案。' +
+      '\n\n你的角色不是替学生想，而是帮他**抓住题眼**和**绕开常见坑**。' +
+      SYSTEM_JSON_OUTPUT,
+    user: `题目：${args.title}${args.difficulty ? `（${args.difficulty}）` : ''}${tagBlock}
+
+题面（前 1500 字）：
+${args.statement.slice(0, 1500)}
+${constraintBlock}${exampleBlock}
+请输出 JSON：
+{
+  "headline": "1 句话点题眼，≤ 40 字。例：'求每个柱子能接多少水，关键在左右最大值'",
+  "notes": [
+    "≤ 50 字一条，2-3 条。优先讲：① 边界条件（空、单元素、最大数据） ② 易错点（off-by-one、爆 int） ③ 思路方向（不要给算法名）",
+    "...",
+    "（可选第三条）"
+  ]
+}
+
+⚠ 直接输出 JSON。`,
+  };
+}
+
+/**
+ * P2 AC 后复盘：用户 AC 通过时云端对比「你的解法 vs 经典最优解」+ 推荐变种题型。
+ *
+ * 输出 JSON：
+ *   - passingPattern: 1 句话归纳用户的解法（指出复杂度 + 思路类型）
+ *   - betterApproach: 如果存在显著更优解法（复杂度更优 / 代码更短），给名字 + 复杂度 + gist
+ *     学生本来已经 AC，所以**点到为止**：只指明方向 + 一两句要点，不给完整伪代码
+ *   - followUps: 2-3 条相关变种题型的描述（"二维版本"/"加权版"/"动态加点"）
+ *
+ * 这是 AC 后复盘，目的是让学生把"通过"变成"会一类"。语气鼓励 + 方向性。
+ */
+export function buildAcReviewPrompt(args: {
+  problem: Problem;
+  language: Lang;
+  code: string;
+}): PromptPair {
+  return {
+    system:
+      '你是赛后复盘教练。学生刚 AC 一道题，给他做"超越正确"复盘：' +
+      '\n1. 指出他的解法路数 + 复杂度（passingPattern）。' +
+      '\n2. 如果有更优解法，点出来（betterApproach）；解法相同就 betterApproach=null。' +
+      '\n3. 给 2-3 个相关变种题型，方便他延伸（followUps）。' +
+      '\n\n硬性禁止：' +
+      '\n- 不许给最优解法的完整代码或长伪代码（学生已经会做，再给详解会变成秀肌肉）。' +
+      '\n- 不许说"建议你..."这种说教，直接陈述事实。' +
+      '\n- 不许吹"你做得很好" —— 只夸具体亮点（如果有）。' +
+      SYSTEM_JSON_OUTPUT,
+    user: `题目：${args.problem.title}${args.problem.difficulty ? `（${args.problem.difficulty}）` : ''}
+${args.problem.tags?.length ? '标签：' + args.problem.tags.join(', ') : ''}
+
+题面摘要：
+${clip(args.problem.statement, 1200)}
+${args.problem.constraints ? '\n约束：' + clip(args.problem.constraints, 400) : ''}
+
+学生的 AC 代码（${args.language}）：
+\`\`\`${args.language}
+${args.code.slice(0, 5000)}
+\`\`\`
+
+输出 JSON：
+{
+  "passingPattern": "1 句话总结他的解法 + 复杂度。例：'O(n²) 双重循环枚举所有对'",
+  "betterApproach": null 或 {
+    "name": "解法名（≤15 字）。例：'前缀和 + 哈希表'",
+    "complexity": "复杂度（≤20 字）。例：'O(n) 时间 / O(n) 空间'",
+    "gist": "核心思想一两句（≤80 字，不要完整伪代码）"
+  },
+  "followUps": [
+    "2-3 条变种题型描述（≤30 字一条）。例：'二维矩阵中的最大子矩阵和' / '允许 k 次跳过的版本'"
+  ]
+}
+
+⚠ 直接输出 JSON。`,
+  };
+}
+
 export function buildParseProblemPrompt(rawText: string): PromptPair {
   return {
     system:
@@ -508,6 +617,14 @@ export function buildAnalyzeCodePrompt(args: {
     durationMs?: number;
     timestamp?: number;
   };
+  /**
+   * P3 屡败 escalation：同题非-AC ≥3 次时由 enqueueAnalyze 注入。
+   * 让分析重心从「逐行找错」切到「换思路 / 整体方向」。
+   */
+  escalation?: {
+    failureCount: number;
+    recentVerdicts: string[];
+  };
 }): PromptPair {
   const problemContext = args.problem
     ? `【当前题目】
@@ -520,18 +637,31 @@ ${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTR
   const historyBlock = renderHistory(args.history);
   const siblingBlock = renderSiblings(args.siblings);
   const runtimeBlock = renderRuntimeContext(args.runtimeContext);
+  const escalationBlock = args.escalation
+    ? `\n【⚠ 屡败警告】学生在这道题上已经失败 ${args.escalation.failureCount} 次（最近：${args.escalation.recentVerdicts.join(', ') || 'N/A'}）。
+逐行 issues 已经救不了他了。请把分析重心切到 **整体方向** 和 **换思路**：
+- overallComment 必须直接说"思路是不是不对" / "应该换什么策略方向"，不要再罗列细枝末节
+- 哪怕代码还有边界 bug，也只挑 1-2 条最严重的进 issues
+- 不要直接给最优解法，但要点出他**思考方向哪里偏了**（"你在用 X 方法，但这题数据范围决定了 X 必然过不了"这种）\n`
+    : '';
 
   const { numbered, totalLines, truncated } = withLineNumbers(args.code);
   // 当前代码哈希（前 6 字符），AI 通过对照 history 里的 codeHash 判断"代码是否改了"
   const currentHash = codeHash(args.code).slice(0, 6);
 
+  // escalation 模式下用更强势的 system message
+  const systemTrailer = args.escalation
+    ? '\n\n这位学生这题已经失败多次。你的任务从「找错」切换到「换思路」。' +
+      '请用整体策略层面的引导帮他破局，而不是逐行批注。'
+    : '';
+
   return {
-    system: SYSTEM_CODING_COACH + SYSTEM_JSON_OUTPUT,
+    system: SYSTEM_CODING_COACH + systemTrailer + SYSTEM_JSON_OUTPUT,
     user: `${problemContext}
 ${profileBlock}
 ${historyBlock}
 ${siblingBlock}
-${runtimeBlock}
+${runtimeBlock}${escalationBlock}
 【学生当前正在分析的 ${args.language} 代码（哈希=${currentHash}, ${totalLines} 行${truncated ? '，已截断' : ''}，每行带 "行号 | " 前缀）】
 \`\`\`
 ${numbered}

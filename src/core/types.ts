@@ -23,6 +23,32 @@ export interface Problem {
   difficulty?: 'easy' | 'medium' | 'hard';
   tags?: string[];
   createdAt: number;
+  /**
+   * P1 题眼速读：激活题目时云端生成一次，缓存到 problem 上避免重复烧 token。
+   *
+   * - headline：1 句话点出题眼（**不剧透解法**），≤ 40 字
+   * - notes：2-3 条值得提前注意的点（边界条件 / 易错点 / 思路提示），每条 ≤ 50 字
+   *
+   * 用户可以 ✕ 关掉卡片（不影响缓存），下次激活同题不再重新生成。
+   */
+  coachOverview?: {
+    headline: string;
+    notes: string[];
+    generatedAt: number;
+  };
+  /**
+   * P2 AC 后复盘：提交 AC 后云端对比"你的代码 vs 经典最优解"，缓存到 problem 上。
+   *
+   * - passingPattern：1 句话归纳用户解法（"O(n²) 暴力枚举" / "O(n log n) 分治"）
+   * - betterApproach：可选；如果有更优解法，给名字 + 复杂度 + 思路一两句
+   * - followUps：2-3 条相关变种题型描述（不必给具体题号），方便用户继续练
+   */
+  acReview?: {
+    passingPattern: string;
+    betterApproach?: { name: string; complexity: string; gist: string };
+    followUps: string[];
+    generatedAt: number;
+  };
 }
 
 export interface ProblemExample {

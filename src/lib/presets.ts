@@ -19,16 +19,32 @@ export interface AIPreset {
 
 /**
  * 模型预设（更新于 2026.04）：
+ *   - DeepSeek V4 / R1（默认，价格屠夫）
  *   - MiniMax M2.7（2026.04 开源，OpenRouter 调用量第一）
- *   - DeepSeek V4 / R1
  *   - OpenAI GPT-5.2 / GPT-5
  *   - 通义 Qwen 3.6 Plus
  *   - 智谱 GLM-5.1
  *   - Kimi K2.6
  *   - Anthropic Claude 4.6 Sonnet
  *   - Google Gemini 3.1 Pro
+ *
+ * 顺序就是 SettingsModal 里 chip 的展示顺序；DeepSeek 排首位是因为对中文用户最友好、最便宜。
  */
 export const PRESETS: AIPreset[] = [
+  {
+    id: 'deepseek',
+    label: 'DeepSeek',
+    hint: 'V4 旗舰（1M 上下文，2026.04 开源）；价格屠夫，百万上下文 ≈ 2 毛 · 中文用户首选',
+    baseUrl: 'https://api.deepseek.com/v1/chat/completions',
+    defaultModel: 'deepseek-chat',
+    modelExamples: [
+      'deepseek-chat',       // 默认：v4-flash 非思考，最常用
+      'deepseek-reasoner',   // v4-flash 思考版
+      'deepseek-v4-pro',     // 满血，1M 上下文
+      'deepseek-v4-flash',   // 经济版，速度快
+    ],
+    apiKeyPage: 'https://platform.deepseek.com/api_keys',
+  },
   {
     id: 'minimax',
     label: 'MiniMax (海螺)',
@@ -37,20 +53,6 @@ export const PRESETS: AIPreset[] = [
     defaultModel: 'MiniMax-M2.7',
     modelExamples: ['MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M2'],
     apiKeyPage: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
-  },
-  {
-    id: 'deepseek',
-    label: 'DeepSeek',
-    hint: 'V4 旗舰（1M 上下文，2026.04 开源）；价格屠夫，百万上下文 ≈ 2 毛',
-    baseUrl: 'https://api.deepseek.com/v1/chat/completions',
-    defaultModel: 'deepseek-v4-pro',
-    modelExamples: [
-      'deepseek-v4-pro',     // 满血，1M 上下文
-      'deepseek-v4-flash',   // 经济版，速度快
-      'deepseek-chat',       // 兼容名 = v4-flash 非思考
-      'deepseek-reasoner',   // 兼容名 = v4-flash 思考
-    ],
-    apiKeyPage: 'https://platform.deepseek.com/api_keys',
   },
   {
     id: 'openai',
@@ -125,7 +127,7 @@ export const PRESETS: AIPreset[] = [
 ];
 
 export const DEFAULT_AI_CONFIG: AIConfig = {
-  provider: 'minimax',
+  provider: 'deepseek',
   baseUrl: PRESETS[0].baseUrl,
   apiKey: '',
   model: PRESETS[0].defaultModel,

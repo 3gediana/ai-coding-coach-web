@@ -389,6 +389,39 @@ interface State {
   enqueueAnalyze: (opts?: { reason?: string }) => string | null;
   /** 后台静默补齐题目的「白话解释」字段（已有则跳过；失败静默） */
   requestPlainExplanation: (problemId: string) => Promise<void>;
+  /** P1 题眼速读：激活新题时云端读一遍生成 coachOverview 缓存到 problem 上 */
+  requestProblemOverview: (problemId: string, opts?: { force?: boolean }) => Promise<void>;
+  /** 用户点 ✕ 关掉题眼速读卡（仅本会话内隐藏，不删 coachOverview 缓存） */
+  dismissProblemOverview: (problemId: string) => void;
+  /** 当前会话被关掉的题眼卡 problemId 集合（用 Set 维护） */
+  overviewDismissedProblemIds: string[];
+  /**
+   * P2 AC 后复盘：用户提交 AC 后云端生成"你的解法 vs 经典最优 + 变种题"。
+   * 写入 problem.acReview 持久化；同时设 pendingAcReview 让 AcReviewCard 浮现。
+   */
+  requestAcReview: (problemId: string, fileId: string) => Promise<void>;
+  /** 待用户处理的 AC 复盘（生成成功后写入，UI 浮卡读取，关闭后清掉） */
+  pendingAcReview:
+    | {
+        problemId: string;
+        passingPattern: string;
+        betterApproach?: { name: string; complexity: string; gist: string };
+        followUps: string[];
+      }
+    | null;
+  dismissAcReview: () => void;
+  /**
+   * P3 屡败 escalation：每个题目的非-AC 失败次数 + 最近 5 个 verdict。
+   * 提交 AC 时清零；analyzeCode 检查 count ≥ 3 决定是否升级 prompt。
+   */
+  failureStatsByProblem: Record<
+    string,
+    { count: number; recentVerdicts: SubmissionVerdict[] }
+  >;
+  /** P4 每日复习推送：今天是否已被用户关掉（YYYY-MM-DD 字符串） */
+  dailyReviewDismissedDate: string | null;
+  /** 用户点 ✕ 关掉今日复习推送（持久化到 localStorage，跨天会重置） */
+  dismissDailyReview: () => void;
   enqueueSummarize: (arg: boolean | SubmitOpts) => string | null;
   enqueueDiff: () => string | null;
   /** 主动出 hack case：检测样例已通过后由 Coach 自己挑战边界 */
@@ -807,6 +840,10 @@ export const useStore = create<State>((set, get) => {
     learningCardDismissedDate: localStorage.getItem('aicc.learning.dismissed.v1'),
     diffSelection: [],
     lastRunByScope: {},
+    overviewDismissedProblemIds: [],
+    pendingAcReview: null,
+    failureStatsByProblem: {},
+    dailyReviewDismissedDate: localStorage.getItem('aicc.dailyReview.dismissed.v1'),
 
     // Coach 主动嗅探：A 默认 ON / C 默认 ON / B 默认 OFF（最慎重）
     coachHintsByScope: {},
@@ -866,6 +903,10 @@ export const useStore = create<State>((set, get) => {
         const target = get().problems.find((p) => p.id === id);
         if (target && (!target.plainExplanation || !target.plainExplanation.trim())) {
           void get().requestPlainExplanation(id);
+        }
+        // P1 题眼速读：缺缓存就生成（已缓存就跳过；ProblemOverviewCard 读 problem.coachOverview）
+        if (target && (!target.coachOverview || !target.coachOverview.headline)) {
+          void get().requestProblemOverview(id);
         }
       }
     },
@@ -1408,6 +1449,151 @@ export const useStore = create<State>((set, get) => {
       }
     },
 
+    /**
+     * P1 题眼速读：激活新题时云端读一遍生成 coachOverview，缓存到 problem 上。
+     *
+     * - 默认行为：已缓存则跳过、未配 AI 则跳过、失败静默记 trace
+     * - opts.force：用户在 UI 上点「重新生成」时跳过缓存检查
+     * - 始终走主云端（cloud），因为大模型抓抽象能力强且一题只跑一次
+     */
+    requestProblemOverview: async (problemId, opts = {}) => {
+      const st = get();
+      const problem = st.problems.find((p) => p.id === problemId);
+      if (!problem) return;
+      // 已缓存 + 不强制 → 跳过
+      if (!opts.force && problem.coachOverview && problem.coachOverview.headline) return;
+      // 没配 AI 不打扰
+      const needsKey = st.aiConfig.provider !== 'ollama';
+      if (needsKey && !st.aiConfig.apiKey) return;
+      get().recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: `题眼速读：${problem.title}`,
+        problemId: problem.id,
+      });
+      try {
+        const overview = await st.coach.generateProblemOverview({
+          title: problem.title,
+          statement: problem.statement,
+          constraints: problem.constraints,
+          examples: problem.examples?.map((e) => ({ input: e.input, output: e.output })),
+          difficulty: problem.difficulty,
+          tags: problem.tags,
+        });
+        if (!overview) return;
+        const updated: Problem = {
+          ...problem,
+          coachOverview: {
+            headline: overview.headline,
+            notes: overview.notes,
+            generatedAt: Date.now(),
+          },
+        };
+        await storage.saveProblem(updated);
+        await get().refreshProblems();
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'success',
+          title: `题眼速读已生成：${problem.title}`,
+          detail: `${overview.headline}\n${overview.notes.map((n) => '• ' + n).join('\n')}`,
+          problemId: problem.id,
+        });
+      } catch (e: any) {
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'warn',
+          title: `题眼速读失败：${problem.title}`,
+          detail: String(e?.message ?? e).slice(0, 240),
+          problemId: problem.id,
+        });
+      }
+    },
+
+    dismissProblemOverview: (problemId) =>
+      set((s) => {
+        if (s.overviewDismissedProblemIds.includes(problemId)) return s;
+        return {
+          overviewDismissedProblemIds: [...s.overviewDismissedProblemIds, problemId],
+        };
+      }),
+
+    /**
+     * P2 AC 复盘：提交 AC 后由 enqueueSummarize 的 onSuccess 钩子触发。
+     *
+     * 流程：调云端 → 写入 problem.acReview → 设 pendingAcReview 让浮卡显示。
+     * 失败静默记 trace；不抢 toast，不挡用户继续看 AC 总结结果。
+     */
+    requestAcReview: async (problemId, fileId) => {
+      const st = get();
+      const problem = st.problems.find((p) => p.id === problemId);
+      if (!problem) return;
+      const file = (st.filesByScope[problemId] ?? []).find((f) => f.id === fileId);
+      if (!file) return;
+      if (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python') return;
+      const needsKey = st.aiConfig.provider !== 'ollama';
+      if (needsKey && !st.aiConfig.apiKey) return;
+      get().recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: `AC 复盘：${problem.title}`,
+        problemId: problem.id,
+      });
+      try {
+        const review = await st.coach.generateAcReview({
+          problem,
+          language: langOfFile(file.language),
+          code: file.content,
+        });
+        if (!review) return;
+        const updated: Problem = {
+          ...problem,
+          acReview: {
+            passingPattern: review.passingPattern,
+            betterApproach: review.betterApproach,
+            followUps: review.followUps,
+            generatedAt: Date.now(),
+          },
+        };
+        await storage.saveProblem(updated);
+        await get().refreshProblems();
+        // 浮卡：提示用户去看复盘
+        set({
+          pendingAcReview: {
+            problemId,
+            passingPattern: review.passingPattern,
+            betterApproach: review.betterApproach,
+            followUps: review.followUps,
+          },
+        });
+        const detailLines = [
+          `路数：${review.passingPattern}`,
+          review.betterApproach
+            ? `更优：${review.betterApproach.name}（${review.betterApproach.complexity}）`
+            : '已是最优解法',
+          ...(review.followUps.length > 0
+            ? ['延伸：' + review.followUps.join(' / ')]
+            : []),
+        ];
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'success',
+          title: `AC 复盘已生成：${problem.title}`,
+          detail: detailLines.join('\n'),
+          problemId: problem.id,
+        });
+      } catch (e: any) {
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'warn',
+          title: `AC 复盘失败：${problem.title}`,
+          detail: String(e?.message ?? e).slice(0, 240),
+          problemId: problem.id,
+        });
+      }
+    },
+
+    dismissAcReview: () => set({ pendingAcReview: null }),
+
     enqueueAnalyze: (opts) => {
       const st = get();
       // ollama 等本地服务不需要 apiKey
@@ -1524,6 +1710,26 @@ export const useStore = create<State>((set, get) => {
                   }
                 : undefined;
 
+            // P3 escalation：同题 ≥3 次失败时升级 prompt
+            const failureStats = problem
+              ? get().failureStatsByProblem[problem.id]
+              : undefined;
+            const escalation =
+              failureStats && failureStats.count >= 3
+                ? {
+                    failureCount: failureStats.count,
+                    recentVerdicts: failureStats.recentVerdicts,
+                  }
+                : undefined;
+            if (escalation) {
+              get().recordAgentTrace({
+                kind: 'decide',
+                level: 'warn',
+                title: `屡败升级：${problem?.title ?? '(无题)'}`,
+                detail: `已失败 ${escalation.failureCount} 次（${escalation.recentVerdicts.join(',')}），分析切到「换思路」模式`,
+                problemId: problem?.id,
+              });
+            }
             return get().coach.analyzeCode(
               {
                 problem,
@@ -1533,6 +1739,7 @@ export const useStore = create<State>((set, get) => {
                 history,
                 siblings,
                 runtimeContext,
+                escalation,
               },
               { onChunk, onRetry, signal },
             );
@@ -1642,6 +1849,23 @@ export const useStore = create<State>((set, get) => {
             const m = result as Mistake;
             await storage.saveMistake(m);
             await get().refreshMistakes();
+            // P3 屡败 escalation：累计该题失败次数 + 最近 5 个 verdict
+            set((s) => {
+              const prev = s.failureStatsByProblem[problem.id] ?? {
+                count: 0,
+                recentVerdicts: [],
+              };
+              const v = opts.verdict ?? 'OTHER';
+              return {
+                failureStatsByProblem: {
+                  ...s.failureStatsByProblem,
+                  [problem.id]: {
+                    count: prev.count + 1,
+                    recentVerdicts: [...prev.recentVerdicts, v].slice(-5),
+                  },
+                },
+              };
+            });
             get().recordAgentTrace({
               kind: 'feedback',
               level: 'warn',
@@ -1651,6 +1875,13 @@ export const useStore = create<State>((set, get) => {
             });
             toast.success(`已加入错题本：${m.category}`);
           } else {
+            // P3 屡败计数器：AC 后清零
+            set((s) => {
+              if (!s.failureStatsByProblem[problem.id]) return s;
+              const next = { ...s.failureStatsByProblem };
+              delete next[problem.id];
+              return { failureStatsByProblem: next };
+            });
             get().recordAgentTrace({
               kind: 'feedback',
               level: 'success',
@@ -1674,6 +1905,8 @@ export const useStore = create<State>((set, get) => {
               // 同步刷新学习引擎（复习率会改变）
               get().refreshLearningEngine();
             }
+            // P2 AC 复盘：异步触发，让 AcReviewCard 浮起 + 缓存到 problem 上
+            void get().requestAcReview(problem.id, file.id);
           }
         },
       });
@@ -2065,6 +2298,17 @@ export const useStore = create<State>((set, get) => {
             .filter((f) => f.id !== file.id && f.content.trim().length > 0)
             .slice(0, 5)
             .map((f) => ({ name: f.name, language: f.language, content: f.content }));
+          // P3 escalation：同 analyze 入口共用屡败逻辑
+          const failureStats = problem
+            ? get().failureStatsByProblem[problem.id]
+            : undefined;
+          const escalation =
+            failureStats && failureStats.count >= 3
+              ? {
+                  failureCount: failureStats.count,
+                  recentVerdicts: failureStats.recentVerdicts,
+                }
+              : undefined;
           const result = await get().coach.analyzeCode(
             {
               problem,
@@ -2074,6 +2318,7 @@ export const useStore = create<State>((set, get) => {
               history: analysisHistory,
               siblings,
               runtimeContext,
+              escalation,
             },
             {
               onChunk: (_delta, accumulated) => {
@@ -2352,6 +2597,12 @@ int main() {
       const t = today();
       localStorage.setItem('aicc.learning.dismissed.v1', t);
       set({ learningCardDismissedDate: t });
+    },
+
+    dismissDailyReview: () => {
+      const t = today();
+      localStorage.setItem('aicc.dailyReview.dismissed.v1', t);
+      set({ dailyReviewDismissedDate: t });
     },
 
     enqueueOjSubmit: () => {

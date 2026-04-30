@@ -6,6 +6,8 @@ import { CodeEditor } from './components/CodeEditor';
 import { FeedbackPanel } from './components/FeedbackPanel';
 import { TaskTray } from './components/TaskTray';
 import { HackCaseCard } from './components/HackCaseCard';
+import { AcReviewCard } from './components/AcReviewCard';
+import { DailyReviewCard } from './components/DailyReviewCard';
 import { SettingsModal } from './components/SettingsModal';
 import { ProblemEditorModal } from './components/ProblemEditorModal';
 import { ProblemBrowserModal } from './components/ProblemBrowserModal';
@@ -14,6 +16,8 @@ import { DiffResultViewer } from './components/DiffResultViewer';
 import { SubmitResultModal } from './components/SubmitResultModal';
 import { StuckHintCard } from './components/StuckHintCard';
 import { IntentSnifferCard } from './components/IntentSnifferCard';
+import { QuickSetupCard } from './components/QuickSetupCard';
+import { ProblemOverviewCard } from './components/ProblemOverviewCard';
 import { RuntimePane } from './components/RuntimePane';
 import { OnboardingOverlay } from './components/OnboardingOverlay';
 import { useStore } from './lib/store';
@@ -57,26 +61,14 @@ export default function App() {
     };
   }, []);
 
+  // 已配置 AI 且没完成过 onboarding → 1.5s 后启动引导。
+  // 未配置时不弹 toast 了 —— QuickSetupCard 会在编辑器中央自己浮现，更醒目。
   useEffect(() => {
     const usable =
       aiConfig.provider === 'ollama'
         ? !!aiConfig.baseUrl?.trim()
         : !!aiConfig.apiKey?.trim();
-    if (!usable) {
-      toast.message('欢迎使用 AI Coding Coach', {
-        description:
-          aiConfig.provider === 'ollama'
-            ? '请先在设置里填写 Ollama Base URL 和模型名'
-            : '请先配置 AI 服务（baseUrl + apiKey + model）',
-        action: {
-          label: '去设置',
-          onClick: () => setSettingsOpen(true),
-        },
-        duration: 8000,
-      });
-      return;
-    }
-    // 已配置 AI 且没完成过 onboarding → 1.5s 后启动引导
+    if (!usable) return;
     if (localStorage.getItem('aicc.onboarding.v1') !== 'done') {
       const t = setTimeout(() => {
         void startOnboarding();
@@ -103,15 +95,21 @@ export default function App() {
         <Sidebar />
         <main className="flex-1 flex min-w-0">
           <FileTree />
-          <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex-1 min-w-0 flex flex-col relative">
+            {/* P1 题眼速读卡：激活题目时云端生成的「头条 + 注意点」，固定在编辑器顶部 */}
+            <ProblemOverviewCard />
             <CodeEditor />
             <RuntimePane />
+            {/* QuickSetupCard 只在 !hasUsableAIConfig 时浮现在这个区域 */}
+            <QuickSetupCard />
           </div>
           <FeedbackPanel />
         </main>
       </div>
       <TaskTray />
       <HackCaseCard />
+      <AcReviewCard />
+      <DailyReviewCard />
       <SettingsModal />
       <ProblemEditorModal />
       <ProblemBrowserModal />

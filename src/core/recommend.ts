@@ -297,6 +297,71 @@ function nextDifficulty(d: 'easy' | 'medium' | 'hard' | null): 'easy' | 'medium'
   return null; // 已 hard，没有更高
 }
 
+/**
+ * P4 每日复习推送：选一道最值得今天复习的错题。
+ *
+ * 间隔重复（spaced repetition）启发式打分：
+ *   - 从未复习过：基础分 100，weight by 距今创建天数（越久越紧迫）
+ *   - 已复习一次：基础分 50，距上次复习 ≥ 3 天才进入候选
+ *   - 已复习多次：基础分 30，距上次复习 ≥ 7 天才进入候选
+ *   - 错题 verdict 是 WA/RE/TLE 比 OTHER/CE 更紧迫（+10）
+ *
+ * 候选为空（如错题本空，或所有错题都太新没必要复习）→ 返回 null。
+ *
+ * 这只是选题；UI 用 DailyReviewCard 渲染，每天只弹一次（dailyReviewDismissedDate 控制）。
+ */
+export function pickDailyReview(
+  mistakes: Mistake[],
+  now = Date.now(),
+): { mistake: Mistake; reason: string } | null {
+  if (mistakes.length === 0) return null;
+  const DAY = 24 * 60 * 60 * 1000;
+
+  type Scored = { mistake: Mistake; score: number; reason: string };
+  const candidates: Scored[] = [];
+
+  for (const m of mistakes) {
+    const ageDays = Math.floor((now - m.createdAt) / DAY);
+    const reviewedDaysAgo =
+      m.reviewedAt != null ? Math.floor((now - m.reviewedAt) / DAY) : Infinity;
+    const verdictBoost =
+      m.verdict === 'WA' || m.verdict === 'RE' || m.verdict === 'TLE' ? 10 : 0;
+
+    if (m.reviewCount === 0 || m.reviewedAt == null) {
+      // 从未复习：年纪越大越紧迫；至少存在 1 天再推（避免今天刚错的就提）
+      if (ageDays < 1) continue;
+      const score = 100 + Math.min(ageDays, 30) + verdictBoost;
+      candidates.push({
+        mistake: m,
+        score,
+        reason: `${ageDays} 天前的错题，还没复习过`,
+      });
+    } else if (m.reviewCount === 1) {
+      // 复习一次：≥ 3 天才考虑
+      if (reviewedDaysAgo < 3) continue;
+      const score = 50 + Math.min(reviewedDaysAgo, 14) + verdictBoost;
+      candidates.push({
+        mistake: m,
+        score,
+        reason: `上次复习是 ${reviewedDaysAgo} 天前`,
+      });
+    } else {
+      // 复习多次：≥ 7 天才考虑
+      if (reviewedDaysAgo < 7) continue;
+      const score = 30 + Math.min(reviewedDaysAgo, 21) + verdictBoost;
+      candidates.push({
+        mistake: m,
+        score,
+        reason: `已复习 ${m.reviewCount} 次，上次是 ${reviewedDaysAgo} 天前`,
+      });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  return { mistake: candidates[0].mistake, reason: candidates[0].reason };
+}
+
 /** 模糊匹配两个字符串：包含 / 子字符串 / 部分重叠 */
 function fuzzyMatch(a: string, b: string): boolean {
   if (!a || !b) return false;

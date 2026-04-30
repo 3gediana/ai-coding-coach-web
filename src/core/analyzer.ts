@@ -5,6 +5,7 @@
  */
 import { AIClient } from './ai/client';
 import {
+  buildAcReviewPrompt,
   buildAnalyzeCodePrompt,
   buildAskQuestionPrompt,
   buildDiagnoseRuntimeErrorPrompt,
@@ -12,6 +13,7 @@ import {
   buildHackCasePrompt,
   buildParseProblemPrompt,
   buildPlainExplanationPrompt,
+  buildProblemOverviewPrompt,
   buildSanityCheckConstraintsPrompt,
   buildSniffIntentPrompt,
   buildStuckHintPrompt,
@@ -141,6 +143,126 @@ export class Coach {
     return text.trim();
   }
 
+  /**
+   * P1 题眼速读：激活新题时云端读一次，给「头条 + 注意点」。
+   *
+   * 始终走主云端（cloud），因为：① 一题只生成一次，成本可控；② 大模型抓抽象能力强；
+   * ③ 这事是后台静默的，速度不重要。
+   *
+   * 返回 null 表示模型输出无法解析或调用失败 —— 上层应静默忽略，不缓存空值。
+   */
+  async generateProblemOverview(args: {
+    title: string;
+    statement: string;
+    constraints?: string;
+    examples?: Array<{ input: string; output: string }>;
+    difficulty?: 'easy' | 'medium' | 'hard';
+    tags?: string[];
+    signal?: AbortSignal;
+  }): Promise<{ headline: string; notes: string[] } | null> {
+    const { system, user } = buildProblemOverviewPrompt(args);
+    try {
+      const data = await this.ai.chatJson<{
+        headline?: string;
+        notes?: unknown;
+      }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 500,
+        temperature: 0.3,
+        signal: args.signal,
+      });
+      const headline = (data.headline ?? '').toString().trim();
+      if (!headline) return null;
+      const notes = Array.isArray(data.notes)
+        ? data.notes
+            .filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
+            .map((n) => n.trim().slice(0, 80))
+            .slice(0, 3)
+        : [];
+      return {
+        headline: headline.slice(0, 60),
+        notes,
+      };
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.generateProblemOverview] failed', e);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * P2 AC 后复盘：对比"你的代码 vs 经典最优解"+ 推荐变种题。
+   *
+   * 始终走云端（cloud）：① 一题 AC 后只跑一次，成本可控；② 需要大模型抓"最优解法"+"变种题型"的能力。
+   * 失败返回 null，上层应静默忽略，不缓存。
+   */
+  async generateAcReview(args: {
+    problem: Problem;
+    language: Lang;
+    code: string;
+    signal?: AbortSignal;
+  }): Promise<{
+    passingPattern: string;
+    betterApproach?: { name: string; complexity: string; gist: string };
+    followUps: string[];
+  } | null> {
+    const { system, user } = buildAcReviewPrompt(args);
+    try {
+      const data = await this.ai.chatJson<{
+        passingPattern?: string;
+        betterApproach?: unknown;
+        followUps?: unknown;
+      }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 600,
+        temperature: 0.3,
+        signal: args.signal,
+      });
+      const passingPattern = (data.passingPattern ?? '').toString().trim();
+      if (!passingPattern) return null;
+      // betterApproach 可以是 null / undefined / 完整对象
+      let betterApproach:
+        | { name: string; complexity: string; gist: string }
+        | undefined;
+      if (data.betterApproach && typeof data.betterApproach === 'object') {
+        const b = data.betterApproach as Record<string, unknown>;
+        const name = (b.name ?? '').toString().trim();
+        const complexity = (b.complexity ?? '').toString().trim();
+        const gist = (b.gist ?? '').toString().trim();
+        if (name && gist) {
+          betterApproach = {
+            name: name.slice(0, 30),
+            complexity: complexity.slice(0, 30),
+            gist: gist.slice(0, 200),
+          };
+        }
+      }
+      const followUps = Array.isArray(data.followUps)
+        ? data.followUps
+            .filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
+            .map((n) => n.trim().slice(0, 60))
+            .slice(0, 3)
+        : [];
+      return {
+        passingPattern: passingPattern.slice(0, 80),
+        betterApproach,
+        followUps,
+      };
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.generateAcReview] failed', e);
+      }
+      return null;
+    }
+  }
+
   /** 分析当前代码（流式） */
   async analyzeCode(
     args: {
@@ -159,6 +281,11 @@ export class Coach {
         stderr?: string;
         durationMs?: number;
         timestamp?: number;
+      };
+      /** P3 屡败 escalation：同题非-AC ≥3 次时上层注入；prompt 切到「换思路」模式 */
+      escalation?: {
+        failureCount: number;
+        recentVerdicts: string[];
       };
     },
     opts: StreamOpts = {},
