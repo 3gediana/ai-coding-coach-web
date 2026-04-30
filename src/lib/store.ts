@@ -33,6 +33,8 @@ import { Coach } from '../core/analyzer';
 import { storage } from './storage';
 import { DEFAULT_AI_CONFIG } from './presets';
 import { isLocalOllamaUrl } from './ollama';
+import { AlgoVizService, type AlgoVizClients } from '../algoviz/service';
+import { pickAlgoVizClient } from '../algoviz/clients';
 import { buildLearnerProfile, codeHash } from '../core/utils';
 import { buildCoachContext, formatAnalysisAsCoachMessage } from '../core/coach/context';
 import { routeCoachRequest } from '../core/coach/router';
@@ -239,6 +241,8 @@ export type AgentName =
   | 'Feynman/Evaluator'
   | 'AstDiff'
   | 'Router'
+  | 'AlgoViz'
+  | 'AlgoViz/Detect'
   | 'Other';
 
 /**
@@ -387,12 +391,31 @@ const handlersById = new Map<string, TaskHandler>();
 const abortersById = new Map<string, AbortController>();
 const MAX_CONCURRENT = 3;
 
+/** algoViz 实时检测的 debounce timer：每个 problemId 一个 */
+const algoVizDetectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** 用户停止打字后多久跑一次模块检测（trailing-edge debounce）。15s = 跟用户约定的频率 */
+const ALGOVIZ_DETECT_DEBOUNCE_MS = 15_000;
+
 // ============== Store ==============
 
 interface State {
   aiConfig: AIConfig;
   ai: AIClient;
   coach: Coach;
+  /** 算法可视化服务（每次 setAIConfig 时重建——algoVizModels 改变要换 client） */
+  algoVizService: AlgoVizService;
+  /** 实时检测的"模块亮灯"状态（按 problemId 隔离，不持久化） */
+  moduleStatusByProblem: Record<string, Record<string, boolean>>;
+  /** 标记某题是否正有 detect 调用 in-flight，避免 15s 节流外又叠新调用 */
+  algoVizDetectingByProblem: Record<string, boolean>;
+  /** 入库流水线：完整两阶段（录题 / 题目激活时按需自动调用） */
+  requestAlgoVizGeneration: (problemId: string, opts?: { force?: boolean }) => Promise<void>;
+  /** 老题模式：仅生成 Animation；缺 schema 时自动 fallback 到完整 pipeline */
+  requestAlgoVizAnimationOnly: (problemId: string) => Promise<void>;
+  /** 实时检测：caller 应自己 debounce ~15s（store 内部只做 in-flight 防抖） */
+  detectAlgoVizModules: (problemId: string, code: string) => Promise<void>;
+  /** 直接覆盖某题 module status（test / 手动调试用） */
+  setAlgoVizModuleStatus: (problemId: string, status: Record<string, boolean>) => void;
 
   // 数据
   problems: Problem[];
@@ -442,7 +465,7 @@ interface State {
   askPrefill: string | null;
   coachDraft: CoachDraft | null;
   /** FeedbackPanel 当前 tab（'analyze' / 'ask'），升到 store 让外部能切 */
-  feedbackTab: 'analyze' | 'ask';
+  feedbackTab: 'analyze' | 'ask' | 'algoviz';
   /** Onboarding 当前步骤 */
   onboardingStep: OnboardingStep;
   /** Learning engine（学习引擎）输出：进度 + 行动卡 */
@@ -635,7 +658,7 @@ interface State {
   enqueueStuckHint: () => string | null;
   setAskPrefill: (v: string | null) => void;
   setCoachDraft: (v: CoachDraft | null) => void;
-  setFeedbackTab: (t: 'analyze' | 'ask') => void;
+  setFeedbackTab: (t: 'analyze' | 'ask' | 'algoviz') => void;
 
   // Onboarding actions
   /** 启动 onboarding：注入 demo 题 + bug 代码 → 切到 wait-analyze */
@@ -765,12 +788,46 @@ export function defaultFileName(lang: FileLang, existing: string[]): string {
 
 // ============== Store 创建 ==============
 
+/** algoViz：从 cfg 派生 3 个工位 client，包成 AlgoVizClients 给 Service 用 */
+function buildAlgoVizClients(cfg: AIConfig): AlgoVizClients {
+  return {
+    status: pickAlgoVizClient(cfg, 'status'),
+    animation: pickAlgoVizClient(cfg, 'animation'),
+    detect: pickAlgoVizClient(cfg, 'detect'),
+  };
+}
+
 export const useStore = create<State>((set, get) => {
   const ai = new AIClient(initialAIConfig);
   // fastLane: 本地 ollama 客户端，专做实时前台任务
   const fastCfg = deriveFastConfig(initialAIConfig);
   const aiFast = fastCfg ? new AIClient(fastCfg) : undefined;
   const coach = new Coach(ai, aiFast, initialAIConfig.routerHints);
+  // algoViz Service：3 个工位 client，按 cfg 实时派生
+  const algoVizService = new AlgoVizService(buildAlgoVizClients(initialAIConfig));
+
+  /**
+   * 把 algoViz patch 写回 IndexedDB + refresh，让所有订阅了 problems 的 UI 立即收到。
+   * 单写入点：方便维护 + 保证三件套字段不会被部分丢失。
+   */
+  async function persistAlgoVizPatch(
+    pid: string,
+    patch: Partial<NonNullable<Problem['algoViz']>>,
+  ): Promise<void> {
+    const cur = get().problems.find((p) => p.id === pid);
+    if (!cur) return;
+    const merged: NonNullable<Problem['algoViz']> = {
+      status: 'idle',
+      statusCode: null,
+      animationCode: null,
+      detectionSchema: null,
+      ...(cur.algoViz ?? {}),
+      ...patch,
+    };
+    const updated: Problem = { ...cur, algoViz: merged };
+    await storage.saveProblem(updated);
+    await get().refreshProblems();
+  }
 
   // ---- 任务队列 ----
 
@@ -922,6 +979,9 @@ export const useStore = create<State>((set, get) => {
     aiConfig: initialAIConfig,
     ai,
     coach,
+    algoVizService,
+    moduleStatusByProblem: {},
+    algoVizDetectingByProblem: {},
 
     problems: [],
     mistakes: [],
@@ -1037,7 +1097,180 @@ export const useStore = create<State>((set, get) => {
       }
       // 同步路由阈值
       get().coach.updateRouterHints(cfg.routerHints);
-      set({ aiConfig: cfg });
+      // 重建 algoVizService：3 个工位 client 都得跟着 cfg 重新挑（override / fastLane / 主 cfg）
+      const newAlgoVizService = new AlgoVizService(buildAlgoVizClients(cfg));
+      set({ aiConfig: cfg, algoVizService: newAlgoVizService });
+    },
+
+    /**
+     * 算法可视化：完整入库流水线（Status → Animation 两阶段）。
+     *
+     * - 已 ready / 正在跑 → skip（除非 force）
+     * - Status 完成立即推送（status='status-ready'），UI 即时显示模块卡片
+     * - Animation 在背景续写，完成后 status='ready'
+     * - 失败任意阶段 → status='failed' + errorMessage（不阻塞用户继续做题）
+     */
+    requestAlgoVizGeneration: async (problemId, opts = {}) => {
+      const st = get();
+      const problem = st.problems.find((p) => p.id === problemId);
+      if (!problem) return;
+      const cur = problem.algoViz?.status;
+      if (
+        !opts.force &&
+        (cur === 'ready' ||
+          cur === 'generating-status' ||
+          cur === 'generating-anim')
+      ) {
+        return;
+      }
+      st.recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: `算法可视化 · 开始生成：${problem.title}`,
+        problemId: problem.id,
+        agentName: 'AlgoViz',
+      });
+      // 进入 generating-status
+      await persistAlgoVizPatch(problem.id, {
+        status: 'generating-status',
+        statusCode: null,
+        animationCode: null,
+        detectionSchema: null,
+        errorMessage: undefined,
+      });
+      await st.algoVizService.generate(problem, {
+        onStatusReady: async (statusCode, schema) => {
+          await persistAlgoVizPatch(problem.id, {
+            status: 'generating-anim',
+            statusCode,
+            detectionSchema: schema,
+            statusGeneratedAt: Date.now(),
+          });
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'success',
+            title: `算法可视化 · Status 完成：${problem.title}`,
+            detail: `${schema.algoName} · ${schema.modules.length} 模块`,
+            problemId: problem.id,
+            agentName: 'AlgoViz',
+          });
+        },
+        onAnimationReady: async (animationCode) => {
+          await persistAlgoVizPatch(problem.id, {
+            status: 'ready',
+            animationCode,
+            animationGeneratedAt: Date.now(),
+          });
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'success',
+            title: `算法可视化 · Animation 完成：${problem.title}`,
+            problemId: problem.id,
+            agentName: 'AlgoViz',
+          });
+        },
+        onError: (stage, err) => {
+          void persistAlgoVizPatch(problem.id, {
+            status: 'failed',
+            errorMessage: `${stage}: ${err.message.slice(0, 200)}`,
+          });
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'warn',
+            title: `算法可视化 · ${stage} 失败：${problem.title}`,
+            detail: err.message.slice(0, 240),
+            problemId: problem.id,
+            agentName: 'AlgoViz',
+          });
+        },
+      });
+    },
+
+    /**
+     * 老题模式：仅生成 Animation。
+     * - 已有 schema → 直接走第 2 阶段
+     * - 没 schema  → 自动 fallback 到完整 pipeline（避免 caller 自己判断）
+     */
+    requestAlgoVizAnimationOnly: async (problemId) => {
+      const st = get();
+      const problem = st.problems.find((p) => p.id === problemId);
+      if (!problem) return;
+      const cur = problem.algoViz;
+      if (cur?.status === 'ready' || cur?.status === 'generating-anim') return;
+      if (!cur?.detectionSchema) {
+        await get().requestAlgoVizGeneration(problemId);
+        return;
+      }
+      await persistAlgoVizPatch(problem.id, {
+        status: 'generating-anim',
+        animationCode: null,
+        errorMessage: undefined,
+      });
+      await st.algoVizService.generateAnimationOnly(
+        problem,
+        cur.detectionSchema,
+        cur.statusCode ?? '',
+        {
+          onReady: async (animationCode) => {
+            await persistAlgoVizPatch(problem.id, {
+              status: 'ready',
+              animationCode,
+              animationGeneratedAt: Date.now(),
+            });
+          },
+          onError: (err) => {
+            void persistAlgoVizPatch(problem.id, {
+              status: 'failed',
+              errorMessage: err.message.slice(0, 200),
+            });
+          },
+        },
+      );
+    },
+
+    /**
+     * 实时检测：caller 应在外层 debounce 15s。
+     * 内层只做 in-flight 锁（同一 problemId 上一轮没完成就 skip 这轮）。
+     */
+    detectAlgoVizModules: async (problemId, code) => {
+      const st = get();
+      if (st.algoVizDetectingByProblem[problemId]) return;
+      const problem = st.problems.find((p) => p.id === problemId);
+      const schema = problem?.algoViz?.detectionSchema;
+      if (!schema) return;
+      set((s) => ({
+        algoVizDetectingByProblem: {
+          ...s.algoVizDetectingByProblem,
+          [problemId]: true,
+        },
+      }));
+      try {
+        const result = await st.algoVizService.detect(code, schema);
+        if (result) {
+          set((s) => ({
+            moduleStatusByProblem: {
+              ...s.moduleStatusByProblem,
+              [problemId]: result,
+            },
+          }));
+        }
+      } finally {
+        set((s) => ({
+          algoVizDetectingByProblem: {
+            ...s.algoVizDetectingByProblem,
+            [problemId]: false,
+          },
+        }));
+      }
+    },
+
+    setAlgoVizModuleStatus: (problemId, status) => {
+      set((s) => ({
+        moduleStatusByProblem: {
+          ...s.moduleStatusByProblem,
+          [problemId]: status,
+        },
+      }));
     },
 
     setDefaultLang: (l) => {
@@ -1071,6 +1304,11 @@ export const useStore = create<State>((set, get) => {
         // P1 题眼速读：缺缓存就生成（已缓存就跳过；ProblemOverviewCard 读 problem.coachOverview）
         if (target && (!target.coachOverview || !target.coachOverview.headline)) {
           void get().requestProblemOverview(id);
+        }
+        // 算法可视化：跟题眼速读同一触发点 — 完全没数据时后台自动跑 Status + Animation
+        // （在 generating-* / ready / failed 时 requestAlgoVizGeneration 自己会 skip，无需这里判断）
+        if (target && !target.algoViz) {
+          void get().requestAlgoVizGeneration(id);
         }
       }
     },
@@ -1213,6 +1451,26 @@ export const useStore = create<State>((set, get) => {
           ),
         },
       }));
+      // algoViz 实时检测：trailing-edge debounce 15s。
+      // 仅当 scope 是真正的题目（非 __draft__）且该题已有 detectionSchema 时触发。
+      if (scopeKey !== DRAFT_SCOPE) {
+        const pid = scopeKey;
+        const hasSchema = !!st.problems.find((p) => p.id === pid)?.algoViz?.detectionSchema;
+        if (hasSchema) {
+          const existing = algoVizDetectTimers.get(pid);
+          if (existing) clearTimeout(existing);
+          const timer = setTimeout(() => {
+            algoVizDetectTimers.delete(pid);
+            // 用最新内容（避免 closure 里的旧 content）
+            const latest = get();
+            const latestFile = (latest.filesByScope[pid] ?? []).find((f) => f.id === fileId);
+            if (latestFile) {
+              void latest.detectAlgoVizModules(pid, latestFile.content);
+            }
+          }, ALGOVIZ_DETECT_DEBOUNCE_MS);
+          algoVizDetectTimers.set(pid, timer);
+        }
+      }
     },
 
     changeFileLanguage: async (fileId, language) => {

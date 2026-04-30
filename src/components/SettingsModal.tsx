@@ -673,6 +673,50 @@ export function SettingsModal() {
                 )}
               </div>
 
+              {/* ━━ 🎨 算法可视化模型（3 个工位独立可配） ━━ */}
+              <details className="border-t border-line pt-4 group/algoviz">
+                <summary className="cursor-pointer flex items-center gap-2 text-sm font-semibold list-none select-none mb-2 hover:text-accent transition">
+                  <ChevronDown size={14} className="transition-transform -rotate-90 group-open/algoviz:rotate-0" />
+                  <span>🎨 算法可视化模型</span>
+                  <span className="chip text-[9px] px-1.5 py-0 ml-1">可选</span>
+                  <span className="text-[10px] text-ink-mute font-normal ml-auto">
+                    Status / Animation / Detect 三工位独立可配
+                  </span>
+                </summary>
+                <p className="text-[11px] text-ink-mute mb-3 pl-6 leading-relaxed">
+                  <span className="text-ok">不启用也能用</span>
+                  ：默认 Status / Animation 走主云端（重活耗时长），Detect 走 fastLane（轻活高频）。
+                  推荐把 <strong>Status / Animation</strong> 单独配成 DeepSeek-v4-pro（生成质量更稳）；
+                  <strong> Detect</strong> 保持 fastLane 即可。
+                </p>
+                <div className="pl-6 space-y-4">
+                  <AlgoVizRoleConfig
+                    role="status"
+                    label="Status 生成"
+                    desc="一次性生成模块进度卡片（~20s，质量优先）"
+                    fallback="走主云端"
+                    draft={draft}
+                    setDraft={setDraft}
+                  />
+                  <AlgoVizRoleConfig
+                    role="animation"
+                    label="Animation 生成"
+                    desc="一次性生成 Remotion 动画（~60-100s，质量优先）"
+                    fallback="走主云端"
+                    draft={draft}
+                    setDraft={setDraft}
+                  />
+                  <AlgoVizRoleConfig
+                    role="detect"
+                    label="实时模块检测"
+                    desc="每 15s 跑一次，输出极短（轻活，速度优先）"
+                    fallback="走 fastLane"
+                    draft={draft}
+                    setDraft={setDraft}
+                  />
+                </div>
+              </details>
+
               {/* ━━ 💡 学习辅助 ━━ */}
               <div className="border-t border-line pt-4">
                 <label className="flex items-center gap-2 cursor-pointer mb-2">
@@ -841,6 +885,92 @@ function Field({
         {hint && <span className="text-[10px] text-ink-mute">{hint}</span>}
       </div>
       {children}
+    </div>
+  );
+}
+
+/**
+ * algoViz 单个工位的 enable + 配置卡片。
+ * 折叠默认收起；展开后给 baseUrl / apiKey / model 三字段（apiKey 留空时识别为 ollama 本地）。
+ */
+function AlgoVizRoleConfig({
+  role,
+  label,
+  desc,
+  fallback,
+  draft,
+  setDraft,
+}: {
+  role: 'status' | 'animation' | 'detect';
+  label: string;
+  desc: string;
+  /** 未启用时这个工位走啥的简短描述（"走主云端" / "走 fastLane"） */
+  fallback: string;
+  draft: AIConfig;
+  setDraft: (cfg: AIConfig) => void;
+}) {
+  const cur = draft.algoVizModels?.[role];
+  const enabled = !!cur?.enabled;
+  const update = (patch: Partial<NonNullable<AIConfig['algoVizModels']>[typeof role]>) => {
+    setDraft({
+      ...draft,
+      algoVizModels: {
+        ...(draft.algoVizModels ?? {}),
+        [role]: {
+          enabled: false,
+          baseUrl: '',
+          apiKey: '',
+          model: '',
+          ...(cur ?? {}),
+          ...patch,
+        },
+      },
+    });
+  };
+  return (
+    <div className="rounded-md border border-line/60 bg-bg-elev/40 px-3 py-2">
+      <label className="flex items-center gap-2 cursor-pointer">
+        <input
+          type="checkbox"
+          className="accent-cyan"
+          checked={enabled}
+          onChange={(e) => update({ enabled: e.target.checked })}
+        />
+        <span className="text-[13px] font-medium text-ink">{label}</span>
+        <span className="text-[10px] text-ink-mute ml-auto">
+          {enabled ? `独立配置 · ${cur?.model || '未配 model'}` : `继承 ${fallback}`}
+        </span>
+      </label>
+      <p className="text-[10.5px] text-ink-mute mt-1 pl-6 leading-relaxed">{desc}</p>
+      {enabled && (
+        <div className="pl-6 mt-2 space-y-2">
+          <Field label="Base URL" hint="OpenAI 兼容 chat-completions endpoint">
+            <input
+              className="input font-mono text-xs"
+              placeholder="https://api.deepseek.com/v1/chat/completions"
+              value={cur?.baseUrl ?? ''}
+              onChange={(e) => update({ baseUrl: e.target.value })}
+            />
+          </Field>
+          <Field label="API Key" hint="本地 Ollama 可留空">
+            <input
+              className="input font-mono text-xs"
+              type="password"
+              placeholder="sk-..."
+              value={cur?.apiKey ?? ''}
+              onChange={(e) => update({ apiKey: e.target.value })}
+            />
+          </Field>
+          <Field label="Model" hint={role === 'detect' ? '推荐本地小模型（如 qwen3:4b）' : '推荐 deepseek-v4-pro 或同等大模型'}>
+            <input
+              className="input font-mono text-xs"
+              placeholder={role === 'detect' ? 'qwen3:4b' : 'deepseek-v4-pro'}
+              value={cur?.model ?? ''}
+              onChange={(e) => update({ model: e.target.value })}
+            />
+          </Field>
+        </div>
+      )}
     </div>
   );
 }

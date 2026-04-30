@@ -20,11 +20,13 @@ import {
   MessageCircle,
   ChevronDown,
   AlertTriangle,
+  Wand2,
 } from 'lucide-react';
 import { MathMarkdown } from './MathMarkdown';
 import { QAPanel } from './QAPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { AgentTracePanel } from './AgentTracePanel';
+import { AlgoVizPanel } from './AlgoVizPanel';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
 import { useRef, useState } from 'react';
 import { codeHash } from '../core/utils';
@@ -104,6 +106,12 @@ export function FeedbackPanel() {
             badge={qaCount > 0 ? qaCount : undefined}
             pulsing={qaActive}
           />
+          <TabButton
+            active={tab === 'algoviz'}
+            onClick={() => setTab('algoviz')}
+            icon={<Wand2 size={12} />}
+            label="算法可视化"
+          />
         </div>
 
         <div className="flex-1 flex flex-col min-h-0">
@@ -115,8 +123,10 @@ export function FeedbackPanel() {
               runningAnalysis={runningAnalysis}
               streamPreview={streamPreview}
             />
-          ) : (
+          ) : tab === 'ask' ? (
             <QAPanel />
+          ) : (
+            <AlgoVizPanel />
           )}
         </div>
 

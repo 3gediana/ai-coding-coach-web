@@ -49,6 +49,56 @@ export interface Problem {
     followUps: string[];
     generatedAt: number;
   };
+  /**
+   * 算法可视化（algoViz）三件套：入库时由"重活"模型异步生成，
+   * 不影响题目本体（无此字段也不破任何流程）。
+   *
+   * 流转状态：
+   *   idle (未触发)
+   *   → generating-status (DeepSeek 第 1 次调用中)
+   *   → status-ready       (Status 完成入库；右侧 Tab 立即可见)
+   *   → generating-anim    (DeepSeek 第 2 次调用中，后台续)
+   *   → ready              (两件套齐活，「▶ 播放动画」可点)
+   *   失败任意阶段 → failed + errorMessage
+   *
+   * 老题手动按钮触发时跳过 Status，直接 generating-anim → ready (statusCode 留空)
+   */
+  algoViz?: {
+    /** 状态机；UI 按这个决定 spinner / 按钮可点性 */
+    status:
+      | 'idle'
+      | 'generating-status'
+      | 'status-ready'
+      | 'generating-anim'
+      | 'ready'
+      | 'failed';
+    /** 第 1 次调用产出：纯 React Status 组件源码字符串 */
+    statusCode: string | null;
+    /** 第 2 次调用产出：Remotion Animation 组件源码字符串 */
+    animationCode: string | null;
+    /** Status 调用同时输出的"模块清单 + 检测提示"，给小模型实时填空用 */
+    detectionSchema: AlgoVizDetectionSchema | null;
+    statusGeneratedAt?: number;
+    animationGeneratedAt?: number;
+    errorMessage?: string;
+  };
+}
+
+/** Status / Animation 两组件共享的"模块定义"——DeepSeek 生成 Status 时同步给出 */
+export interface AlgoVizDetectionSchema {
+  /** 算法标识（用于动画文件命名 + 调试），如 "TwoSum" / "LIS" */
+  algoName: string;
+  /** 模块列表：3-5 个，按代码书写顺序 */
+  modules: Array<{
+    /** 稳定 id，如 "m1" / "m2"，给 props 用 */
+    id: string;
+    /** UI 显示标题，如 "输入读取" / "HashMap 声明" */
+    label: string;
+    /** 简短描述（卡片副文案），≤ 24 字 */
+    description: string;
+    /** 给小模型判断"代码里这个模块完成没"的一句 prompt 提示 */
+    detectHint: string;
+  }>;
 }
 
 export interface ProblemExample {
@@ -296,6 +346,33 @@ export interface AIConfig {
     apiKey?: string;
     model: string;
   };
+  /**
+   * 算法可视化的 3 个工位模型——独立可配，因为：
+   *   - status / animation：一次性"重活"，需要质量高的大模型（默认建议 DeepSeek）
+   *   - detect：实时高频"轻活"，需要本地小模型（默认 fastLane 兜底）
+   *
+   * 不启用时分别按以下规则兜底：
+   *   - status / animation 未启用 → 用主 AIConfig（云端）
+   *   - detect 未启用 → 用 fastLane；fastLane 没启用 → 不做实时检测
+   *
+   * 设计选择：只暴露这 3 个工位的 override（不做"全工位 override"），
+   * 因为这 3 个工位的特性（重活 vs 轻活）跟通用 17 个工位差异显著，
+   * 单独配置最合理；其它工位走主 cfg + fastLane 路由已经够用。
+   */
+  algoVizModels?: {
+    status?: AlgoVizAgentOverride;
+    animation?: AlgoVizAgentOverride;
+    detect?: AlgoVizAgentOverride;
+  };
+}
+
+/** algoViz 单个工位的模型 override（OpenAI 兼容协议；未启用时按规则兜底） */
+export interface AlgoVizAgentOverride {
+  enabled: boolean;
+  provider?: AIProvider;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
 }
 
 /** Onboarding 状态：首次启动引导学生走一遍核心流程 */
