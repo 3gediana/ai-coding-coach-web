@@ -46,18 +46,108 @@ EACH MODULE corresponds to ONE visual sub-region of the canvas (NOT a card).
 
 Use REAL DATA from the problem's first example (parse it from input/output) so the visualization is concrete.
 
-────────  STATUS COMPONENT — TECH RULES  ────────
-- A SINGLE default-exported React functional component, no Remotion
+════════════════════════════════════════════════════════════════
+★★★ STATUS COMPONENT — LAYOUT SAFETY ★★★
+════════════════════════════════════════════════════════════════
+
+The Status panel sits in a ~280px wide narrow column on the right side. Common bugs:
+  - Modules drawn with SVG absolute coords (x,y) overlap each other
+  - Long labels overflow the panel
+  - Result/output box collides with the input array next to it
+
+★ MANDATORY LAYOUT (vertical stack, NO SVG absolute coordinates for module containers):
+
+  export default function StatusViz({ module1 = false, module2 = false, module3 = false, module4 = false }) {
+    return (
+      <div style={{
+        width: '100%',
+        boxSizing: 'border-box',
+        padding: 12,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+        fontFamily: 'system-ui, sans-serif',
+        color: '#1e293b',
+      }}>
+        <ModuleBox active={module1} title="输入数组">
+          {/* shape content here */}
+        </ModuleBox>
+        <ModuleBox active={module2} title="哈希表">
+          ...
+        </ModuleBox>
+        ... (one ModuleBox per schema module, vertical stack)
+      </div>
+    );
+  }
+
+  Define ModuleBox INLINE inside the file (not exported):
+    function ModuleBox({ active, title, children }) {
+      return (
+        <div style={{
+          boxSizing: 'border-box',
+          padding: 8,
+          border: '2px solid ' + (active ? '#16a34a' : '#475569'),
+          borderRadius: 8,
+          backgroundColor: active ? 'rgba(22,163,74,0.06)' : 'rgba(0,0,0,0.03)',
+          opacity: active ? 1 : 0.55,
+          filter: active ? 'drop-shadow(0 0 4px rgba(22,163,74,0.4))' : 'none',
+          overflow: 'hidden',                   // ★ MANDATORY
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 4,
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#475569' }}>{title}</div>
+          {children}
+        </div>
+      );
+    }
+
+★ Inside each ModuleBox, draw the algorithm parts with FLEXBOX (NOT SVG absolute coords for layout):
+  - Array cells:
+    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+      {[2, 7, 11, 15].map((n, i) => (
+        <div key={i} style={{
+          width: 28, height: 28,
+          border: '1.5px solid #475569', borderRadius: 4,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 13, fontWeight: 600,
+          flexShrink: 0,
+        }}>{n}</div>
+      ))}
+    </div>
+
+  - HashMap rows (key/value):
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <div style={{ display: 'flex', gap: 4, fontSize: 11 }}>
+        <span style={{ width: 40 }}>2</span><span>→</span><span>0</span>
+      </div>
+      ...
+    </div>
+
+  - Result badge:
+    <div style={{ fontSize: 12, fontWeight: 600 }}>result: [0, 1]</div>
+
+★ ONLY use raw <svg> for shapes that flexbox can't draw (graph edges, dp-table grids).
+  When you DO use <svg>, use viewBox + width:'100%' so it auto-scales:
+    <svg viewBox="0 0 280 80" width="100%" style={{ display: 'block' }}>
+      <line x1="..." ... />
+    </svg>
+
+────────  FORBIDDEN  ────────
+- ✗ Single big <svg> wrapping ALL modules with absolute (x,y) for each module's box
+- ✗ <text x="..." y="...">label</text> for module titles or content text — use <div>
+- ✗ Width/height with hard pixel values that exceed ~256px (panel is ~280 wide; account for padding)
+- ✗ position: absolute / left / top                                       — use flex column
+- ✗ whiteSpace: nowrap on labels — let them wrap
+
+────────  TECH RULES  ────────
+- A SINGLE default-exported React functional component
 - Props: { module1?: boolean; module2?: boolean; module3?: boolean; module4?: boolean; module5?: boolean }, all default false
-- Container: width 100%, padding 12px, background TRANSPARENT (no #0f172a — must blend into the host page which has a warm-flax background)
-- Use SVG <svg> for drawing shapes when possible (cleaner than nested div boxes); inline styles only — no CSS classes, no Tailwind
-- Color palette (works on warm flax bg): primary stroke #2563eb, success #16a34a, accent #d97706, dim #94a3b8, text #1e293b
-- For active sub-region: stroke #16a34a + strokeWidth 2.5 + filter 'drop-shadow(0 0 4px rgba(22,163,74,0.4))' + fill 'rgba(22,163,74,0.06)' (light green tint)
-- For inactive sub-region: stroke #475569 (slate-700, NOT #94a3b8 which is too light on warm-flax bg) + strokeWidth 2 + opacity 0.55 + fill 'rgba(0,0,0,0.03)' (subtle gray tint to give shapes visual weight)
-- ★ Always provide BOTH stroke AND fill on rect/circle elements — bare strokes on warm-flax background look like floating numbers
-- Recommended canvas: ~280px wide × auto height; use viewBox so it scales
-- NO imports beyond React (use the global React). Begin with: const { ... } = React;
-- Component name: default export, e.g. "export default function StatusViz(props) { ... }"
+- Background TRANSPARENT (host page is warm-flax / linen)
+- INLINE styles only — no className, no Tailwind
+- Color palette (works on warm flax bg): primary #2563eb, success #16a34a, accent #d97706, dim #475569 (NOT #94a3b8), text #1e293b
+- NO imports beyond React (global). Begin with: const { ... } = React;
+- Use REAL DATA from the problem's first example (parse it from input/output)
 
 ────────  SCHEMA JSON RULES  ────────
 - Shape: { "algoName": "...", "modules": [ { "id": "m1", "label": "...", "description": "...", "detectHint": "..." }, ... ] }
@@ -145,42 +235,129 @@ Output format MUST be exactly:
 [the Remotion React component code, no markdown fence]
 </ANIMATION_TSX>
 
+════════════════════════════════════════════════════════════════
+★★★ LAYOUT SAFETY — TOP PRIORITY (most failures come from here) ★★★
+════════════════════════════════════════════════════════════════
+
+The #1 failure mode of generated animations is:
+  - Text overflowing its container (e.g. "target - nums[i" cut off, missing "]")
+  - Modules overlapping each other (one region's box drawn on top of another)
+  - Numbers floating outside their cells
+
+To prevent this, you MUST follow these rules with NO exceptions:
+
+★ RULE 1: Use CSS GRID for the 4 fixed regions (NOT manual absolute positioning).
+  The outer AbsoluteFill should be a flex/grid container that auto-sizes the regions:
+
+  Example for N=4 modules (2×2 grid):
+    <AbsoluteFill style={{
+      backgroundColor: 'transparent',
+      display: 'grid',
+      gridTemplateColumns: '1fr 1fr',
+      gridTemplateRows: '1fr 1fr',
+      gap: 32,
+      padding: 40,
+      fontFamily: 'system-ui, sans-serif',
+      color: '#1e293b',
+      boxSizing: 'border-box',
+    }}>
+      <div style={regionStyle(module1)}> ... region 1 content ... </div>
+      <div style={regionStyle(module2)}> ... region 2 content ... </div>
+      <div style={regionStyle(module3)}> ... region 3 content ... </div>
+      <div style={regionStyle(module4)}> ... region 4 content ... </div>
+    </AbsoluteFill>
+
+  Layout per N (use GRID, NOT absolute coords):
+    N=2: gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr'    (or rows '1fr 1fr', cols '1fr')
+    N=3: gridTemplateColumns: '1fr 1fr 1fr', rows '1fr'
+    N=4: gridTemplateColumns: '1fr 1fr', rows '1fr 1fr'             ★ MOST COMMON
+    N=5: gridTemplateColumns: '1fr 1fr', rows '1fr 1fr 1fr', region5 spans 2 cols
+
+★ RULE 2: Every region MUST have these styles to prevent overflow:
+    {
+      boxSizing: 'border-box',
+      padding: 28,
+      border: '2px solid <color>',
+      borderRadius: 16,
+      overflow: 'hidden',          // ★ MANDATORY — clips overflowing children
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 12,
+      minWidth: 0,                 // ★ MANDATORY — allows flex children to shrink
+      minHeight: 0,
+      backgroundColor: 'rgba(255,255,255,0.4)',
+    }
+
+★ RULE 3: ALL TEXT must use <div>, NEVER use SVG <text> with textAnchor and absolute coords for content text.
+  Text inside a region:
+    <div style={{
+      fontSize: 18,                 // small fixed size — DO NOT exceed 22 for region text
+      lineHeight: 1.4,
+      whiteSpace: 'normal',         // allow wrap (NOT 'nowrap')
+      wordBreak: 'break-word',      // long expressions break properly
+      overflow: 'hidden',
+    }}>
+      Check: target - nums[i]
+    </div>
+
+  Region title (e.g. "Loop", "HashMap"):
+    fontSize: 16, fontWeight: 600, color: '#475569', marginBottom: 4
+
+★ RULE 4: Cell-style data (array elements, hashmap key-value rows) — use FLEXBOX, not absolute:
+    {/* array of 4 numbers */}
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      {[2, 7, 11, 15].map((n, i) => (
+        <div key={i} style={{
+          width: 56, height: 56,
+          border: '2px solid ' + (highlight ? '#16a34a' : '#475569'),
+          borderRadius: 8,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: 22, fontWeight: 600,
+          flexShrink: 0,
+        }}>{n}</div>
+      ))}
+    </div>
+
+★ RULE 5: Animation pointers (the moving highlight) — use transform on a positioned cell, NOT absolute coords:
+    Apply transform: \`scale(1.15)\` and box-shadow on the active cell driven by useCurrentFrame.
+    DO NOT draw a separate <div style={{ position: 'absolute', left: 200 }} />.
+
+────────  FORBIDDEN (these cause the layout bugs we're fixing)  ────────
+- ✗ SVG <text x="..." y="..." textAnchor="..."> for content text       — overflow risk
+- ✗ <div style={{ position: 'absolute', left: ..., top: ... }}>        — collision risk
+- ✗ Manually computed pixel coordinates for region positioning         — use grid
+- ✗ whiteSpace: 'nowrap' on long expressions / sentences               — causes truncation
+- ✗ width/height with hard pixel values on region containers           — let grid size them
+- ✗ fontSize > 22 for region text                                       — won't fit
+- ✗ Sequence (scene switching)                                          — all regions always visible
+- ✗ CSS transition / keyframes / animation property                    — use Remotion interpolate
+- ✗ props.moduleX gating animation playback                             — only style, never logic
+- ✗ External imports                                                    — sandbox has only Remotion + React globals
+
+────────  REGION STATE STYLING  ────────
+- moduleX=true (active):
+    borderColor: '#16a34a'
+    opacity: 1
+    filter: 'drop-shadow(0 0 12px rgba(22,163,74,0.35))'
+    backgroundColor: 'rgba(22,163,74,0.06)'
+- moduleX=false (inactive):
+    borderColor: '#475569'
+    opacity: 0.35
+    filter: 'none'
+    backgroundColor: 'rgba(0,0,0,0.02)'
+
 ────────  ARCHITECTURE  ────────
-- The component receives props: { module1?, module2?, module3?, module4?, module5? } (all boolean, default false)
-- The canvas (1280x720) has N FIXED REGIONS (absolute positioned), one per module from the schema. They NEVER disappear, all visible from frame 0 to frame 300.
-- The ANIMATION TIMELINE (pointer moving, numbers appearing, etc.) is driven SOLELY by useCurrentFrame(). It plays independently and is NOT affected by props.
-- The MODULE PROPS only control each region's CSS:
-  * moduleX=true:  borderColor #16a34a, opacity 1,    filter 'drop-shadow(0 0 12px rgba(22,163,74,0.35))'
-  * moduleX=false: borderColor #475569, opacity 0.35, no glow
+- Component receives: { module1?, module2?, module3?, module4?, module5? } (all boolean, default false)
+- Canvas: 1280×720, transparent background (host page is warm-flax / linen colored)
+- 300 frames @ 30fps total (10 seconds)
+- Animation timeline driven SOLELY by useCurrentFrame(); props only control region CSS
 
 ────────  CODE RULES  ────────
 - Single default-exported function component
-- NO imports — Remotion APIs come from a global \`Remotion\` object in the sandbox: const { useCurrentFrame, interpolate, spring, AbsoluteFill } = Remotion;
-- React also from global: const { useMemo } = React;
-- INLINE styles only — no className, no Tailwind, no external CSS
-- All motion via interpolate / spring with useCurrentFrame; NO setTimeout, NO CSS keyframes, NO setInterval
-- Canvas: 1280×720, font sans-serif
-- ★ BACKGROUND: AbsoluteFill MUST have backgroundColor: 'transparent' (the host page is warm-flax / linen colored — DO NOT paint a dark canvas; let the page color show through)
-- Color palette (works on warm-flax background):
-  * primary stroke: #2563eb (blue-600)
-  * success / active: #16a34a (green-600)
-  * accent: #d97706 (amber-600)
-  * dim / inactive: #475569 (slate-700) — NOT #94a3b8 which is too light on warm bg
-  * text: #1e293b (slate-800)
-- For active region styling: borderColor #16a34a, opacity 1, filter 'drop-shadow(0 0 12px rgba(22,163,74,0.35))'
-- For inactive region: borderColor #475569, opacity 0.35, no glow
-- 300 frames @ 30fps total (10 seconds)
-- Layout for N regions:
-  * 2 → top/bottom or left/right
-  * 3 → left-mid-right OR triangle
-  * 4 → 2×2 grid
-  * 5 → 2×2 + center top
-
-────────  FORBIDDEN  ────────
-- NO Sequence (no scene switching — all regions always present)
-- NO CSS transition / keyframes / animation property
-- NO props.moduleX gating any animation playback / start / stop
-- NO external imports
+- NO imports — APIs from globals: const { useCurrentFrame, interpolate, spring, AbsoluteFill } = Remotion;
+- React from global: const { useMemo } = React;
+- INLINE styles only
+- All motion via interpolate / spring; NO setTimeout, NO CSS keyframes, NO setInterval
 
 CRITICAL: Output ONE block <ANIMATION_TSX>...</ANIMATION_TSX>, no markdown fences.`;
 
