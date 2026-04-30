@@ -31,6 +31,12 @@ export function DailyReviewCard() {
   const aiConfig = useStore((s) => s.aiConfig);
   const dailyPlan = useStore((s) => s.dailyPlan);
   const dailyPlanGenerating = useStore((s) => s.dailyPlanGenerating);
+  // 让位规则：sidebar 任何 tab 打开 / Settings 弹窗 / AC 复盘卡 / 题目编辑/题库浏览 都隐藏，避免遮挡或重复
+  const sidebarTab = useStore((s) => s.sidebarTab);
+  const settingsOpen = useStore((s) => s.settingsOpen);
+  const problemEditorOpen = useStore((s) => s.problemEditorOpen);
+  const problemBrowserOpen = useStore((s) => s.problemBrowserOpen);
+  const pendingAcReview = useStore((s) => s.pendingAcReview);
 
   // 没配 AI 别打扰（QuickSetupCard 优先）
   const aiUsable =
@@ -50,7 +56,14 @@ export function DailyReviewCard() {
   // 选错题
   const pick = useMemo(() => pickDailyReview(mistakes), [mistakes]);
 
-  if (!aiUsable || dismissedToday || planTakingOver || !pick) return null;
+  // 让位：用户主动操作（看面板 / 改设置 / 编辑题目 / 浏览题库 / AC 复盘卡）→ 不要从底部弹卡片打扰
+  const userIsBusy =
+    !!sidebarTab ||
+    settingsOpen ||
+    problemEditorOpen ||
+    problemBrowserOpen ||
+    !!pendingAcReview;
+  if (!aiUsable || dismissedToday || planTakingOver || !pick || userIsBusy) return null;
 
   const { mistake, reason } = pick;
   // 该错题的原题是否还在 problems 里？决定「去复习」按钮是激活题还是只跳错题本
