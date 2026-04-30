@@ -64,6 +64,18 @@ export function AlgoVizPanel(): React.ReactElement {
   const animationCode = algoViz?.animationCode ?? null;
   const schema = algoViz?.detectionSchema ?? null;
 
+  // ★ 即使 failed，只要有旧的 statusCode 就让用户继续看/播放上一次的版本，
+  //   不要把已生成好的内容因为这次"重新生成失败"而隐藏掉。
+  const hasUsable = !!statusCode;
+  const showIdle = status === 'idle' || (status === 'failed' && !hasUsable);
+  const showGeneratingStatus = status === 'generating-status' && !hasUsable;
+  const showReady =
+    status === 'status-ready' ||
+    status === 'generating-anim' ||
+    status === 'ready' ||
+    (status === 'failed' && hasUsable) ||
+    (status === 'generating-status' && hasUsable);
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <HeaderBar
@@ -73,7 +85,23 @@ export function AlgoVizPanel(): React.ReactElement {
         errorMessage={algoViz?.errorMessage}
       />
       <div className="flex-1 overflow-y-auto">
-        {(status === 'idle' || status === 'failed') && (
+        {/* failed 状态但有旧产物：顶部一条小 banner 提示重生失败、保留旧版本 */}
+        {status === 'failed' && hasUsable && algoViz?.errorMessage && (
+          <div className="mx-3 mt-2 px-2.5 py-1.5 rounded border border-warn/40 bg-warn/10 text-[11px] text-warn flex items-center gap-2">
+            <AlertTriangle size={13} />
+            <span className="flex-1 truncate" title={algoViz.errorMessage}>
+              重新生成失败，已保留之前版本
+            </span>
+            <button
+              className="text-[11px] underline hover:no-underline"
+              onClick={() => void requestAnimOnly(problem.id)}
+            >
+              重试
+            </button>
+          </div>
+        )}
+
+        {showIdle && (
           <IdleOrFailedView
             problem={problem}
             errorMessage={algoViz?.errorMessage}
@@ -82,20 +110,18 @@ export function AlgoVizPanel(): React.ReactElement {
           />
         )}
 
-        {status === 'generating-status' && (
+        {showGeneratingStatus && (
           <GeneratingView title="生成 Status 模块卡片中…" subtitle="预计 ~20 秒" />
         )}
 
-        {(status === 'status-ready' ||
-          status === 'generating-anim' ||
-          status === 'ready') && (
+        {showReady && (
           <ReadyView
             problem={problem}
             statusCode={statusCode}
             animationCode={animationCode}
             schema={schema}
             moduleStatus={moduleStatus}
-            isAnimGenerating={status === 'generating-anim'}
+            isAnimGenerating={status === 'generating-anim' || status === 'generating-status'}
             onRegenerateAnim={() => void requestAnimOnly(problem.id)}
           />
         )}

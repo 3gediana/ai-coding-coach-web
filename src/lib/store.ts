@@ -636,6 +636,13 @@ interface State {
   clearFinishedTasks: () => void;
 
   deleteProblem: (id: string) => Promise<void>;
+  /**
+   * 归档 / 取消归档一道题。归档后：
+   *   - Sidebar「题目」Tab 默认列表不显示（避免越拖越长）
+   *   - 进入「历史记录」Tab 仍可见 + 点击重新激活：代码 / algoViz / 错题史完整保留
+   *   - 不删数据；再次调用即可取消归档
+   */
+  toggleArchiveProblem: (id: string) => Promise<void>;
   deleteMistake: (id: string) => Promise<void>;
   /** 标记错题已复习（更新 reviewedAt + reviewCount++） */
   markMistakeReviewed: (id: string) => Promise<void>;
@@ -1138,12 +1145,11 @@ export const useStore = create<State>((set, get) => {
         problemId: problem.id,
         agentName: 'AlgoViz',
       });
-      // 进入 generating-status
+      // 进入 generating-status；★ 保留旧的 statusCode/animationCode/schema，
+      // 新结果到位时由 onStatusReady / onAnimationReady 覆盖；失败保留旧的不丢失。
+      // 用户重生时仍能看到/播放上一次的可用版本，不会"重生中啥都看不到"。
       await persistAlgoVizPatch(problem.id, {
         status: 'generating-status',
-        statusCode: null,
-        animationCode: null,
-        detectionSchema: null,
         errorMessage: undefined,
       });
       await st.algoVizService.generate(problem, {
@@ -1209,9 +1215,9 @@ export const useStore = create<State>((set, get) => {
         await get().requestAlgoVizGeneration(problemId);
         return;
       }
+      // 同 generate：保留旧 animationCode，新成功才覆盖；失败保留旧的可继续看
       await persistAlgoVizPatch(problem.id, {
         status: 'generating-anim',
-        animationCode: null,
         errorMessage: undefined,
       });
       await st.algoVizService.generateAnimationOnly(
@@ -2582,6 +2588,17 @@ export const useStore = create<State>((set, get) => {
         };
       });
       await get().refreshProblems();
+    },
+    toggleArchiveProblem: async (id) => {
+      const st = get();
+      const p = st.problems.find((x) => x.id === id);
+      if (!p) return;
+      const updated = { ...p, archivedAt: p.archivedAt ? undefined : Date.now() };
+      await storage.saveProblem(updated);
+      // 直接 patch store；归档/取消归档不影响 activeProblemId（用户即使在编辑某题归档它，仍可继续编辑）
+      set((s) => ({
+        problems: s.problems.map((x) => (x.id === id ? updated : x)),
+      }));
     },
     deleteMistake: async (id) => {
       await storage.deleteMistake(id);

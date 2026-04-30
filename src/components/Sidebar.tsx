@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock, Plus, Search } from 'lucide-react';
+import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock, Plus, Search, Archive, ArchiveRestore } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { Dashboard } from './Dashboard';
@@ -21,13 +21,28 @@ export function Sidebar() {
   const activeProblemId = useStore((s) => s.activeProblemId);
   const setActiveProblem = useStore((s) => s.setActiveProblem);
   const deleteProblem = useStore((s) => s.deleteProblem);
+  const toggleArchiveProblem = useStore((s) => s.toggleArchiveProblem);
   const deleteMistake = useStore((s) => s.deleteMistake);
   const markMistakeReviewed = useStore((s) => s.markMistakeReviewed);
   const setProblemEditorOpen = useStore((s) => s.setProblemEditorOpen);
   const setProblemBrowserOpen = useStore((s) => s.setProblemBrowserOpen);
 
   const [mistakeSort, setMistakeSort] = useState<MistakeSort>('recent');
+  const [showArchived, setShowArchived] = useState(false);
   const [panelWidth, setPanelWidth] = usePersistedWidth('aicc.layout.sidebarWidth', 320, 240, 700);
+
+  // 题目分两组：未归档 / 已归档；归档列表按 archivedAt 倒序（最近归档在最前）
+  const { activeProblems, archivedProblems } = useMemo(() => {
+    const active: typeof problems = [];
+    const archived: typeof problems = [];
+    for (const p of problems) {
+      if (p.archivedAt) archived.push(p);
+      else active.push(p);
+    }
+    archived.sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0));
+    return { activeProblems: active, archivedProblems: archived };
+  }, [problems]);
+  const displayedProblems = showArchived ? archivedProblems : activeProblems;
 
   // 错题 stats + 排序
   const mistakeStats = useMemo(() => {
@@ -70,7 +85,7 @@ export function Sidebar() {
   }, [mistakes, mistakeSort]);
 
   const items = [
-    { id: 'problems' as const, icon: Library, label: '题目库', count: problems.length },
+    { id: 'problems' as const, icon: Library, label: '题目库', count: activeProblems.length },
     { id: 'mistakes' as const, icon: BookOpen, label: '错题本', count: mistakes.length },
     { id: 'sessions' as const, icon: History, label: '学习记录', count: sessions.length },
     { id: 'dashboard' as const, icon: BarChart3, label: '学习空间', count: undefined },
@@ -135,6 +150,37 @@ export function Sidebar() {
               <div className="flex-1 overflow-y-auto p-2">
                 {tab === 'problems' && (
                   <ul className="space-y-1">
+                    {/* 顶部：在「日常题目」与「历史记录（已归档）」之间切换 */}
+                    {problems.length > 0 && (
+                      <li className="flex items-center gap-1 mb-2 px-1">
+                        <button
+                          onClick={() => setShowArchived(false)}
+                          className={cn(
+                            'flex-1 px-2 py-1.5 text-[11px] rounded transition flex items-center justify-center gap-1.5',
+                            !showArchived
+                              ? 'bg-accent/15 text-accent border border-accent/40 font-medium'
+                              : 'text-ink-mute hover:bg-bg-elev2 border border-transparent',
+                          )}
+                          title="日常做的题"
+                        >
+                          <Library size={12} />
+                          日常 ({activeProblems.length})
+                        </button>
+                        <button
+                          onClick={() => setShowArchived(true)}
+                          className={cn(
+                            'flex-1 px-2 py-1.5 text-[11px] rounded transition flex items-center justify-center gap-1.5',
+                            showArchived
+                              ? 'bg-accent/15 text-accent border border-accent/40 font-medium'
+                              : 'text-ink-mute hover:bg-bg-elev2 border border-transparent',
+                          )}
+                          title="已归档的题——点击仍可激活，代码/动画/错题史完整保留"
+                        >
+                          <Archive size={12} />
+                          历史 ({archivedProblems.length})
+                        </button>
+                      </li>
+                    )}
                     {problems.length === 0 && (
                       <li className="px-3 py-8 text-center">
                         <div className="text-sm font-semibold text-ink mb-1">还没有题目</div>
@@ -159,56 +205,92 @@ export function Sidebar() {
                         </div>
                       </li>
                     )}
-                    {problems.map((p) => (
-                      <li
-                        key={p.id}
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => setActiveProblem(p.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') setActiveProblem(p.id);
-                        }}
-                        className={cn(
-                          'w-full text-left px-3 py-2 rounded-lg group transition flex items-start gap-2 cursor-pointer',
-                          activeProblemId === p.id
-                            ? 'bg-accent/15 border border-accent/40'
-                            : 'hover:bg-bg-elev2 border border-transparent',
-                        )}
-                      >
-                        <div className="flex-1 min-w-0">
-                          <div className="text-sm font-medium truncate">{p.title}</div>
-                          <div className="flex items-center gap-1 mt-1 flex-wrap">
-                            {p.difficulty && (
-                              <span
-                                className={cn(
-                                  'chip text-[9px] px-1.5 py-0',
-                                  p.difficulty === 'easy' && 'chip-ok',
-                                  p.difficulty === 'medium' && 'chip-warn',
-                                  p.difficulty === 'hard' && 'chip-bad',
-                                )}
-                              >
-                                {p.difficulty}
-                              </span>
-                            )}
-                            {p.tags?.slice(0, 3).map((t) => (
-                              <span key={t} className="chip text-[9px] px-1.5 py-0">
-                                {t}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (confirm(`删除题目 "${p.title}"？`)) deleteProblem(p.id);
-                          }}
-                          className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition p-1 shrink-0"
-                          title="删除题目"
-                        >
-                          <Trash2 size={12} />
-                        </button>
+                    {problems.length > 0 && displayedProblems.length === 0 && (
+                      <li className="px-3 py-8 text-center text-xs text-ink-mute leading-relaxed">
+                        {showArchived ? '还没有归档的题' : '日常列表已清空'}
+                        <br />
+                        <span className="text-[10.5px]">
+                          {showArchived ? '把不再常做的题归档到这里' : '点上方"历史"看归档记录'}
+                        </span>
                       </li>
-                    ))}
+                    )}
+                    {displayedProblems.map((p) => {
+                      const isArchived = !!p.archivedAt;
+                      return (
+                        <li
+                          key={p.id}
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => setActiveProblem(p.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') setActiveProblem(p.id);
+                          }}
+                          className={cn(
+                            'w-full text-left px-3 py-2 rounded-lg group transition flex items-start gap-2 cursor-pointer',
+                            activeProblemId === p.id
+                              ? 'bg-accent/15 border border-accent/40'
+                              : 'hover:bg-bg-elev2 border border-transparent',
+                            isArchived && activeProblemId !== p.id && 'opacity-65',
+                          )}
+                          title={
+                            isArchived
+                              ? `已归档于 ${new Date(p.archivedAt!).toLocaleDateString()}\n点击重新激活：代码/动画/错题史完整恢复`
+                              : undefined
+                          }
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm font-medium truncate flex items-center gap-1">
+                              {isArchived && (
+                                <Archive size={11} className="text-ink-mute shrink-0" aria-label="已归档" />
+                              )}
+                              <span className="truncate">{p.title}</span>
+                            </div>
+                            <div className="flex items-center gap-1 mt-1 flex-wrap">
+                              {p.difficulty && (
+                                <span
+                                  className={cn(
+                                    'chip text-[9px] px-1.5 py-0',
+                                    p.difficulty === 'easy' && 'chip-ok',
+                                    p.difficulty === 'medium' && 'chip-warn',
+                                    p.difficulty === 'hard' && 'chip-bad',
+                                  )}
+                                >
+                                  {p.difficulty}
+                                </span>
+                              )}
+                              {p.tags?.slice(0, 3).map((t) => (
+                                <span key={t} className="chip text-[9px] px-1.5 py-0">
+                                  {t}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void toggleArchiveProblem(p.id);
+                              }}
+                              className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition p-1"
+                              title={isArchived ? '取消归档（移回日常）' : '归档（移到历史记录）'}
+                            >
+                              {isArchived ? <ArchiveRestore size={12} /> : <Archive size={12} />}
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (confirm(`删除题目 "${p.title}"？\n\n这会同时清空该题的代码、algoViz、错题历史等所有数据。如果只想暂时收起，请用归档。`))
+                                  deleteProblem(p.id);
+                              }}
+                              className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition p-1"
+                              title="删除题目（不可恢复）"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
 

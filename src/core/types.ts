@@ -24,6 +24,14 @@ export interface Problem {
   tags?: string[];
   createdAt: number;
   /**
+   * 用户主动归档时间戳。归档后的题：
+   *   - 不在 Sidebar「题目」Tab 默认列表里出现（避免主流量列表越拖越长）
+   *   - 进入「历史记录」入口，可在那里查看 + 点击重新激活（代码 / algoViz / 错题史完整回到最后状态）
+   *   - 不删除任何数据；取消归档（unarchive）即可恢复显示
+   * 字段不存在或为 undefined 视为未归档。
+   */
+  archivedAt?: number;
+  /**
    * P1 题眼速读：激活题目时云端生成一次，缓存到 problem 上避免重复烧 token。
    *
    * - headline：1 句话点出题眼（**不剧透解法**），≤ 40 字
