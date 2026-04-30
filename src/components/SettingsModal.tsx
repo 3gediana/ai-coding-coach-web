@@ -893,6 +893,24 @@ function Field({
  * algoViz 单个工位的 enable + 配置卡片。
  * 折叠默认收起；展开后给 baseUrl / apiKey / model 三字段（apiKey 留空时识别为 ollama 本地）。
  */
+function isLocalUrl(url: string): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const h = u.hostname;
+    return (
+      h === 'localhost' ||
+      h === '127.0.0.1' ||
+      h === '::1' ||
+      h.startsWith('192.168.') ||
+      h.startsWith('10.') ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(h)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function AlgoVizRoleConfig({
   role,
   label,
@@ -944,10 +962,17 @@ function AlgoVizRoleConfig({
       <p className="text-[10.5px] text-ink-mute mt-1 pl-6 leading-relaxed">{desc}</p>
       {enabled && (
         <div className="pl-6 mt-2 space-y-2">
-          <Field label="Base URL" hint="OpenAI 兼容 chat-completions endpoint">
+          {/* detect 工位每 15s 调一次，云端高频会持续烧 token；显式提示 */}
+          {role === 'detect' && cur?.baseUrl && !isLocalUrl(cur.baseUrl) && (
+            <div className="rounded border border-warn/50 bg-warn/10 px-2 py-1.5 text-[10.5px] text-warn leading-relaxed">
+              ⚠️ <strong>不建议云端 detect</strong>：每 15 秒触发一次，长期使用会持续消耗云端 token。
+              建议改用本地 Ollama 小模型（如 <code className="font-mono">http://localhost:11434/v1/chat/completions</code> + <code className="font-mono">qwen3:4b</code>）。
+            </div>
+          )}
+          <Field label="Base URL" hint={role === 'detect' ? '建议本地 Ollama；云端会持续消耗 token' : 'OpenAI 兼容 chat-completions endpoint'}>
             <input
               className="input font-mono text-xs"
-              placeholder="https://api.deepseek.com/v1/chat/completions"
+              placeholder={role === 'detect' ? 'http://localhost:11434/v1/chat/completions' : 'https://api.deepseek.com/v1/chat/completions'}
               value={cur?.baseUrl ?? ''}
               onChange={(e) => update({ baseUrl: e.target.value })}
             />
