@@ -393,6 +393,32 @@ export function SettingsModal() {
                   题面解析 / 错题总结仍走主云端。命中下方「路由策略」任一阈值则跳云端保稳。
                 </p>
 
+                {/* 透明度提示：fastLane 未启用时，3 个主动嗅探 Agent 静默不工作 —— 显眼告诉用户 */}
+                {!draft.fastLane?.enabled && (
+                  <div className="ml-6 mb-3 px-3 py-2 rounded-md border border-line/60 bg-warn/5 text-[11px] leading-relaxed text-ink-mute">
+                    <div className="font-semibold text-ink mb-0.5">
+                      ⚠ 当前以下 3 个主动嗅探功能正在休眠：
+                    </div>
+                    <ul className="list-disc list-inside space-y-0.5">
+                      <li>
+                        <span className="text-ink">运行时报错诊断</span>
+                        <span className="opacity-70">（exit&nbsp;≠&nbsp;0 时一键定位错误行）</span>
+                      </li>
+                      <li>
+                        <span className="text-ink">数据范围 sanity check</span>
+                        <span className="opacity-70">（样例通过后扫 TLE/MLE 风险）</span>
+                      </li>
+                      <li>
+                        <span className="text-ink">题意偏离嗅探</span>
+                        <span className="opacity-70">（代码方向跑偏时给一句提醒）</span>
+                      </li>
+                    </ul>
+                    <div className="mt-1 opacity-80">
+                      启用本地 FastLane 后自动激活，不会偷偷蹭主云端 token。
+                    </div>
+                  </div>
+                )}
+
                 {draft.fastLane?.enabled && (
                   <div className="pl-6 space-y-3">
                     <OllamaSetupHint />

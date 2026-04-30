@@ -389,7 +389,20 @@ export function buildAskQuestionPrompt(args: {
   }
   messages.push({ role: 'user', content: args.question });
 
-  return { system, messages, kind, maxTokens: profile.maxTokens };
+  // 合并相邻同 role 的消息（OpenAI 兼容协议要求 user/assistant 严格交替；
+  // ctx 与 history 第一条都是 user 时、或 history 末尾是 user 而后追加 question 时，
+  // 都会出现 user→user 相邻，部分实现会拒绝或丢弃）
+  const merged: typeof messages = [];
+  for (const m of messages) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === m.role) {
+      last.content = `${last.content}\n\n${m.content}`;
+    } else {
+      merged.push({ ...m });
+    }
+  }
+
+  return { system, messages: merged, kind, maxTokens: profile.maxTokens };
 }
 
 /**
@@ -528,6 +541,305 @@ ${args.code.slice(0, 5000)}
   };
 }
 
+/**
+ * B 路线 — 学习规划 Agent 子 Agent 1：学情诊断
+ *
+ * 输入学生的近期学习数据（mistakes / sessions / failure stats），输出薄弱点诊断。
+ * 故意写得"专业 + 简短"，让评委看 prompt 时能看出"这是真的有上下文的诊断"。
+ */
+export function buildDiagnosisAgentPrompt(args: {
+  recentMistakes: Array<{
+    title: string;
+    category: string;
+    rootCause?: string;
+    verdict?: string;
+    daysAgo: number;
+  }>;
+  weekStats: {
+    totalProblems: number;
+    totalSubmissions: number;
+    acRate: number;
+    avgSessionMinutes: number;
+  };
+  stuckProblems: Array<{ title: string; failureCount: number; verdicts: string[] }>;
+}): PromptPair {
+  const mistakeBlock =
+    args.recentMistakes.length > 0
+      ? args.recentMistakes
+          .slice(0, 8)
+          .map(
+            (m) =>
+              `- [${m.daysAgo}天前] ${m.title}（${m.category}${m.verdict ? '/' + m.verdict : ''}）` +
+              (m.rootCause ? `：${m.rootCause.slice(0, 60)}` : ''),
+          )
+          .join('\n')
+      : '（最近没有错题记录）';
+
+  const stuckBlock =
+    args.stuckProblems.length > 0
+      ? args.stuckProblems
+          .slice(0, 3)
+          .map((s) => `- ${s.title}：失败 ${s.failureCount} 次（${s.verdicts.join(',')}）`)
+          .join('\n')
+      : '（没有屡败题目）';
+
+  return {
+    system:
+      '你是大学生算法学习的学情诊断 Agent。你只做一件事：根据学生近期数据，诊断 2-3 个**最薄弱**的知识点 + 1-2 个**已掌握**的强项 + 一句话点明今日重点。' +
+      '\n硬性要求：' +
+      '\n- weakConcepts 必须是**算法 / 数据结构 / 编程概念**层面的具体名词（"动态规划"/"边界处理"/"哈希应用"），不要写成"WA"/"超时"等结果性描述。' +
+      '\n- todayFocus 是一句话（≤30 字）："今日重点：[具体方向]"。' +
+      '\n- 数据样本不足时（< 3 条 mistakes）也要给出推断，**不要说"数据不足无法诊断"**。' +
+      SYSTEM_JSON_OUTPUT,
+    user: `【学生 7 天数据】
+- 做题数：${args.weekStats.totalProblems}
+- 提交次数：${args.weekStats.totalSubmissions}
+- AC 率：${(args.weekStats.acRate * 100).toFixed(0)}%
+- 平均做题时长：${args.weekStats.avgSessionMinutes.toFixed(0)} 分钟
+
+【近期错题（最多 8 条）】
+${mistakeBlock}
+
+【屡败题目（≥ 3 次失败未 AC）】
+${stuckBlock}
+
+输出 JSON：
+{
+  "weakConcepts": ["薄弱点 1（≤15 字）", "薄弱点 2", "薄弱点 3"],
+  "strengths": ["强项 1（≤15 字，可选 0-2 条）"],
+  "todayFocus": "今日重点：[具体方向]（≤30 字）"
+}
+
+⚠ 直接输出 JSON。`,
+  };
+}
+
+/**
+ * B 路线 — 学习规划 Agent 子 Agent 3：计划编排
+ *
+ * 综合诊断 + 题目候选 → 输出今日学习路径。
+ * 子 Agent 2 是本地纯逻辑（不调 LLM），所以它的输出直接喂这里。
+ */
+export function buildPlanOrchestrationPrompt(args: {
+  diagnosis: { weakConcepts: string[]; strengths: string[]; todayFocus: string };
+  candidates: {
+    newProblems: Array<{ bankId: string; title: string; difficulty?: string; tags?: string[]; reason: string }>;
+    reviewMistakes: Array<{ mistakeId: string; problemTitle: string; category: string; reason: string }>;
+  };
+}): PromptPair {
+  const newBlock =
+    args.candidates.newProblems
+      .map(
+        (p, i) =>
+          `${i + 1}. [新题][${p.difficulty ?? '?'}] ${p.title}（bankId=${p.bankId}）：${p.reason}` +
+          (p.tags?.length ? ` tags=${p.tags.join(',')}` : ''),
+      )
+      .join('\n') || '（无候选新题）';
+
+  const reviewBlock =
+    args.candidates.reviewMistakes
+      .map(
+        (m, i) =>
+          `${i + 1}. [复习] ${m.problemTitle}（${m.category}, mistakeId=${m.mistakeId}）：${m.reason}`,
+      )
+      .join('\n') || '（无候选复习题）';
+
+  return {
+    system:
+      '你是大学生学习计划编排 Agent。基于学情诊断 + 候选题目，编排今日 2-4 步学习路径。' +
+      '\n要求：' +
+      '\n- 每步必须从候选题目里挑（用对应的 bankId 或 mistakeId 引用，不要编造）。' +
+      '\n- 顺序：先复习 + 暖身 → 主题攻坚 → 收尾巩固。' +
+      '\n- estimatedMinutes 合理：复习题 5-10 分，简单新题 10-15 分，难题 20-30 分。' +
+      '\n- encouragement：一句鼓励，不要客套，要点出"今天会比昨天进步什么"。' +
+      SYSTEM_JSON_OUTPUT,
+    user: `【学情诊断】
+- 薄弱：${args.diagnosis.weakConcepts.join(' / ') || '（无）'}
+- 强项：${args.diagnosis.strengths.join(' / ') || '（无）'}
+- 今日重点：${args.diagnosis.todayFocus}
+
+【候选新题】
+${newBlock}
+
+【候选复习题】
+${reviewBlock}
+
+输出 JSON：
+{
+  "headline": "今日重点（一句话，≤25 字）",
+  "estimatedMinutes": 总用时（整数，建议 30-60）,
+  "steps": [
+    {
+      "kind": "new-problem" | "review-mistake",
+      "title": "步骤标题（≤20 字）",
+      "bankId": "（仅 new-problem 时有，从候选里挑）",
+      "mistakeId": "（仅 review-mistake 时有，从候选里挑）",
+      "reason": "为什么安排这步（≤40 字）",
+      "estimatedMinutes": 5-30 整数
+    }
+  ],
+  "encouragement": "鼓励语（≤30 字，避免空话）"
+}
+
+⚠ 必须从候选里选题；bankId/mistakeId 不能编造。直接输出 JSON。`,
+  };
+}
+
+// =============================================================================
+// 费曼反向教学（Feynman Mode）— 用户教 AI、AI 装菜鸟提问、AI 评委评估
+//
+// 核心思想：
+//   - 学生 = 用户（讲解者）
+//   - Agent A "AI 学生"：故意装成第一次听这道题，提 1-3 个澄清性 / 漏洞性问题
+//   - Agent B "AI 评委"：根据多轮对话评估清晰度 / 逻辑流畅度 / 概念准确性
+//
+// 这是项目"创新性 20%"的第二个杀手锏，对位上纽大 Curistro 最佳创新奖。
+// =============================================================================
+
+/**
+ * 费曼"AI 学生"Agent — 装作第一次听这道题，逼用户讲清楚。
+ *
+ * 输入：
+ *   - 题目（标题 / 题面）
+ *   - 用户已经说过的内容（多轮对话历史）
+ *   - 当前用户的最新讲解
+ *
+ * 输出 JSON：{ studentReply: string, questions: string[], confusion?: string }
+ *   - studentReply：菜鸟身份的回应（1-2 句）
+ *   - questions：1-3 个澄清问题（针对用户讲解里的漏洞 / 跳跃 / 含糊处）
+ *   - confusion：可选，菜鸟"故意装迷糊"的点（让用户不得不澄清）
+ *
+ * 关键约束：
+ *   - 不能给暗示答案的提问（比如"是不是要用 dp？"）
+ *   - 必须基于用户讲解的内容提问，不能瞎问
+ *   - 问题必须能"逼用户更清楚地讲"，不是闲聊
+ */
+export function buildFeynmanStudentPrompt(args: {
+  problem: { title: string; statement: string };
+  conversation: Array<{ role: 'user' | 'student'; text: string }>;
+  userTurn: string;
+  turnIndex: number; // 第几轮（0 起）
+}): PromptPair {
+  const { problem, conversation, userTurn, turnIndex } = args;
+  const isFirstTurn = turnIndex === 0;
+  const convoText = conversation
+    .slice(-6) // 控长度
+    .map((m) => `${m.role === 'user' ? '【讲解者】' : '【AI 学生】'}: ${m.text}`)
+    .join('\n');
+  return {
+    system: `你是一名"装作第一次听这道题"的 AI 学生，正被对方（讲解者）用费曼学习法教你这道算法题。
+
+你的任务（极其严格）：
+1. 用菜鸟语气回应，**绝对不能流露你已经懂答案**——哪怕你看出来对方说错了也不能直说
+2. 针对对方刚才讲的内容，提 1-3 个**澄清问题**（必须能逼对方讲得更清楚）
+3. 问题质量要求：
+   - 不能是"是不是要用 X 算法？"这种暗示答案的问题
+   - 要针对**对方讲解里的漏洞、跳跃、模糊术语**
+   - 比如：「你说"遍历每对"，但 n 是多少？这样会不会太慢？」
+4. 风格：好奇、礼貌、像第一次接触这个概念
+5. 不超过 80 字的 studentReply + 不超过 3 个 questions
+
+绝对禁止：
+- 给出任何形式的解题步骤
+- 提到具体算法名（DP / 二分 / 哈希等）除非对方先说
+- 帮对方补全他没讲完的部分
+
+${SYSTEM_JSON_OUTPUT}`,
+    user: `## 题目
+**${problem.title}**
+
+${problem.statement.slice(0, 800)}
+
+## 对话历史（最近 6 轮）
+${convoText || '（暂无）'}
+
+## 讲解者刚刚说的话（第 ${turnIndex + 1} 轮）
+"""
+${userTurn}
+"""
+
+## 你要做什么${
+      isFirstTurn
+        ? '（这是第一轮，对方刚刚开始讲解）'
+        : ''
+    }
+
+输出 JSON：
+{
+  "studentReply": "string，菜鸟语气的简短回应（≤ 80 字）",
+  "questions": ["string", ...],   // 1-3 个澄清问题
+  "confusion": "string?"          // 可选：你装迷糊的点（≤ 30 字）
+}`,
+  };
+}
+
+/**
+ * 费曼"AI 评委"Agent — 根据完整多轮对话给评估报告。
+ *
+ * 输出 JSON：{
+ *   scores: { clarity, logic, accuracy }, // 0-10
+ *   strengths: string[],
+ *   weaknesses: string[],
+ *   suggestions: string[],
+ *   verdict: 'mastered'|'partial'|'struggling',
+ *   summary: string
+ * }
+ *
+ * 评分维度（直接对位 Curistro 项目）：
+ *   - 清晰度（讲得让外行能懂吗？）
+ *   - 逻辑流畅度（步骤之间有跳跃吗？）
+ *   - 概念准确性（术语 / 复杂度 / 边界用对了吗？）
+ */
+export function buildFeynmanEvaluatorPrompt(args: {
+  problem: { title: string; statement: string };
+  conversation: Array<{ role: 'user' | 'student'; text: string }>;
+}): PromptPair {
+  const { problem, conversation } = args;
+  const convoText = conversation
+    .map((m, i) => `[${i + 1}] ${m.role === 'user' ? '【讲解者】' : '【AI 学生】'}: ${m.text}`)
+    .join('\n\n');
+  return {
+    system: `你是费曼学习法的"AI 评委"，要根据【讲解者】和【AI 学生】的多轮对话，评估讲解者对这道算法题的真实掌握程度。
+
+评分维度（每项 0-10 分）：
+1. clarity（清晰度）：能让外行听懂吗？术语是否解释 / 是否避免跳跃？
+2. logic（逻辑流畅度）：从问题到解法的推导链是否完整？步骤间是否有断层？
+3. accuracy（概念准确性）：算法名 / 复杂度 / 边界条件 / 数据结构选择是否正确？
+
+verdict 含义：
+- mastered（≥ 8 分均值）：真正掌握，可以独立教别人
+- partial（5-7 分均值）：会用但讲不清，需要再练
+- struggling（< 5 分均值）：理解有缺口，建议重学基础
+
+${SYSTEM_JSON_OUTPUT}`,
+    user: `## 题目
+**${problem.title}**
+
+${problem.statement.slice(0, 600)}
+
+## 完整对话
+${convoText}
+
+## 你的任务
+基于上面的对话，输出对【讲解者】的评估报告 JSON：
+
+{
+  "scores": {
+    "clarity": 0-10,
+    "logic": 0-10,
+    "accuracy": 0-10
+  },
+  "strengths": ["string", ...],     // 2-4 条优点（具体引用对话内容）
+  "weaknesses": ["string", ...],    // 2-4 条不足（指出哪一轮里讲错或讲不清）
+  "suggestions": ["string", ...],   // 2-3 条改进建议
+  "verdict": "mastered"|"partial"|"struggling",
+  "summary": "string"               // 一句话总评（≤ 100 字）
+}
+
+⚠ strengths 和 weaknesses 必须**引用对话里的具体内容**，不能空话。`,
+  };
+}
+
 export function buildParseProblemPrompt(rawText: string): PromptPair {
   return {
     system:
@@ -625,6 +937,8 @@ export function buildAnalyzeCodePrompt(args: {
     failureCount: number;
     recentVerdicts: string[];
   };
+  /** AST-Light 结构特征字符串（已格式化好），由本地启发式 Agent 输出。 */
+  astFeatureBlock?: string;
 }): PromptPair {
   const problemContext = args.problem
     ? `【当前题目】
@@ -655,13 +969,17 @@ ${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTR
       '请用整体策略层面的引导帮他破局，而不是逐行批注。'
     : '';
 
+  const astBlock = args.astFeatureBlock
+    ? `\n${args.astFeatureBlock}\n`
+    : '';
+
   return {
     system: SYSTEM_CODING_COACH + systemTrailer + SYSTEM_JSON_OUTPUT,
     user: `${problemContext}
 ${profileBlock}
 ${historyBlock}
 ${siblingBlock}
-${runtimeBlock}${escalationBlock}
+${runtimeBlock}${escalationBlock}${astBlock}
 【学生当前正在分析的 ${args.language} 代码（哈希=${currentHash}, ${totalLines} 行${truncated ? '，已截断' : ''}，每行带 "行号 | " 前缀）】
 \`\`\`
 ${numbered}
@@ -840,23 +1158,49 @@ function renderProfile(p?: LearnerProfile): string {
   return lines.join('\n');
 }
 
+// History 长度上限：避免学生反复在同一题练习时 prompt 无限膨胀。
+// 5 条足以让模型看出"是否在重复犯同样错误"和"上次反馈后改了什么"，
+// 更早的反馈在长期反复练习场景里几乎不再有信号。
+const MAX_HISTORY_ENTRIES = 5;
+// 单次反馈里 issue 数量上限：分析器最多产 ~10 个 issue，但回溯时只需要看代表性的几个。
+const MAX_ISSUES_PER_ENTRY = 3;
+// 单条 issue message 截断：避免长解释累积爆掉 prompt。
+const MAX_ISSUE_MESSAGE_LEN = 80;
+
 function renderHistory(h?: AnalysisHistoryEntry[]): string {
   if (!h || h.length === 0) {
     return '';
   }
+  // 只保留最近 N 条（之前是无上限——长期同题练习会让 prompt 线性膨胀）
+  const recent = h.slice(-MAX_HISTORY_ENTRIES);
+  const truncatedCount = h.length - recent.length;
   const lines: string[] = ['', '【本题之前的反馈历史（避免重复说同样的话）】'];
+  if (truncatedCount > 0) {
+    lines.push(`（已省略更早的 ${truncatedCount} 次反馈）`);
+  }
   // 取最后一次的 codeHash 作为对比基准
-  const lastHash = h[h.length - 1]?.codeHash;
-  h.forEach((e, i) => {
+  const lastHash = recent[recent.length - 1]?.codeHash;
+  recent.forEach((e, i) => {
     const t = new Date(e.ts).toLocaleTimeString();
     const codeMark = e.codeHash ? ` (代码=${e.codeHash.slice(0, 6)}, ${e.codeLineCount ?? '?'}行)` : '';
+    // 真实序号要算上被截掉的部分，否则模型会以为只发生过 5 次
+    const ordinal = truncatedCount + i + 1;
     if (e.issuesSnapshot.length === 0) {
-      lines.push(`第 ${i + 1} 次（${t}, ${e.reason}${codeMark}）：未发现问题`);
+      lines.push(`第 ${ordinal} 次（${t}, ${e.reason}${codeMark}）：未发现问题`);
     } else {
-      lines.push(`第 ${i + 1} 次（${t}, ${e.reason}${codeMark}）：`);
-      e.issuesSnapshot.forEach((s) => {
-        lines.push(`  · L${s.line} ${s.severity}/${s.category}: ${s.message}`);
+      lines.push(`第 ${ordinal} 次（${t}, ${e.reason}${codeMark}）：`);
+      const shown = e.issuesSnapshot.slice(0, MAX_ISSUES_PER_ENTRY);
+      shown.forEach((s) => {
+        const msg =
+          s.message.length > MAX_ISSUE_MESSAGE_LEN
+            ? s.message.slice(0, MAX_ISSUE_MESSAGE_LEN) + '…'
+            : s.message;
+        lines.push(`  · L${s.line} ${s.severity}/${s.category}: ${msg}`);
       });
+      const more = e.issuesSnapshot.length - shown.length;
+      if (more > 0) {
+        lines.push(`  · …还有 ${more} 条 issue 已省略`);
+      }
     }
   });
   // 提示 AI 当前代码 vs 上次的关系（学生改了 / 没改 / 改了多少）

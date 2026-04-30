@@ -8,6 +8,8 @@ import { TaskTray } from './components/TaskTray';
 import { HackCaseCard } from './components/HackCaseCard';
 import { AcReviewCard } from './components/AcReviewCard';
 import { DailyReviewCard } from './components/DailyReviewCard';
+import { DailyPlanCard } from './components/DailyPlanCard';
+import { FeynmanModal } from './components/FeynmanModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ProblemEditorModal } from './components/ProblemEditorModal';
 import { ProblemBrowserModal } from './components/ProblemBrowserModal';
@@ -78,6 +80,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // B 路线：每天首次开 app 触发学习规划 Agent（已配 AI + 今日 plan 缺失时）
+  useEffect(() => {
+    const usable =
+      aiConfig.provider === 'ollama'
+        ? !!aiConfig.baseUrl?.trim()
+        : !!aiConfig.apiKey?.trim();
+    if (!usable) return;
+    // 等其它 effect / mount 稳定后再触发，避免和 onboarding 抢焦点
+    const t = setTimeout(() => {
+      void useStore.getState().requestDailyPlan();
+    }, 4000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // 启动 TM 推送的 SSE 订阅（仅 dev）
   useEffect(() => {
     startImportReceiver();
@@ -110,6 +127,8 @@ export default function App() {
       <HackCaseCard />
       <AcReviewCard />
       <DailyReviewCard />
+      <DailyPlanCard />
+      <FeynmanModal />
       <SettingsModal />
       <ProblemEditorModal />
       <ProblemBrowserModal />

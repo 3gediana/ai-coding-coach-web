@@ -15,3 +15,8 @@ tsconfig.tsbuildinfo
 scripts/_tmp-*.mjs
 scripts/_tmp-*.mts
 _commit_msg.tmp
+# Playwright 失败现场（截图 / trace.zip / video）—— 跑完测试自动生成，不入库
+test-results/
+playwright-report/
+# 工具状态目录（oh-my-claude-code 等本地工具）
+.omc/

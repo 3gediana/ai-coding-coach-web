@@ -1,6 +1,20 @@
-import { motion } from 'framer-motion';
-import { useEffect } from 'react';
-import { Settings, Sparkles, Plus, CheckCircle2, PlayCircle, Library, MessageCircleQuestion } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useEffect, useRef, useState } from 'react';
+import {
+  Settings,
+  Sparkles,
+  Plus,
+  CheckCircle2,
+  PlayCircle,
+  Library,
+  MessageCircleQuestion,
+  Brain,
+  WifiOff,
+  Plane,
+  ChevronDown,
+} from 'lucide-react';
+import { useOnlineStatus, setForcedOffline } from '../lib/offlineMode';
+import { toast } from 'sonner';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { isRuntimeSupported } from '../lib/runtime';
@@ -118,6 +132,9 @@ export function TopBar() {
         )}
       </div>
 
+      {/* Offline / Airplane chip */}
+      <OfflineChip />
+
       {/* Active file badge */}
       {activeFile && (
         <div className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-bg-elev2 border border-line">
@@ -125,17 +142,6 @@ export function TopBar() {
           <span className="text-xs font-mono text-ink truncate max-w-[140px]">{activeFile.name}</span>
         </div>
       )}
-
-      {/* 题目相关：低频，icon-only ghost（不抢主视觉） */}
-      <button onClick={() => setProblemBrowserOpen(true)} className="btn-ghost" title="OJ 题库（洛谷 / AtCoder / POJ / HDU）">
-        <Library size={15} />
-      </button>
-      <button onClick={() => setProblemEditorOpen(true)} className="btn-ghost" title="手动录入 / 贴题面">
-        <Plus size={15} />
-      </button>
-
-      {/* 分隔线：分组 */}
-      <div className="w-px h-5 bg-line/60" />
 
       {/* 运行：次高频 */}
       <button
@@ -167,16 +173,15 @@ export function TopBar() {
         )}
       </button>
 
-      {activeProblemId && (
-        <button
-          onClick={() => setSubmitModalOpen(true)}
-          className="btn-ghost"
-          disabled={!apiOk}
-          title="登记提交结果 (AC/WA/TLE/...) → AI 针对性分析"
-        >
-          <CheckCircle2 size={15} />
-        </button>
-      )}
+      {/* 题目操作：下拉折叠（题库 / 录题 / 提交 / 费曼） */}
+      <ProblemMenu
+        apiOk={apiOk}
+        hasActiveProblem={!!activeProblemId}
+        onOpenBrowser={() => setProblemBrowserOpen(true)}
+        onOpenEditor={() => setProblemEditorOpen(true)}
+        onOpenSubmit={() => setSubmitModalOpen(true)}
+        onOpenFeynman={() => useStore.getState().openFeynman()}
+      />
 
       <div className="w-px h-5 bg-line/60" />
 
@@ -199,5 +204,227 @@ export function TopBar() {
         )}
       </button>
     </header>
+  );
+}
+
+/**
+ * 在线状态 chip：常态 hidden、离线/飞行模式 时浮现，
+ * 点击切换"飞行模式"（手动模拟拔网线）。
+ *
+ * 演示价值：评委录像时点这个 chip → 立刻看见 AI 路由切到本地，1B 模型完整可用。
+ */
+function OfflineChip() {
+  const status = useOnlineStatus();
+  const aiConfig = useStore((s) => s.aiConfig);
+  // FastLane 是否可用（决定离线时还能不能干活）
+  const fastUsable =
+    !!aiConfig.fastLane?.enabled &&
+    !!aiConfig.fastLane?.baseUrl &&
+    !!aiConfig.fastLane?.model;
+
+  if (status === 'online') {
+    // 在线时只挂一个隐藏的「飞行模式」入口（hover 出现），不抢视觉
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          if (!fastUsable) {
+            toast.warning('飞行模式需要先配本地 FastLane (Ollama)');
+            return;
+          }
+          setForcedOffline(true);
+          toast.success('已进入飞行模式 · AI 全部走本地');
+        }}
+        className="hidden md:flex items-center text-[10px] text-ink-mute hover:text-warn transition px-1.5 py-0.5 rounded opacity-40 hover:opacity-100"
+        title="模拟拔网线 / 飞行模式 — AI 强制走本地 1B 模型"
+      >
+        <Plane size={11} />
+      </button>
+    );
+  }
+
+  const isForced = status === 'forced-offline';
+  return (
+    <motion.button
+      type="button"
+      initial={{ scale: 0.8, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      onClick={() => {
+        if (isForced) {
+          setForcedOffline(false);
+          toast.success('已退出飞行模式');
+        } else {
+          toast.message('网络已断开 · AI 自动切到本地 FastLane', {
+            description: fastUsable
+              ? '本地 sam:latest 在线，可继续批注 / 总结 / 问答'
+              : '⚠ 没配 FastLane，云端任务会失败',
+          });
+        }
+      }}
+      className={cn(
+        'flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold transition',
+        isForced
+          ? 'border-warn/60 bg-warn/15 text-warn'
+          : 'border-bad/60 bg-bad/15 text-bad',
+        !fastUsable && 'animate-pulse',
+      )}
+      title={
+        isForced
+          ? '飞行模式中 · 点击退出'
+          : '检测到无网络 · 已切到本地 FastLane'
+      }
+    >
+      {isForced ? <Plane size={11} /> : <WifiOff size={11} />}
+      <span className="hidden sm:inline">
+        {isForced ? '飞行模式' : '离线'}
+      </span>
+      {fastUsable && <span className="text-[9px] opacity-80">⚡ 本地</span>}
+    </motion.button>
+  );
+}
+
+/**
+ * 题目操作下拉菜单：把"题库 / 录题 / 提交 / 费曼"4 个低频按钮折叠成一个入口，
+ * 减少 TopBar 视觉噪音。提交 / 费曼 仅在有 activeProblem 时启用。
+ */
+function ProblemMenu({
+  apiOk,
+  hasActiveProblem,
+  onOpenBrowser,
+  onOpenEditor,
+  onOpenSubmit,
+  onOpenFeynman,
+}: {
+  apiOk: boolean;
+  hasActiveProblem: boolean;
+  onOpenBrowser: () => void;
+  onOpenEditor: () => void;
+  onOpenSubmit: () => void;
+  onOpenFeynman: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // 点击外部关闭
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const items: Array<{
+    icon: typeof Library;
+    label: string;
+    desc: string;
+    onClick: () => void;
+    disabled?: boolean;
+    accent?: boolean;
+  }> = [
+    {
+      icon: Library,
+      label: '题库',
+      desc: 'OJ 题库（洛谷 / AtCoder / POJ / HDU）',
+      onClick: onOpenBrowser,
+    },
+    {
+      icon: Plus,
+      label: '录入题目',
+      desc: '手动录入 / 贴题面',
+      onClick: onOpenEditor,
+    },
+    {
+      icon: CheckCircle2,
+      label: '登记提交',
+      desc: 'AC/WA/TLE/... → AI 针对性分析',
+      onClick: onOpenSubmit,
+      disabled: !hasActiveProblem || !apiOk,
+    },
+    {
+      icon: Brain,
+      label: '费曼模式',
+      desc: '用你的话给 AI 讲题，AI 装菜鸟提问',
+      onClick: onOpenFeynman,
+      disabled: !hasActiveProblem || !apiOk,
+      accent: true,
+    },
+  ];
+
+  return (
+    <div className="relative" ref={wrapRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={cn('btn-ghost', open && 'bg-bg-elev2')}
+        title="题目操作（题库 / 录入 / 提交 / 费曼）"
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <Library size={15} />
+        <span className="hidden md:inline text-[12px]">题目</span>
+        <ChevronDown size={12} className={cn('transition-transform', open && 'rotate-180')} />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -4, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.97 }}
+            transition={{ duration: 0.12 }}
+            role="menu"
+            className="absolute right-0 mt-1 w-64 z-50 rounded-xl border border-line bg-bg-elev shadow-2xl overflow-hidden"
+          >
+            {items.map((it) => {
+              const Icon = it.icon;
+              return (
+                <button
+                  key={it.label}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    if (it.disabled) return;
+                    setOpen(false);
+                    it.onClick();
+                  }}
+                  disabled={it.disabled}
+                  className={cn(
+                    'w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-colors border-b border-line/40 last:border-b-0',
+                    it.disabled
+                      ? 'opacity-40 cursor-not-allowed'
+                      : 'hover:bg-bg-elev2 cursor-pointer',
+                  )}
+                >
+                  <Icon
+                    size={15}
+                    className={cn(
+                      'shrink-0 mt-0.5',
+                      it.accent ? 'text-purple-400' : 'text-ink-dim',
+                    )}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[12.5px] font-medium text-ink leading-tight">
+                      {it.label}
+                    </div>
+                    <div className="text-[10.5px] text-ink-mute mt-0.5 leading-snug">
+                      {it.desc}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

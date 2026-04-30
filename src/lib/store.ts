@@ -18,6 +18,7 @@ import type {
   AnalysisHistoryEntry,
   AnalysisResult,
   CodeFile,
+  DailyPlan,
   FileLang,
   Lang,
   LearnerProfile,
@@ -39,10 +40,12 @@ import type { CoachAskInput, CoachDraft, CoachRoute } from '../core/coach/types'
 import { submitToOj, type OjSubmitResult } from './ojBridge';
 import {
   buildLearningEngine,
+  pickPlanCandidates,
   type BankProblem,
   type LearningCard,
   type ProgressOverview,
 } from '../core/recommend';
+import { extractFeatures, type CodeStructFeatures } from '../core/astLite';
 import bankData from '../data/problemBank.json';
 
 const PROBLEM_BANK = bankData as BankProblem[];
@@ -51,6 +54,41 @@ const PROBLEM_BANK = bankData as BankProblem[];
 function today(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/** P3 escalation 滑窗：仅保留 7 天内的失败记录 */
+const FAILURE_STATS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+/** P3 escalation 触发阈值（之前是 3 单题终身累计——几乎从不触发；现在 2 次 7 天内即可）*/
+export const FAILURE_STATS_ESCALATE_THRESHOLD = 2;
+
+interface FailureStats {
+  count: number;
+  recentVerdicts: SubmissionVerdict[];
+  recentTimestamps: number[];
+}
+
+/**
+ * 从 stats 里剔除超过 7 天的失败记录，返回新对象（不修改原对象）。
+ * 注意：count 同步缩减，与 recentVerdicts/recentTimestamps 长度保持一致。
+ */
+function pruneFailureStats(stats: FailureStats, now = Date.now()): FailureStats {
+  const cutoff = now - FAILURE_STATS_WINDOW_MS;
+  const ts = stats.recentTimestamps ?? [];
+  const verdicts = stats.recentVerdicts ?? [];
+  // 旧数据可能没有 recentTimestamps（migration 兜底）：当作全过期，count=0 重新累积
+  if (ts.length === 0 || ts.length !== verdicts.length) {
+    return { count: 0, recentVerdicts: [], recentTimestamps: [] };
+  }
+  const keepFromIdx = ts.findIndex((t) => t >= cutoff);
+  if (keepFromIdx === -1) {
+    return { count: 0, recentVerdicts: [], recentTimestamps: [] };
+  }
+  if (keepFromIdx === 0) return stats;
+  return {
+    count: stats.count - keepFromIdx,
+    recentVerdicts: verdicts.slice(keepFromIdx),
+    recentTimestamps: ts.slice(keepFromIdx),
+  };
 }
 
 /**
@@ -161,9 +199,80 @@ export interface AgentTraceEvent {
   detail?: string;
   problemId?: string;
   taskId?: string;
+  /** Agent 名字（用于 graph/dashboard 聚合）。不传时会从 title 推断 */
+  agentName?: AgentName;
+  /** 这条 trace 对应动作的耗时（ms），用于 dashboard */
+  latencyMs?: number;
+  /** 这条 trace 对应动作的 token 输入数，用于 dashboard 的成本统计 */
+  tokenIn?: number;
+  tokenOut?: number;
+  /** 路由：本地 fastLane 还是云端 LLM；未知/无关时不填 */
+  route?: 'fast' | 'cloud';
 }
 
-const AGENT_TRACE_LIMIT = 80;
+/**
+ * 项目里所有"独立 Agent"的标准名字。**这是 Agent Graph / Dashboard 的节点 id**。
+ *
+ * 命名规则：
+ *   - PascalCase
+ *   - 主 Agent 顶部，子 Agent 用 "/" 表示父子（DailyPlan/Diagnosis 等）
+ */
+export type AgentName =
+  | 'AnalyzeCode'
+  | 'AskCoach'
+  | 'ParseProblem'
+  | 'PlainExplanation'
+  | 'ProblemOverview'
+  | 'AcReview'
+  | 'DailyReview'
+  | 'HackCase'
+  | 'StuckHint'
+  | 'IntentSniffer'
+  | 'RuntimeDiagnose'
+  | 'ConstraintSanity'
+  | 'SummarizeMistake'
+  | 'DailyPlan'
+  | 'DailyPlan/Diagnosis'
+  | 'DailyPlan/Selector'
+  | 'DailyPlan/Orchestrator'
+  | 'Feynman/Student'
+  | 'Feynman/Evaluator'
+  | 'AstDiff'
+  | 'Router'
+  | 'Other';
+
+/**
+ * 从 title 字符串推断 agentName 兜底（兼容老的 recordAgentTrace 调用点，避免一次性改 30 处）。
+ *
+ * 命中规则按优先级排序，第一个匹配为准。
+ */
+export function inferAgentName(title: string): AgentName {
+  const t = title;
+  if (t.includes('学情诊断 Agent')) return 'DailyPlan/Diagnosis';
+  if (t.includes('题目筛选 Agent')) return 'DailyPlan/Selector';
+  if (t.includes('计划编排 Agent')) return 'DailyPlan/Orchestrator';
+  if (t.includes('学习规划 Agent')) return 'DailyPlan';
+  if (t.includes('费曼') && t.includes('学生')) return 'Feynman/Student';
+  if (t.includes('费曼') && t.includes('评委')) return 'Feynman/Evaluator';
+  if (t.includes('AST')) return 'AstDiff';
+  if (t.includes('AnalyzeCode') || t.includes('代码批注') || t.includes('escalat')) return 'AnalyzeCode';
+  if (t.includes('AcReview') || t.includes('AC 复盘')) return 'AcReview';
+  if (t.includes('ProblemOverview') || t.includes('题目概览')) return 'ProblemOverview';
+  if (t.includes('PlainExplanation') || t.includes('题面通读')) return 'PlainExplanation';
+  if (t.includes('AskCoach') || t.includes('问教练')) return 'AskCoach';
+  if (t.includes('ParseProblem') || t.includes('题面解析')) return 'ParseProblem';
+  if (t.includes('HackCase') || t.includes('Hack')) return 'HackCase';
+  if (t.includes('StuckHint') || t.includes('卡住') || t.includes('苏格拉底')) return 'StuckHint';
+  if (t.includes('IntentSniff') || t.includes('意图嗅探')) return 'IntentSniffer';
+  if (t.includes('RuntimeDiagnose') || t.includes('运行错误')) return 'RuntimeDiagnose';
+  if (t.includes('ConstraintSanity') || t.includes('数据范围')) return 'ConstraintSanity';
+  if (t.includes('Summarize') || t.includes('错题总结')) return 'SummarizeMistake';
+  if (t.includes('DailyReview') || t.includes('每日复习')) return 'DailyReview';
+  if (t.includes('路由') || t.includes('Router')) return 'Router';
+  return 'Other';
+}
+
+const AGENT_TRACE_LIMIT = 200;
 
 // ============== Coach Hint（FastLane 主动嗅探的产物） ==============
 
@@ -319,6 +428,10 @@ interface State {
   submitModalOpen: boolean;
   /** 底部运行时面板是否展开 */
   runtimePaneOpen: boolean;
+  /** 费曼反向教学 modal 开关 */
+  feynmanOpen: boolean;
+  openFeynman: () => void;
+  closeFeynman: () => void;
 
   // 卡住检测 / 粘贴提示 / 默认开关
   lastEditAt: number;
@@ -411,17 +524,47 @@ interface State {
     | null;
   dismissAcReview: () => void;
   /**
-   * P3 屡败 escalation：每个题目的非-AC 失败次数 + 最近 5 个 verdict。
-   * 提交 AC 时清零；analyzeCode 检查 count ≥ 3 决定是否升级 prompt。
+   * P3 屡败 escalation：每个题目的非-AC 失败记录（7 天滑窗）。
+   *
+   * 设计变更（2025-04 之前是单题终身累计，几乎不触发）：
+   * - 仅保留 7 天内的失败 → 触发条件用"近期失败"，避免学生 1 个月前的失败拖累
+   * - 阈值从 ≥3 调到 ≥2 → 同题第 2 次还在错就升级（更早干预）
+   * - recentTimestamps 与 recentVerdicts 同步、同长度
+   * AC 时清零本题记录。analyzeCode 路径同时使用 count（滑窗后） + recentVerdicts。
    */
   failureStatsByProblem: Record<
     string,
-    { count: number; recentVerdicts: SubmissionVerdict[] }
+    {
+      count: number;
+      recentVerdicts: SubmissionVerdict[];
+      recentTimestamps: number[];
+    }
   >;
   /** P4 每日复习推送：今天是否已被用户关掉（YYYY-MM-DD 字符串） */
   dailyReviewDismissedDate: string | null;
   /** 用户点 ✕ 关掉今日复习推送（持久化到 localStorage，跨天会重置） */
   dismissDailyReview: () => void;
+  /**
+   * B 路线 — 学习规划 Agent：当前生效的今日学习计划。
+   *
+   * 由 3 个子 Agent 协作生成：学情诊断 → 题目筛选 → 计划编排。
+   * 每天首次开 app 自动触发；成功后 sidebar 顶部浮起 DailyPlanCard。
+   * persisted 在 localStorage（按 date 缓存，跨天会重新生成）。
+   */
+  dailyPlan: DailyPlan | null;
+  dailyPlanGenerating: boolean;
+  /**
+   * 触发学习规划 Agent 编排（3 步链式调用）。
+   *   - 默认：缓存 hit（同日内）则直接返回，不重复烧 token
+   *   - opts.force：用户在 UI 上点「重新规划」时跳过缓存
+   */
+  requestDailyPlan: (opts?: { force?: boolean }) => Promise<void>;
+  /** 用户点「接受并开始」 */
+  acceptDailyPlan: () => void;
+  /** 用户点 ✕ 拒绝（今天不再弹） */
+  declineDailyPlan: () => void;
+  /** 用户在 sidebar 勾选某一步完成 */
+  toggleDailyPlanStep: (stepIndex: number) => void;
   enqueueSummarize: (arg: boolean | SubmitOpts) => string | null;
   enqueueDiff: () => string | null;
   /** 主动出 hack case：检测样例已通过后由 Coach 自己挑战边界 */
@@ -810,6 +953,11 @@ export const useStore = create<State>((set, get) => {
         detail: e.detail,
         problemId: e.problemId,
         taskId: e.taskId,
+        agentName: e.agentName ?? inferAgentName(e.title),
+        latencyMs: e.latencyMs,
+        tokenIn: e.tokenIn,
+        tokenOut: e.tokenOut,
+        route: e.route,
       };
       set((s) => ({
         agentTrace: [event, ...s.agentTrace].slice(0, AGENT_TRACE_LIMIT),
@@ -819,6 +967,9 @@ export const useStore = create<State>((set, get) => {
 
     sidebarTab: 'problems',
     settingsOpen: false,
+    feynmanOpen: false,
+    openFeynman: () => set({ feynmanOpen: true }),
+    closeFeynman: () => set({ feynmanOpen: false }),
     problemEditorOpen: false,
     problemBrowserOpen: false,
     cmdPaletteOpen: false,
@@ -844,6 +995,19 @@ export const useStore = create<State>((set, get) => {
     pendingAcReview: null,
     failureStatsByProblem: {},
     dailyReviewDismissedDate: localStorage.getItem('aicc.dailyReview.dismissed.v1'),
+    dailyPlan: ((): DailyPlan | null => {
+      // 启动时从 localStorage 恢复今日 plan（只恢复同日的，跨天作废）
+      try {
+        const raw = localStorage.getItem('aicc.dailyPlan.v1');
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as DailyPlan;
+        if (parsed?.date !== today()) return null;
+        return parsed;
+      } catch {
+        return null;
+      }
+    })(),
+    dailyPlanGenerating: false,
 
     // Coach 主动嗅探：A 默认 ON / C 默认 ON / B 默认 OFF（最慎重）
     coachHintsByScope: {},
@@ -1710,12 +1874,13 @@ export const useStore = create<State>((set, get) => {
                   }
                 : undefined;
 
-            // P3 escalation：同题 ≥3 次失败时升级 prompt
-            const failureStats = problem
+            // P3 escalation：同题近 7 天 ≥ THRESHOLD 次失败时升级 prompt
+            const rawStats = problem
               ? get().failureStatsByProblem[problem.id]
               : undefined;
+            const failureStats = rawStats ? pruneFailureStats(rawStats) : undefined;
             const escalation =
-              failureStats && failureStats.count >= 3
+              failureStats && failureStats.count >= FAILURE_STATS_ESCALATE_THRESHOLD
                 ? {
                     failureCount: failureStats.count,
                     recentVerdicts: failureStats.recentVerdicts,
@@ -1730,6 +1895,27 @@ export const useStore = create<State>((set, get) => {
                 problemId: problem?.id,
               });
             }
+            // AST-Light 结构特征（本地纯逻辑 Agent，喂给后续 LLM）
+            let astFeatures: CodeStructFeatures | undefined;
+            try {
+              astFeatures = extractFeatures(file.content, langOfFile(file.language));
+            } catch {
+              astFeatures = undefined;
+            }
+            if (astFeatures && (astFeatures.redFlags.length > 0 || astFeatures.loops > 0)) {
+              const redFlagDetail =
+                astFeatures.redFlags.length > 0
+                  ? '\n- ' + astFeatures.redFlags.map((r) => r.hint).join('\n- ')
+                  : '';
+              get().recordAgentTrace({
+                kind: 'perceive',
+                level: astFeatures.redFlags.length > 0 ? 'warn' : 'info',
+                title: `AST-Light · 结构信号（本地）`,
+                detail: `复杂度估计：${astFeatures.complexityHint}\n循环 ${astFeatures.loops} · 嵌套 ${astFeatures.maxNestingDepth} · 红旗 ${astFeatures.redFlags.length}${redFlagDetail}`,
+                problemId: problem?.id,
+                agentName: 'AstDiff',
+              });
+            }
             return get().coach.analyzeCode(
               {
                 problem,
@@ -1740,6 +1926,7 @@ export const useStore = create<State>((set, get) => {
                 siblings,
                 runtimeContext,
                 escalation,
+                astFeatures,
               },
               { onChunk, onRetry, signal },
             );
@@ -1849,19 +2036,23 @@ export const useStore = create<State>((set, get) => {
             const m = result as Mistake;
             await storage.saveMistake(m);
             await get().refreshMistakes();
-            // P3 屡败 escalation：累计该题失败次数 + 最近 5 个 verdict
+            // P3 屡败 escalation：累计该题失败次数 + 最近 5 个 verdict（7 天滑窗）
             set((s) => {
-              const prev = s.failureStatsByProblem[problem.id] ?? {
+              const raw = s.failureStatsByProblem[problem.id] ?? {
                 count: 0,
                 recentVerdicts: [],
+                recentTimestamps: [],
               };
+              const prev = pruneFailureStats(raw);
               const v = opts.verdict ?? 'OTHER';
+              const now = Date.now();
               return {
                 failureStatsByProblem: {
                   ...s.failureStatsByProblem,
                   [problem.id]: {
                     count: prev.count + 1,
                     recentVerdicts: [...prev.recentVerdicts, v].slice(-5),
+                    recentTimestamps: [...prev.recentTimestamps, now].slice(-5),
                   },
                 },
               };
@@ -2298,17 +2489,39 @@ export const useStore = create<State>((set, get) => {
             .filter((f) => f.id !== file.id && f.content.trim().length > 0)
             .slice(0, 5)
             .map((f) => ({ name: f.name, language: f.language, content: f.content }));
-          // P3 escalation：同 analyze 入口共用屡败逻辑
-          const failureStats = problem
+          // P3 escalation：同 analyze 入口共用屡败逻辑（7 天滑窗 + 阈值常量）
+          const rawStats2 = problem
             ? get().failureStatsByProblem[problem.id]
             : undefined;
+          const failureStats = rawStats2 ? pruneFailureStats(rawStats2) : undefined;
           const escalation =
-            failureStats && failureStats.count >= 3
+            failureStats && failureStats.count >= FAILURE_STATS_ESCALATE_THRESHOLD
               ? {
                   failureCount: failureStats.count,
                   recentVerdicts: failureStats.recentVerdicts,
                 }
               : undefined;
+          // AST-Light 结构特征（本地纯逻辑 Agent）
+          let astFeatures2: CodeStructFeatures | undefined;
+          try {
+            astFeatures2 = extractFeatures(file.content, language);
+          } catch {
+            astFeatures2 = undefined;
+          }
+          if (astFeatures2 && (astFeatures2.redFlags.length > 0 || astFeatures2.loops > 0)) {
+            const redFlagDetail =
+              astFeatures2.redFlags.length > 0
+                ? '\n- ' + astFeatures2.redFlags.map((r) => r.hint).join('\n- ')
+                : '';
+            get().recordAgentTrace({
+              kind: 'perceive',
+              level: astFeatures2.redFlags.length > 0 ? 'warn' : 'info',
+              title: `AST-Light · 结构信号（本地）`,
+              detail: `复杂度估计：${astFeatures2.complexityHint}\n循环 ${astFeatures2.loops} · 嵌套 ${astFeatures2.maxNestingDepth} · 红旗 ${astFeatures2.redFlags.length}${redFlagDetail}`,
+              problemId: problem?.id,
+              agentName: 'AstDiff',
+            });
+          }
           const result = await get().coach.analyzeCode(
             {
               problem,
@@ -2319,6 +2532,7 @@ export const useStore = create<State>((set, get) => {
               siblings,
               runtimeContext,
               escalation,
+              astFeatures: astFeatures2,
             },
             {
               onChunk: (_delta, accumulated) => {
@@ -2604,6 +2818,234 @@ int main() {
       localStorage.setItem('aicc.dailyReview.dismissed.v1', t);
       set({ dailyReviewDismissedDate: t });
     },
+
+    /**
+     * B 路线核心：学习规划 Agent 的 3 步编排器。
+     *
+     * 这是项目的"创新性 20%"主打：真正的 multi-agent 协作（不是单 LLM 多张脸）。
+     *
+     * 流程：
+     *   [1/3] 学情诊断 Agent (cloud)：分析数据 → 薄弱点
+     *   [2/3] 题目筛选 Agent (本地纯逻辑)：薄弱点 + 题库/错题 → 候选
+     *   [3/3] 计划编排 Agent (cloud)：诊断 + 候选 → 最终今日学习路径
+     *
+     * 每一步都进 AgentTracePanel，让评委能看到"AI 内部协作流程"。
+     */
+    requestDailyPlan: async (opts = {}) => {
+      const st = get();
+      const dateStr = today();
+      // 缓存 hit
+      if (!opts.force && st.dailyPlan?.date === dateStr) return;
+      // 没配 AI 不打扰
+      const needsKey = st.aiConfig.provider !== 'ollama';
+      if (needsKey && !st.aiConfig.apiKey) return;
+      if (st.dailyPlanGenerating) return; // 已经在生成
+      set({ dailyPlanGenerating: true });
+
+      get().recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: '🤖 学习规划 Agent 启动（3 步编排）',
+        detail: '将依次调用：学情诊断 Agent → 题目筛选 Agent → 计划编排 Agent',
+      });
+
+      try {
+        // ── [1/3] 学情诊断 Agent ──
+        const now = Date.now();
+        const DAY = 24 * 60 * 60 * 1000;
+        const recentMistakes = st.mistakes
+          .slice(0, 8)
+          .map((m) => ({
+            title: m.problemTitle,
+            category: m.category,
+            rootCause: m.rootCause,
+            verdict: m.verdict,
+            daysAgo: Math.max(0, Math.floor((now - m.createdAt) / DAY)),
+          }));
+        const weekSessions = st.sessions.filter((s) => now - s.startedAt < 7 * DAY);
+        const totalSubmissions = weekSessions.length;
+        const acRate =
+          totalSubmissions === 0
+            ? 0
+            : weekSessions.filter((s) => s.outcome === 'pass').length / totalSubmissions;
+        const avgSessionMinutes =
+          totalSubmissions === 0
+            ? 0
+            : weekSessions
+                .map((s) => ((s.endedAt ?? s.startedAt) - s.startedAt) / 60000)
+                .reduce((a, b) => a + b, 0) / totalSubmissions;
+        // stuckProblems：复用 escalation 阈值与 7 天滑窗（保持与单题升级语义一致）
+        const stuckProblems = Object.entries(st.failureStatsByProblem)
+          .map(([pid, v]) => [pid, pruneFailureStats(v)] as const)
+          .filter(([, v]) => v.count >= FAILURE_STATS_ESCALATE_THRESHOLD)
+          .map(([pid, v]) => ({
+            title: st.problems.find((p) => p.id === pid)?.title ?? '(未知题)',
+            failureCount: v.count,
+            verdicts: v.recentVerdicts.slice(),
+          }));
+
+        get().recordAgentTrace({
+          kind: 'perceive',
+          level: 'info',
+          title: '[1/3] 学情诊断 Agent · 输入',
+          detail: `近期错题 ${recentMistakes.length} 条 · 7 天 ${totalSubmissions} 次提交（AC率 ${(acRate * 100).toFixed(0)}%）· 屡败题目 ${stuckProblems.length} 条`,
+        });
+
+        const diagnosis = await st.coach.generateLearningDiagnosis({
+          recentMistakes,
+          weekStats: {
+            totalProblems: weekSessions.filter((s) => !!s.problemId).length,
+            totalSubmissions,
+            acRate,
+            avgSessionMinutes,
+          },
+          stuckProblems,
+        });
+        if (!diagnosis) {
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'warn',
+            title: '[1/3] 学情诊断 Agent · 失败',
+            detail: '云端模型未返回有效诊断；编排终止。',
+          });
+          set({ dailyPlanGenerating: false });
+          return;
+        }
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'success',
+          title: `[1/3] 学情诊断 Agent · 输出`,
+          detail: `薄弱：${diagnosis.weakConcepts.join(' / ')}\n强项：${diagnosis.strengths.join(' / ') || '（无）'}\n${diagnosis.todayFocus}`,
+        });
+
+        // ── [2/3] 题目筛选 Agent（本地） ──
+        const candidates = pickPlanCandidates({
+          weakConcepts: diagnosis.weakConcepts,
+          mistakes: st.mistakes,
+          alreadyAdded: st.problems,
+          bank: PROBLEM_BANK,
+          now,
+        });
+        get().recordAgentTrace({
+          kind: 'decide',
+          level: 'info',
+          title: `[2/3] 题目筛选 Agent (本地) · 输出`,
+          detail: `新题候选 ${candidates.newProblems.length} 道 · 复习候选 ${candidates.reviewMistakes.length} 道`,
+        });
+        if (
+          candidates.newProblems.length === 0 &&
+          candidates.reviewMistakes.length === 0
+        ) {
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'warn',
+            title: '[2/3] 题目筛选 Agent · 候选为空',
+            detail: '题库 + 错题本里没有匹配薄弱点的候选；规划终止。',
+          });
+          set({ dailyPlanGenerating: false });
+          return;
+        }
+
+        // ── [3/3] 计划编排 Agent ──
+        const planOut = await st.coach.generatePlanOrchestration({
+          diagnosis,
+          candidates,
+        });
+        if (!planOut) {
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'warn',
+            title: '[3/3] 计划编排 Agent · 失败',
+            detail: '云端模型未返回有效计划；编排终止。',
+          });
+          set({ dailyPlanGenerating: false });
+          return;
+        }
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'success',
+          title: `[3/3] 计划编排 Agent · 输出`,
+          detail: `${planOut.headline}\n共 ${planOut.steps.length} 步 / 估时 ${planOut.estimatedMinutes} 分钟`,
+        });
+
+        const plan: DailyPlan = {
+          id: nanoid(),
+          date: dateStr,
+          generatedAt: now,
+          diagnosis,
+          candidates,
+          plan: planOut,
+          status: 'pending',
+          completedStepIndices: [],
+        };
+        try {
+          localStorage.setItem('aicc.dailyPlan.v1', JSON.stringify(plan));
+        } catch {
+          /* ignore quota */
+        }
+        set({ dailyPlan: plan, dailyPlanGenerating: false });
+        get().recordAgentTrace({
+          kind: 'act',
+          level: 'success',
+          title: '🤖 学习规划 Agent 编排完成',
+          detail: `今日计划已生成，等待用户决策（接受 / 拒绝 / 重新规划）`,
+        });
+      } catch (e: any) {
+        set({ dailyPlanGenerating: false });
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: 'error',
+          title: '学习规划 Agent · 异常',
+          detail: String(e?.message ?? e).slice(0, 240),
+        });
+      }
+    },
+
+    acceptDailyPlan: () =>
+      set((s) => {
+        if (!s.dailyPlan) return s;
+        const next: DailyPlan = {
+          ...s.dailyPlan,
+          status: 'accepted',
+          acceptedAt: Date.now(),
+        };
+        try {
+          localStorage.setItem('aicc.dailyPlan.v1', JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+        return { dailyPlan: next };
+      }),
+
+    declineDailyPlan: () =>
+      set((s) => {
+        if (!s.dailyPlan) return s;
+        const next: DailyPlan = { ...s.dailyPlan, status: 'declined' };
+        try {
+          localStorage.setItem('aicc.dailyPlan.v1', JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+        return { dailyPlan: next };
+      }),
+
+    toggleDailyPlanStep: (stepIndex) =>
+      set((s) => {
+        if (!s.dailyPlan) return s;
+        const cur = s.dailyPlan.completedStepIndices;
+        const has = cur.includes(stepIndex);
+        const nextIdx = has ? cur.filter((i) => i !== stepIndex) : [...cur, stepIndex];
+        const next: DailyPlan = {
+          ...s.dailyPlan,
+          completedStepIndices: nextIdx,
+        };
+        try {
+          localStorage.setItem('aicc.dailyPlan.v1', JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+        return { dailyPlan: next };
+      }),
 
     enqueueOjSubmit: () => {
       const st = get();

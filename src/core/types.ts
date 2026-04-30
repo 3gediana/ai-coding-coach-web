@@ -57,6 +57,58 @@ export interface ProblemExample {
   explanation?: string;
 }
 
+/**
+ * 学习规划 Agent（B 路线 - 自主 multi-Agent 编排）。
+ *
+ * 由 3 个子 Agent 协作产生：
+ *   1. 学情诊断 Agent (cloud)：分析 7 天 sessions / 14 天 mistakes → 薄弱点
+ *   2. 题目筛选 Agent (本地)：按薄弱点 + bank + mistakes → 候选题
+ *   3. 计划编排 Agent (cloud)：综合产出今日学习路径
+ *
+ * 每个子 Agent 的输出都进 AgentTracePanel，对评委可见。
+ * 这是真正的 multi-agent 编排（不是单 LLM 装多张脸）。
+ */
+export interface DailyPlan {
+  id: string;
+  date: string; // YYYY-MM-DD
+  generatedAt: number;
+
+  /** 子 Agent 1 的诊断输出 */
+  diagnosis: {
+    weakConcepts: string[];
+    strengths: string[];
+    todayFocus: string;
+  };
+
+  /** 子 Agent 2 的题目筛选输出（id 引用，UI 渲染时再 join） */
+  candidates: {
+    newProblems: Array<{ bankId: string; reason: string }>;
+    reviewMistakes: Array<{ mistakeId: string; reason: string }>;
+  };
+
+  /** 子 Agent 3 的最终计划 */
+  plan: {
+    headline: string;
+    estimatedMinutes: number;
+    steps: Array<{
+      kind: 'new-problem' | 'review-mistake' | 'concept-recall';
+      title: string;
+      bankId?: string;
+      mistakeId?: string;
+      problemId?: string;
+      reason: string;
+      estimatedMinutes: number;
+    }>;
+    encouragement: string;
+  };
+
+  /** 用户决策状态 */
+  status: 'pending' | 'accepted' | 'declined';
+  acceptedAt?: number;
+  /** 完成进度（用户勾选的 step index） */
+  completedStepIndices: number[];
+}
+
 /** AI 输出的代码诊断（一条问题） */
 export type Severity = 'error' | 'warning' | 'info' | 'hint';
 

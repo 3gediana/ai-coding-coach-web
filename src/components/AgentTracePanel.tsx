@@ -1,16 +1,30 @@
 /**
- * Agent 行动日志面板 — 让评委/学生一眼看到 Coach 在「自己做事」。
+ * Agent 行动面板 — 让评委/学生一眼看到 Coach 在「自己做事」。
  *
- * 嵌入版：放在 FeedbackPanel 底部固定区域里，外部控制高度。
- *  - 4 类标签：感知 / 决策 / 行动 / 反馈，颜色区分
- *  - 单条点击展开详情
- *  - level=error 强制 bad 边框
+ * 三个视图切换：
+ *   - List   时间线（看动作顺序）
+ *   - Graph  拓扑（看 Agent 怎么协作 + 实时高亮 active 节点）
+ *   - Stats  仪表板（看每个 Agent 的调用次数 / 延迟 / token / 错误数）
  */
-import { Activity, Eye, Lightbulb, Hand, CheckCircle2, Trash2 } from 'lucide-react';
+import {
+  Activity,
+  Eye,
+  Lightbulb,
+  Hand,
+  CheckCircle2,
+  Trash2,
+  List,
+  Network,
+  BarChart3,
+} from 'lucide-react';
 import { useState } from 'react';
 import { useStore } from '../lib/store';
 import type { AgentTraceEvent, AgentTraceKind, AgentTraceLevel } from '../lib/store';
 import { cn } from '../lib/cn';
+import { AgentGraph } from './AgentGraph';
+import { AgentDashboard } from './AgentDashboard';
+
+type View = 'list' | 'graph' | 'stats';
 
 const KIND_META: Record<
   AgentTraceKind,
@@ -39,48 +53,84 @@ export function AgentTracePanel() {
   const trace = useStore((s) => s.agentTrace);
   const clear = useStore((s) => s.clearAgentTrace);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [view, setView] = useState<View>('list');
 
   return (
     <div className="flex flex-col min-h-0 h-full bg-bg-elev/40">
       {/* Header */}
-      <div className="h-7 px-3 flex items-center gap-2 border-b border-line/60 shrink-0 bg-bg-elev">
+      <div className="h-7 px-2 flex items-center gap-1.5 border-b border-line/60 shrink-0 bg-bg-elev">
         <Activity size={11} className="text-accent" />
-        <span className="text-[11px] font-semibold text-accent-glow">Agent 行动</span>
-        <span className="text-[10px] text-ink-mute">{trace.length} 条</span>
-        <span className="ml-auto text-[10px] text-ink-mute">
-          感知 · 决策 · 行动 · 反馈
-        </span>
+        <span className="text-[11px] font-semibold text-accent-glow">Agent</span>
+        <span className="text-[10px] text-ink-mute">{trace.length}</span>
+        {/* 视图切换 */}
+        <div className="ml-auto flex items-center bg-bg-elev2 rounded border border-line/60 p-0.5">
+          <ViewBtn icon={List} active={view === 'list'} onClick={() => setView('list')} title="时间线" />
+          <ViewBtn icon={Network} active={view === 'graph'} onClick={() => setView('graph')} title="协作拓扑" />
+          <ViewBtn icon={BarChart3} active={view === 'stats'} onClick={() => setView('stats')} title="仪表板" />
+        </div>
         {trace.length > 0 && (
           <button
             onClick={clear}
-            className="text-ink-mute hover:text-bad transition flex items-center text-[10px]"
+            className="text-ink-mute hover:text-bad transition flex items-center text-[10px] ml-1"
             title="清空 Agent 日志"
           >
             <Trash2 size={10} />
           </button>
         )}
       </div>
-      {/* List */}
-      <div className="flex-1 overflow-y-auto min-h-0">
-        {trace.length === 0 ? (
-          <div className="h-full flex items-center justify-center text-[11px] text-ink-mute py-6 px-4 text-center leading-relaxed">
-            还没有行动。<br />
-            激活一道题、点「问教练」或者跑一次代码，Coach 的每一步决策都会出现在这里。
-          </div>
-        ) : (
-          trace.map((ev) => (
-            <TraceItem
-              key={ev.id}
-              ev={ev}
-              expanded={expandedId === ev.id}
-              onToggle={() =>
-                setExpandedId((id) => (id === ev.id ? null : ev.id))
-              }
-            />
-          ))
-        )}
-      </div>
+      {/* Body */}
+      {view === 'list' && (
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {trace.length === 0 ? (
+            <div className="h-full flex items-center justify-center text-[11px] text-ink-mute py-6 px-4 text-center leading-relaxed">
+              还没有行动。<br />
+              激活一道题、点「问教练」或者跑一次代码，Coach 的每一步决策都会出现在这里。
+            </div>
+          ) : (
+            trace.map((ev) => (
+              <TraceItem
+                key={ev.id}
+                ev={ev}
+                expanded={expandedId === ev.id}
+                onToggle={() =>
+                  setExpandedId((id) => (id === ev.id ? null : ev.id))
+                }
+              />
+            ))
+          )}
+        </div>
+      )}
+      {view === 'graph' && <AgentGraph />}
+      {view === 'stats' && <AgentDashboard />}
     </div>
+  );
+}
+
+function ViewBtn({
+  icon: Icon,
+  active,
+  onClick,
+  title,
+}: {
+  icon: typeof List;
+  active: boolean;
+  onClick: () => void;
+  title: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={cn(
+        'px-1.5 py-0.5 rounded transition flex items-center',
+        active
+          ? 'bg-accent/20 text-accent-glow'
+          : 'text-ink-mute hover:text-ink',
+      )}
+    >
+      <Icon size={10} />
+    </button>
   );
 }
 

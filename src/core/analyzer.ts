@@ -9,10 +9,14 @@ import {
   buildAnalyzeCodePrompt,
   buildAskQuestionPrompt,
   buildDiagnoseRuntimeErrorPrompt,
+  buildDiagnosisAgentPrompt,
   buildExplainPastePrompt,
+  buildFeynmanEvaluatorPrompt,
+  buildFeynmanStudentPrompt,
   buildHackCasePrompt,
   buildParseProblemPrompt,
   buildPlainExplanationPrompt,
+  buildPlanOrchestrationPrompt,
   buildProblemOverviewPrompt,
   buildSanityCheckConstraintsPrompt,
   buildSniffIntentPrompt,
@@ -20,6 +24,8 @@ import {
   buildSummarizePrompt,
 } from './ai/prompts';
 import { pickRoute, type RouteHints, type RouteDecision, type RouterHints } from './ai/router';
+import { isEffectivelyOffline } from '../lib/offlineMode';
+import { formatFeaturesForPrompt } from './astLite';
 import { buildCoachPrompt } from './coach/prompts';
 import type { CoachRoute } from './coach/types';
 import type {
@@ -73,7 +79,15 @@ export class Coach {
    * 把决策对象返回方便上层把 reason 透传给 UI。
    */
   private pick(hints: RouteHints): { client: AIClient; decision: RouteDecision } {
-    const decision = pickRoute(hints, !!this.aiFast, this.routerHints);
+    let decision = pickRoute(hints, !!this.aiFast, this.routerHints);
+    // 离线模式：如果已经在 fastLane 路径上则保持；否则若有 fastLane 则强制 fastLane；否则 keep cloud（会失败但 UI 会兜底）
+    if (isEffectivelyOffline() && !decision.useFast && this.aiFast) {
+      decision = {
+        useFast: true,
+        reason: '离线模式：本地 FastLane 兜底',
+        label: '⚡ 离线本地',
+      };
+    }
     const client = decision.useFast ? this.aiFast! : this.ai;
     // dev 日志：能在 console 看到每次路由决策
     if (typeof console !== 'undefined' && console.debug) {
@@ -132,15 +146,51 @@ export class Coach {
     examples?: Array<{ input: string; output: string }>;
   }): Promise<string> {
     const { system, user } = buildPlainExplanationPrompt(args);
-    const text = await this.ai.chat({
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      maxTokens: 600,
-      temperature: 0.4,
-    });
-    return text.trim();
+    const callOnceWith = async (client: AIClient) =>
+      (
+        await client.chat({
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          maxTokens: 600,
+          temperature: 0.4,
+        })
+      ).trim();
+    // 主云端：重试至多 2 次（共 3 次尝试）+ 退避
+    for (let i = 0; i < 3; i++) {
+      try {
+        const text = await callOnceWith(this.ai);
+        if (text) return text;
+      } catch (e) {
+        if (typeof console !== 'undefined') {
+          console.debug(
+            `[Coach.generatePlainExplanation] cloud attempt ${i + 1} threw: ${(e as any)?.message?.slice?.(0, 80)}`,
+          );
+        }
+      }
+      if (typeof console !== 'undefined') {
+        console.debug(`[Coach.generatePlainExplanation] cloud attempt ${i + 1} empty, retrying`);
+      }
+      if (i < 2) await new Promise((r) => setTimeout(r, 300 * (i + 1)));
+    }
+    // 主云端连续失败 → fastLane 本地兜底（如果用户启用了 fastLane）
+    if (this.aiFast) {
+      if (typeof console !== 'undefined') {
+        console.debug('[Coach.generatePlainExplanation] cloud failed 3 times, falling back to fastLane');
+      }
+      try {
+        const text = await callOnceWith(this.aiFast);
+        if (text) return text;
+      } catch (e) {
+        if (typeof console !== 'undefined') {
+          console.debug(
+            `[Coach.generatePlainExplanation] fastLane fallback also failed: ${(e as any)?.message?.slice?.(0, 80)}`,
+          );
+        }
+      }
+    }
+    return '';
   }
 
   /**
@@ -161,11 +211,18 @@ export class Coach {
     signal?: AbortSignal;
   }): Promise<{ headline: string; notes: string[] } | null> {
     const { system, user } = buildProblemOverviewPrompt(args);
-    try {
-      const data = await this.ai.chatJson<{
-        headline?: string;
-        notes?: unknown;
-      }>({
+    type OverviewRaw = {
+      headline?: string;
+      title?: string;
+      brief?: string;
+      summary?: string;
+      notes?: unknown;
+      keyNotes?: unknown;
+      points?: unknown;
+      tips?: unknown;
+    };
+    const callWith = (client: AIClient, isCloud: boolean) =>
+      client.chatJson<OverviewRaw>({
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -173,11 +230,47 @@ export class Coach {
         maxTokens: 500,
         temperature: 0.3,
         signal: args.signal,
+        // 云端只 1 次（失败立即降级 fastLane，避免 retry 吃光时间）；
+        // fastLane 本地稳定，仍允许默认 3 次 retry 增加成功率
+        jsonAttempts: isCloud ? 1 : 3,
       });
-      const headline = (data.headline ?? '').toString().trim();
+    let data: OverviewRaw;
+    try {
+      data = await callWith(this.ai, true);
+    } catch (e) {
+      // 云端挂了（429/529/超时） → fastLane 本地兜底（如果用户启用了 fastLane）
+      if (this.aiFast) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug(
+            `[Coach.generateProblemOverview] cloud failed (${(e as any)?.message?.slice?.(0, 80)}), trying fastLane`,
+          );
+        }
+        try {
+          data = await callWith(this.aiFast, false);
+        } catch (e2) {
+          if (typeof console !== 'undefined' && console.debug) {
+            console.debug('[Coach.generateProblemOverview] fastLane also failed', e2);
+          }
+          return null;
+        }
+      } else {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach.generateProblemOverview] failed', e);
+        }
+        return null;
+      }
+    }
+    try {
+      // 小模型偶发用同义字段名，全部接受（headline / title / brief / summary; notes / keyNotes / points / tips）
+      const headline = (
+        data.headline ?? data.title ?? data.brief ?? data.summary ?? ''
+      )
+        .toString()
+        .trim();
       if (!headline) return null;
-      const notes = Array.isArray(data.notes)
-        ? data.notes
+      const rawNotes = data.notes ?? data.keyNotes ?? data.points ?? data.tips;
+      const notes = Array.isArray(rawNotes)
+        ? rawNotes
             .filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
             .map((n) => n.trim().slice(0, 80))
             .slice(0, 3)
@@ -188,7 +281,7 @@ export class Coach {
       };
     } catch (e) {
       if (typeof console !== 'undefined' && console.debug) {
-        console.debug('[Coach.generateProblemOverview] failed', e);
+        console.debug('[Coach.generateProblemOverview] parse failed', e);
       }
       return null;
     }
@@ -211,12 +304,16 @@ export class Coach {
     followUps: string[];
   } | null> {
     const { system, user } = buildAcReviewPrompt(args);
-    try {
-      const data = await this.ai.chatJson<{
-        passingPattern?: string;
-        betterApproach?: unknown;
-        followUps?: unknown;
-      }>({
+    type AcReviewRaw = {
+      passingPattern?: string;
+      pattern?: string;
+      summary?: string;
+      approach?: string;
+      betterApproach?: unknown;
+      followUps?: unknown;
+    };
+    const callWith = (client: AIClient) =>
+      client.chatJson<AcReviewRaw>({
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -225,7 +322,39 @@ export class Coach {
         temperature: 0.3,
         signal: args.signal,
       });
-      const passingPattern = (data.passingPattern ?? '').toString().trim();
+    let data: AcReviewRaw;
+    try {
+      data = await callWith(this.ai);
+    } catch (e) {
+      // 主云端连续失败 → fastLane 本地兜底（如果用户启用了 fastLane）
+      if (this.aiFast) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug(
+            `[Coach.generateAcReview] cloud failed (${(e as any)?.message?.slice?.(0, 80)}), trying fastLane`,
+          );
+        }
+        try {
+          data = await callWith(this.aiFast);
+        } catch (e2) {
+          if (typeof console !== 'undefined' && console.debug) {
+            console.debug('[Coach.generateAcReview] fastLane also failed', e2);
+          }
+          return null;
+        }
+      } else {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach.generateAcReview] failed', e);
+        }
+        return null;
+      }
+    }
+    try {
+      // LLM 偶发用同义字段名（pattern / summary / approach），全部接受
+      const passingPattern = (
+        data.passingPattern ?? data.pattern ?? data.summary ?? data.approach ?? ''
+      )
+        .toString()
+        .trim();
       if (!passingPattern) return null;
       // betterApproach 可以是 null / undefined / 完整对象
       let betterApproach:
@@ -263,6 +392,355 @@ export class Coach {
     }
   }
 
+  /**
+   * B 路线 — 学习规划 Agent 子 Agent 1：学情诊断（cloud）。
+   *
+   * 输入近期学习数据（mistakes / sessions / failure stats）→ 输出薄弱点诊断。
+   * 失败返回 null 让上层降级（也可以用规则兜底，但保守起见返回 null）。
+   */
+  async generateLearningDiagnosis(args: {
+    recentMistakes: Array<{
+      title: string;
+      category: string;
+      rootCause?: string;
+      verdict?: string;
+      daysAgo: number;
+    }>;
+    weekStats: {
+      totalProblems: number;
+      totalSubmissions: number;
+      acRate: number;
+      avgSessionMinutes: number;
+    };
+    stuckProblems: Array<{ title: string; failureCount: number; verdicts: string[] }>;
+    signal?: AbortSignal;
+  }): Promise<{
+    weakConcepts: string[];
+    strengths: string[];
+    todayFocus: string;
+  } | null> {
+    const { system, user } = buildDiagnosisAgentPrompt(args);
+    try {
+      // 小模型同义字段兜底（weak / weaknesses / weakAreas; strong / strongAreas; focus / today）
+      const data = await this.ai.chatJson<{
+        weakConcepts?: unknown;
+        weak?: unknown;
+        weaknesses?: unknown;
+        weakAreas?: unknown;
+        strengths?: unknown;
+        strong?: unknown;
+        strongAreas?: unknown;
+        todayFocus?: string;
+        focus?: string;
+        today?: string;
+      }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 400,
+        temperature: 0.3,
+        signal: args.signal,
+      });
+      const cleanList = (v: unknown, max: number): string[] =>
+        Array.isArray(v)
+          ? v
+              .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+              .map((x) => x.trim().slice(0, 30))
+              .slice(0, max)
+          : [];
+      const weakRaw = data.weakConcepts ?? data.weak ?? data.weaknesses ?? data.weakAreas;
+      const weakConcepts = cleanList(weakRaw, 3);
+      if (weakConcepts.length === 0) return null;
+      const strongRaw = data.strengths ?? data.strong ?? data.strongAreas;
+      const strengths = cleanList(strongRaw, 2);
+      const todayFocus = (data.todayFocus ?? data.focus ?? data.today ?? '')
+        .toString()
+        .trim()
+        .slice(0, 40);
+      if (!todayFocus) return null;
+      return { weakConcepts, strengths, todayFocus };
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.generateLearningDiagnosis] failed', e);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * B 路线 — 学习规划 Agent 子 Agent 3：计划编排（cloud）。
+   *
+   * 输入诊断结果 + 候选题目 → 输出今日学习路径。
+   * 失败返回 null。
+   */
+  async generatePlanOrchestration(args: {
+    diagnosis: { weakConcepts: string[]; strengths: string[]; todayFocus: string };
+    candidates: {
+      newProblems: Array<{
+        bankId: string;
+        title: string;
+        difficulty?: string;
+        tags?: string[];
+        reason: string;
+      }>;
+      reviewMistakes: Array<{
+        mistakeId: string;
+        problemTitle: string;
+        category: string;
+        reason: string;
+      }>;
+    };
+    signal?: AbortSignal;
+  }): Promise<{
+    headline: string;
+    estimatedMinutes: number;
+    steps: Array<{
+      kind: 'new-problem' | 'review-mistake' | 'concept-recall';
+      title: string;
+      bankId?: string;
+      mistakeId?: string;
+      problemId?: string;
+      reason: string;
+      estimatedMinutes: number;
+    }>;
+    encouragement: string;
+  } | null> {
+    const { system, user } = buildPlanOrchestrationPrompt(args);
+    try {
+      // 同义字段兜底：headline / title; estimatedMinutes / minutes / totalMinutes;
+      // steps / plan / tasks; encouragement / motto / cheer
+      const data = await this.ai.chatJson<{
+        headline?: string;
+        title?: string;
+        estimatedMinutes?: number;
+        minutes?: number;
+        totalMinutes?: number;
+        steps?: unknown;
+        plan?: unknown;
+        tasks?: unknown;
+        encouragement?: string;
+        motto?: string;
+        cheer?: string;
+      }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 800,
+        temperature: 0.3,
+        signal: args.signal,
+      });
+      const headline = (data.headline ?? data.title ?? '').toString().trim().slice(0, 50);
+      if (!headline) return null;
+      const minutesRaw = data.estimatedMinutes ?? data.minutes ?? data.totalMinutes;
+      const estimatedMinutes =
+        typeof minutesRaw === 'number' && minutesRaw > 0
+          ? Math.min(120, Math.round(minutesRaw))
+          : 30;
+      // 校验 steps：只接受合法 kind + 引用合法的 bankId/mistakeId
+      const validBankIds = new Set(args.candidates.newProblems.map((p) => p.bankId));
+      const validMistakeIds = new Set(args.candidates.reviewMistakes.map((m) => m.mistakeId));
+      const stepsRaw = data.steps ?? data.plan ?? data.tasks;
+      const rawSteps: unknown[] = Array.isArray(stepsRaw) ? stepsRaw : [];
+      const steps = rawSteps
+        .map((rs) => {
+          if (!rs || typeof rs !== 'object') return null;
+          const r = rs as Record<string, unknown>;
+          // 同义字段：kind / type / action; 同义值：'newProblem' → 'new-problem' 等
+          const rawKind = ((r.kind ?? r.type ?? r.action ?? '') as string).toString();
+          const kind = rawKind
+            .replace(/([a-z])([A-Z])/g, '$1-$2')
+            .replace(/_/g, '-')
+            .toLowerCase();
+          const title = ((r.title ?? r.name ?? '') as string).toString().trim().slice(0, 40);
+          const reason = ((r.reason ?? r.why ?? '') as string).toString().trim().slice(0, 80);
+          const minutesRawStep = r.estimatedMinutes ?? r.minutes ?? r.duration;
+          const est =
+            typeof minutesRawStep === 'number' && minutesRawStep > 0
+              ? Math.min(60, Math.round(minutesRawStep))
+              : 10;
+          if (kind === 'new-problem') {
+            const bankId = (r.bankId ?? '').toString().trim();
+            if (!bankId || !validBankIds.has(bankId)) return null;
+            return {
+              kind: 'new-problem' as const,
+              title: title || '新题练习',
+              bankId,
+              reason,
+              estimatedMinutes: est,
+            };
+          }
+          if (kind === 'review-mistake') {
+            const mistakeId = (r.mistakeId ?? '').toString().trim();
+            if (!mistakeId || !validMistakeIds.has(mistakeId)) return null;
+            return {
+              kind: 'review-mistake' as const,
+              title: title || '复习错题',
+              mistakeId,
+              reason,
+              estimatedMinutes: est,
+            };
+          }
+          if (kind === 'concept-recall') {
+            return {
+              kind: 'concept-recall' as const,
+              title: title || '概念回顾',
+              reason,
+              estimatedMinutes: est,
+            };
+          }
+          return null;
+        })
+        .filter((s): s is NonNullable<typeof s> => s !== null)
+        .slice(0, 5);
+      if (steps.length === 0) return null;
+      const encouragement = (
+        (data.encouragement ?? data.motto ?? data.cheer ?? '') as string
+      )
+        .toString()
+        .trim()
+        .slice(0, 60);
+      return {
+        headline,
+        estimatedMinutes,
+        steps,
+        encouragement: encouragement || '今天稳一点，把昨天没解决的搞通。',
+      };
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.generatePlanOrchestration] failed', e);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * 费曼模式 - "AI 学生" Agent：装作第一次听这道题，提澄清问题。
+   *
+   * 总是走云端（cloud）：装菜鸟提问需要较强的 reasoning 能力（要看出讲解者的逻辑漏洞）。
+   * 失败返回 null，UI 应显示"AI 学生没听懂，再说一遍？"之类的兜底。
+   */
+  async generateFeynmanStudentReply(args: {
+    problem: { title: string; statement: string };
+    conversation: Array<{ role: 'user' | 'student'; text: string }>;
+    userTurn: string;
+    turnIndex: number;
+    signal?: AbortSignal;
+  }): Promise<{
+    studentReply: string;
+    questions: string[];
+    confusion?: string;
+  } | null> {
+    const { system, user } = buildFeynmanStudentPrompt(args);
+    try {
+      const data = await this.ai.chatJson<{
+        studentReply?: string;
+        questions?: unknown;
+        confusion?: string;
+      }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 500,
+        temperature: 0.6, // 高一点让 AI 学生显得"自然"
+        signal: args.signal,
+      });
+      const studentReply = (data.studentReply ?? '').toString().trim();
+      if (!studentReply) return null;
+      const questions = Array.isArray(data.questions)
+        ? data.questions
+            .filter((q): q is string => typeof q === 'string' && q.trim().length > 0)
+            .map((q) => q.trim().slice(0, 120))
+            .slice(0, 3)
+        : [];
+      const confusion = data.confusion?.toString().trim().slice(0, 60) || undefined;
+      return {
+        studentReply: studentReply.slice(0, 200),
+        questions,
+        confusion,
+      };
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.generateFeynmanStudentReply] failed', e);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * 费曼模式 - "AI 评委" Agent：根据多轮对话评估讲解者掌握程度。
+   */
+  async generateFeynmanEvaluation(args: {
+    problem: { title: string; statement: string };
+    conversation: Array<{ role: 'user' | 'student'; text: string }>;
+    signal?: AbortSignal;
+  }): Promise<{
+    scores: { clarity: number; logic: number; accuracy: number };
+    strengths: string[];
+    weaknesses: string[];
+    suggestions: string[];
+    verdict: 'mastered' | 'partial' | 'struggling';
+    summary: string;
+  } | null> {
+    const { system, user } = buildFeynmanEvaluatorPrompt(args);
+    try {
+      const data = await this.ai.chatJson<{
+        scores?: { clarity?: number; logic?: number; accuracy?: number };
+        strengths?: unknown;
+        weaknesses?: unknown;
+        suggestions?: unknown;
+        verdict?: string;
+        summary?: string;
+      }>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 1000,
+        temperature: 0.3,
+        signal: args.signal,
+      });
+      const clamp = (v: unknown) => {
+        const n = typeof v === 'number' ? v : 0;
+        return Math.max(0, Math.min(10, Math.round(n)));
+      };
+      const scores = {
+        clarity: clamp(data.scores?.clarity),
+        logic: clamp(data.scores?.logic),
+        accuracy: clamp(data.scores?.accuracy),
+      };
+      const toStrArr = (v: unknown, max: number, lim: number) =>
+        Array.isArray(v)
+          ? v
+              .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+              .map((s) => s.trim().slice(0, lim))
+              .slice(0, max)
+          : [];
+      const verdictRaw = (data.verdict ?? '').toString().toLowerCase();
+      const verdict: 'mastered' | 'partial' | 'struggling' =
+        verdictRaw === 'mastered' || verdictRaw === 'partial' || verdictRaw === 'struggling'
+          ? verdictRaw
+          : 'partial';
+      const summary = (data.summary ?? '').toString().trim().slice(0, 150);
+      if (!summary) return null;
+      return {
+        scores,
+        strengths: toStrArr(data.strengths, 4, 100),
+        weaknesses: toStrArr(data.weaknesses, 4, 100),
+        suggestions: toStrArr(data.suggestions, 3, 100),
+        verdict,
+        summary,
+      };
+    } catch (e) {
+      if (typeof console !== 'undefined' && console.debug) {
+        console.debug('[Coach.generateFeynmanEvaluation] failed', e);
+      }
+      return null;
+    }
+  }
+
   /** 分析当前代码（流式） */
   async analyzeCode(
     args: {
@@ -282,15 +760,27 @@ export class Coach {
         durationMs?: number;
         timestamp?: number;
       };
-      /** P3 屡败 escalation：同题非-AC ≥3 次时上层注入；prompt 切到「换思路」模式 */
+      /**
+       * P3 屡败 escalation：上层注入；prompt 切到「换思路」模式。
+       * 触发由 store.FAILURE_STATS_ESCALATE_THRESHOLD 控制（默认同题 7 天内非-AC ≥2 次即触发）。
+       */
       escalation?: {
         failureCount: number;
         recentVerdicts: string[];
       };
+      /**
+       * AST-Light 启发式结构特征（本地纯逻辑 Agent 输出）。
+       * 喂给 prompt 让 LLM 看到客观的结构信号，避免空想出"O(n^2)"这种结论。
+       */
+      astFeatures?: import('./astLite').CodeStructFeatures;
     },
     opts: StreamOpts = {},
   ): Promise<AnalysisResult> {
-    const { system, user } = buildAnalyzeCodePrompt(args);
+    // AST-Light 结构特征 → prompt 字符串（仅当上层提供时注入）
+    const astFeatureBlock = args.astFeatures
+      ? formatFeaturesForPrompt(args.astFeatures)
+      : undefined;
+    const { system, user } = buildAnalyzeCodePrompt({ ...args, astFeatureBlock });
     // 路由：根据代码长度 + 题目复杂度选 fast / main
     const { client, decision } = this.pick({
       taskKind: 'analyze',
@@ -448,18 +938,67 @@ export class Coach {
     opts: StreamOpts = {},
   ): Promise<Mistake | ProblemSummary> {
     const { system, user } = buildSummarizePrompt(args);
-    const data = await this.ai.chatJsonStream<any>({
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      maxTokens: 6000,
-      ...opts,
-    });
+    // 主路径走云端流式（前端 UI 需要 onChunk 实时显示）
+    let data: any;
+    try {
+      data = await this.ai.chatJsonStream<any>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 6000,
+        ...opts,
+        // 云端只 1 次：失败立即 fallback 本地，避免 retry 吃满 timeout
+        jsonAttempts: 1,
+      });
+    } catch (e) {
+      // 云端挂了（429/529/SSE 中断/超时）→ fastLane 本地兜底（非流式即可，错题总结对实时性要求低）
+      if (this.aiFast) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug(
+            `[Coach.summarizeMistake] cloud failed (${(e as any)?.message?.slice?.(0, 80)}), trying fastLane`,
+          );
+        }
+        data = await this.aiFast.chatJson<any>({
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          maxTokens: 4000, // 本地稍降，避免 4B 模型 6000 输出更不稳
+          temperature: 0.3,
+          signal: opts.signal,
+        });
+      } else {
+        throw e;
+      }
+    }
+
+    // 小模型偶发用同义字段名 → 全部接受兜底
+    // rootCause: cause / reason / why
+    // category:  type / kind / tag
+    // knowledgePoints: knowledge / topics / tags / points
+    // reviewTips: tips / suggestions / advice
+    // hackCase:   counterCase / counterexample
+    // correctSketch: sketch / fix / correctIdea
+    // techniques: skills / methods
+    // complexity: timeComplexity / bigO
+    // extensions: variants / followUps / similar
+    // summary:    overview / brief
+    const dictGet = (...keys: string[]): unknown => {
+      for (const k of keys) {
+        const v = data?.[k];
+        if (v !== undefined && v !== null && v !== '') return v;
+      }
+      return undefined;
+    };
 
     if (args.isMistake) {
-      const hackCase = (data.hackCase as string | undefined)?.trim();
-      const reviewTips: string[] = [...(data.reviewTips ?? [])];
+      const hackCaseRaw = dictGet('hackCase', 'counterCase', 'counterexample');
+      const hackCase = typeof hackCaseRaw === 'string' ? hackCaseRaw.trim() : '';
+      const tipsRaw = dictGet('reviewTips', 'tips', 'suggestions', 'advice');
+      const reviewTips: string[] = Array.isArray(tipsRaw)
+        ? (tipsRaw as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
       if (hackCase) reviewTips.unshift(`Hack case：${hackCase}`);
       // 验证 areaCodes：只保留在 taxonomy 里有效的 code
       const rawAreas: unknown = data.areaCodes;
@@ -469,17 +1008,23 @@ export class Coach {
             .filter((c) => /^Y[1-4]\.[a-z]+\.[a-z_]+$/.test(c))
             .slice(0, 2)
         : [];
+      const knowledgePointsRaw = dictGet('knowledgePoints', 'knowledge', 'topics', 'tags', 'points');
+      const knowledgePoints = Array.isArray(knowledgePointsRaw)
+        ? (knowledgePointsRaw as unknown[]).filter((x): x is string => typeof x === 'string')
+        : [];
+      const correctSketchRaw = dictGet('correctSketch', 'sketch', 'fix', 'correctIdea');
       return {
         id: shortId(),
         problemId: args.problem.id,
         problemTitle: args.problem.title,
         language: args.language,
         wrongCode: args.code,
-        rootCause: data.rootCause ?? '',
-        category: data.category ?? '其他',
-        knowledgePoints: data.knowledgePoints ?? [],
+        rootCause: (dictGet('rootCause', 'cause', 'reason', 'why') as string | undefined) ?? '',
+        category: (dictGet('category', 'type', 'kind', 'tag') as string | undefined) ?? '其他',
+        knowledgePoints,
         reviewTips,
-        correctSketch: data.correctSketch,
+        correctSketch:
+          typeof correctSketchRaw === 'string' ? correctSketchRaw : undefined,
         verdict: args.verdict,
         userNote: args.userNote,
         areaCodes,
@@ -487,12 +1032,16 @@ export class Coach {
         reviewCount: 0,
       } as Mistake;
     }
+    const knowledgePointsRaw = dictGet('knowledgePoints', 'knowledge', 'topics', 'tags', 'points');
+    const techniquesRaw = dictGet('techniques', 'skills', 'methods');
+    const extensionsRaw = dictGet('extensions', 'variants', 'followUps', 'similar');
     return {
-      knowledgePoints: data.knowledgePoints ?? [],
-      techniques: data.techniques ?? [],
-      complexity: data.complexity ?? '',
-      extensions: data.extensions ?? [],
-      summary: data.summary ?? '',
+      knowledgePoints: Array.isArray(knowledgePointsRaw) ? knowledgePointsRaw : [],
+      techniques: Array.isArray(techniquesRaw) ? techniquesRaw : [],
+      complexity:
+        (dictGet('complexity', 'timeComplexity', 'bigO') as string | undefined) ?? '',
+      extensions: Array.isArray(extensionsRaw) ? extensionsRaw : [],
+      summary: (dictGet('summary', 'overview', 'brief') as string | undefined) ?? '',
     } as ProblemSummary;
   }
 

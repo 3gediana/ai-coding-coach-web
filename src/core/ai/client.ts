@@ -27,6 +27,19 @@ export interface ChatRequest {
   onRetry?: (attempt: number, delayMs: number, reason: string) => void;
   /** 流式收到一段增量文本时回调（仅 chatStream / *Stream 系列触发） */
   onChunk?: (delta: string, accumulated: string) => void;
+  /**
+   * 强制结构化输出。
+   * - 'json'：Ollama 原生走 `format: 'json'`，OpenAI 兼容路径暂不启用以避免误伤不支持 response_format 的云 provider。
+   * - 不传或 'text'：保持原 free-form 行为。
+   * chatJson / chatJsonStream 会默认设为 'json'，调用方一般不用关心。
+   */
+  responseFormat?: 'json' | 'text';
+  /**
+   * chatJson / chatJsonStream 的总 attempt 次数（含首次）。默认 3。
+   * 当上层有 fallback 链（比如云端→fastLane）时，建议传 1：
+   * 让单次失败立即抛给上层、不浪费时间在内层 retry，避免吃光 timeout。
+   */
+  jsonAttempts?: number;
 }
 
 export class AIError extends Error {
@@ -141,25 +154,90 @@ export class AIClient {
     return acc;
   }
 
-  /** 流式收完 + JSON 宽松解析 */
+  /**
+   * 流式收完 + JSON 宽松解析。
+   * 云模型偶发空响应 / 严重截断时自动 retry 1 次（仅 chatJson 层做，不影响 chatStream UX）。
+   */
   async chatJsonStream<T = unknown>(req: ChatRequest): Promise<T> {
-    let acc = '';
-    for await (const _ of this.chatStream({
-      ...req,
-      onChunk: (delta, accumulated) => {
-        acc = accumulated;
-        req.onChunk?.(delta, accumulated);
-      },
-    })) {
-      // 已通过 onChunk 累积
+    // 默认让本地 Ollama 走 format: 'json' 强制结构化（小模型字段漂移率显著下降）
+    const reqWithFormat: ChatRequest = { responseFormat: 'json', ...req };
+    const runOnce = async (): Promise<{ ok: true; value: T } | { ok: false; acc: string; err: unknown }> => {
+      let acc = '';
+      try {
+        for await (const _ of this.chatStream({
+          ...reqWithFormat,
+          onChunk: (delta, accumulated) => {
+            acc = accumulated;
+            req.onChunk?.(delta, accumulated);
+          },
+        })) {
+          // 已通过 onChunk 累积
+        }
+      } catch (e) {
+        return { ok: false, acc, err: e };
+      }
+      // 空输出：直接 retry（不抛错，让上层决定）
+      if (!acc.trim()) {
+        return { ok: false, acc, err: new Error('empty stream response') };
+      }
+      try {
+        return { ok: true, value: parseJsonLoose<T>(acc) };
+      } catch (e) {
+        return { ok: false, acc, err: e };
+      }
+    };
+    // 云端偶发空响应/截断 → 重试至多 (attempts-1) 次与 300/800ms 退避；上层有 fallback 时传 1 节省 timeout
+    const attempts = Math.max(1, req.jsonAttempts ?? 3);
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+      const r = await runOnce();
+      if (r.ok) return r.value;
+      lastErr = r.err;
+      if (typeof console !== 'undefined') {
+        console.debug(
+          `[AIClient.chatJsonStream] attempt ${i + 1}/${attempts} failed: ${(r.err as any)?.message?.slice?.(0, 80)}; ${i < attempts - 1 ? 'retrying' : 'giving up'}`,
+        );
+      }
+      if (i < attempts - 1) await new Promise((res) => setTimeout(res, 300 * (i + 1) + 200));
     }
-    return parseJsonLoose<T>(acc);
+    throw lastErr;
   }
 
-  /** 非流式 + JSON 宽松解析 */
+  /**
+   * 非流式 + JSON 宽松解析。
+   * 同样在 JSON 解析失败 / 空响应时自动 retry 1 次。
+   */
   async chatJson<T = unknown>(req: ChatRequest): Promise<T> {
-    const text = await this.chat(req);
-    return parseJsonLoose<T>(text);
+    const reqWithFormat: ChatRequest = { responseFormat: 'json', ...req };
+    const runOnce = async (): Promise<{ ok: true; value: T } | { ok: false; err: unknown }> => {
+      let text: string;
+      try {
+        text = await this.chat(reqWithFormat);
+      } catch (e) {
+        return { ok: false, err: e };
+      }
+      if (!text.trim()) return { ok: false, err: new Error('empty response') };
+      try {
+        return { ok: true, value: parseJsonLoose<T>(text) };
+      } catch (e) {
+        return { ok: false, err: e };
+      }
+    };
+    // 同 chatJsonStream：默认 3 attempt，上层 fallback 链场景可传 1 节省 timeout
+    const attempts = Math.max(1, req.jsonAttempts ?? 3);
+    let lastErr: unknown;
+    for (let i = 0; i < attempts; i++) {
+      const r = await runOnce();
+      if (r.ok) return r.value;
+      lastErr = r.err;
+      if (typeof console !== 'undefined') {
+        console.debug(
+          `[AIClient.chatJson] attempt ${i + 1}/${attempts} failed: ${(r.err as any)?.message?.slice?.(0, 80)}; ${i < attempts - 1 ? 'retrying' : 'giving up'}`,
+        );
+      }
+      if (i < attempts - 1) await new Promise((res) => setTimeout(res, 300 * (i + 1) + 200));
+    }
+    throw lastErr;
   }
 
   // ============ 私有 ============
@@ -207,7 +285,9 @@ export class AIClient {
       //   小显存机器建议下调到 8192–16384
       // - options.num_predict 限制输出长度
       // - think: false 关闭思考链
-      return {
+      // - format: 'json' 强制结构化输出（仅 chatJson/chatJsonStream 默认开启）
+      //   小模型（4B 及以下）在 strict schema 下字段漂移率显著下降；free-form chat 不开启
+      const body: Record<string, unknown> = {
         model: req.model ?? cfg.model,
         messages,
         stream,
@@ -219,6 +299,10 @@ export class AIClient {
           num_predict: req.maxTokens ?? cfg.maxTokens ?? 2048,
         },
       };
+      if (req.responseFormat === 'json') {
+        body.format = 'json';
+      }
+      return body;
     }
 
     return {
@@ -368,15 +452,145 @@ export function parseJsonLoose<T = unknown>(text: string): T {
   const fence = stripped.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fence ? fence[1] : stripped;
 
-  const raw = extractFirstJson(candidate) ?? candidate.trim();
+  // 1) 完整闭合的 JSON（最理想）
+  const firstClosed = extractFirstJson(candidate);
+  if (firstClosed) {
+    try {
+      return JSON.parse(firstClosed) as T;
+    } catch {
+      // 落到第三步处理 string 内部 raw newline / 注释 / 末尾逗号
+      try {
+        return JSON.parse(repairJson(firstClosed)) as T;
+      } catch {
+        // 继续兜底
+      }
+    }
+  }
 
+  // 2) 截断的 JSON：自动补齐缺失的 } / ]
+  const completed = completeTruncatedJson(candidate);
+  if (completed) {
+    try {
+      return JSON.parse(completed) as T;
+    } catch {
+      try {
+        return JSON.parse(repairJson(completed)) as T;
+      } catch {
+        // 继续兜底
+      }
+    }
+  }
+
+  // 3) 最朴素 fallback
+  const raw = candidate.trim();
   try {
     return JSON.parse(raw) as T;
   } catch {
-    // 容错：去掉行内注释 + 末尾逗号
-    const cleaned = raw.replace(/\/\/.*$/gm, '').replace(/,\s*([}\]])/g, '$1');
-    return JSON.parse(cleaned) as T;
+    return JSON.parse(repairJson(raw)) as T;
   }
+}
+
+/** 修补 LLM 常见 JSON 不规范：行内注释、末尾逗号、string 内未转义 newline / tab */
+function repairJson(s: string): string {
+  // 去 // 行注释（仅在非字符串区域略嫌粗暴，但够用）
+  let out = s.replace(/\/\/.*$/gm, '');
+  // 去末尾逗号
+  out = out.replace(/,\s*([}\]])/g, '$1');
+  // 把 string 内部 raw \n / \t 替成转义版本
+  out = escapeRawNewlinesInStrings(out);
+  return out;
+}
+
+/** 把双引号字符串里的真换行 / tab 替为 \n / \t */
+function escapeRawNewlinesInStrings(s: string): string {
+  let result = '';
+  let inStr = false;
+  let escape = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (escape) {
+      result += c;
+      escape = false;
+      continue;
+    }
+    if (c === '\\') {
+      result += c;
+      escape = true;
+      continue;
+    }
+    if (c === '"') {
+      inStr = !inStr;
+      result += c;
+      continue;
+    }
+    if (inStr) {
+      if (c === '\n') {
+        result += '\\n';
+        continue;
+      }
+      if (c === '\r') {
+        result += '\\r';
+        continue;
+      }
+      if (c === '\t') {
+        result += '\\t';
+        continue;
+      }
+    }
+    result += c;
+  }
+  return result;
+}
+
+/**
+ * 流被截断 → 用栈跟踪未闭合的 { / [ / "，自动补齐。
+ * 返回 null 表示根本找不到起始 { / [。
+ */
+function completeTruncatedJson(text: string): string | null {
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '{' || c === '[') {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return null;
+
+  const stack: string[] = [];
+  let inStr = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (c === '\\' && inStr) {
+      escape = true;
+      continue;
+    }
+    if (c === '"') {
+      inStr = !inStr;
+      continue;
+    }
+    if (inStr) continue;
+    if (c === '{' || c === '[') stack.push(c);
+    else if (c === '}' || c === ']') stack.pop();
+  }
+
+  let body = text.slice(start);
+  // 如果在字符串中被截断 → 补一个 "
+  if (inStr) body += '"';
+  // 截断末尾常见残留：trailing comma / colon / 不完整的 key
+  body = body.replace(/[,:]\s*$/g, '');
+  body = body.replace(/"\s*[A-Za-z0-9_]*$/g, '""');
+  // 按栈顺序反向补 close 字符
+  while (stack.length > 0) {
+    const open = stack.pop()!;
+    body += open === '{' ? '}' : ']';
+  }
+  return body;
 }
 
 /** 从文本中提取第一个完整、配对的 JSON 对象/数组（用栈匹配，处理嵌套和字符串） */

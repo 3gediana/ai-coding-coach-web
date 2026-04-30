@@ -29,6 +29,8 @@ export function DailyReviewCard() {
   const setActiveProblem = useStore((s) => s.setActiveProblem);
   const setSidebarTab = useStore((s) => s.setSidebarTab);
   const aiConfig = useStore((s) => s.aiConfig);
+  const dailyPlan = useStore((s) => s.dailyPlan);
+  const dailyPlanGenerating = useStore((s) => s.dailyPlanGenerating);
 
   // 没配 AI 别打扰（QuickSetupCard 优先）
   const aiUsable =
@@ -40,10 +42,15 @@ export function DailyReviewCard() {
   const today = todayStr();
   const dismissedToday = dismissedDate === today;
 
+  // DailyPlanCard 已经在编排或已存在 → 让位（DailyPlan 已经包含复习引导）
+  const planTakingOver =
+    dailyPlanGenerating ||
+    (dailyPlan && dailyPlan.status !== 'declined' && dailyPlan.date === today);
+
   // 选错题
   const pick = useMemo(() => pickDailyReview(mistakes), [mistakes]);
 
-  if (!aiUsable || dismissedToday || !pick) return null;
+  if (!aiUsable || dismissedToday || planTakingOver || !pick) return null;
 
   const { mistake, reason } = pick;
   // 该错题的原题是否还在 problems 里？决定「去复习」按钮是激活题还是只跳错题本
