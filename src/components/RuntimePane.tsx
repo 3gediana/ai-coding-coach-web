@@ -65,6 +65,21 @@ export function RuntimePane() {
     : null;
 
   const [stdin, setStdin] = useState('');
+
+  // 切题时自动用题目的第一个样例输入预填 stdin（仅当用户没自己输入过时）
+  // 用户改过 stdin → 不覆盖；切到无样例的题 / 草稿模式 → 也不动
+  const lastAutoFilledForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeProblemId) return;
+    const sample = activeProblem?.examples?.[0]?.input?.trim();
+    if (!sample) return;
+    // 只在 stdin 为空 OR 上次自动填的就是它（说明用户没改）时才覆盖
+    if (stdin === '' || stdin === lastAutoFilledForRef.current) {
+      setStdin(sample);
+      lastAutoFilledForRef.current = sample;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProblemId, activeProblem?.examples?.[0]?.input]);
   const [output, setOutput] = useState<OutputLine[]>([]);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string>('');

@@ -69,6 +69,18 @@ export function FeedbackPanel() {
     (t) => t.kind === 'analyze-code' && t.status === 'running',
   );
 
+  // algoViz 已亮起的模块数 — 在 Tab 上做 badge 提示，让用户在「题目」Tab 也能看到进度
+  const moduleStatus = useStore((s) =>
+    activeProblemId ? s.moduleStatusByProblem[activeProblemId] : undefined,
+  );
+  const algoVizActiveCount = moduleStatus
+    ? Object.values(moduleStatus).filter(Boolean).length
+    : 0;
+  const algoVizTotalCount = problem?.algoViz?.detectionSchema?.modules?.length ?? 0;
+  const algoVizDetecting = useStore((s) =>
+    activeProblemId ? !!s.algoVizDetectingByProblem[activeProblemId] : false,
+  );
+
   return (
     <>
       <ResizeHandle direction="left" currentWidth={width} onResize={setWidth} min={280} max={900} />
@@ -110,7 +122,12 @@ export function FeedbackPanel() {
             active={tab === 'algoviz'}
             onClick={() => setTab('algoviz')}
             icon={<Wand2 size={12} />}
-            label="算法可视化"
+            label={
+              algoVizTotalCount > 0
+                ? `算法 ${algoVizActiveCount}/${algoVizTotalCount}`
+                : '算法可视化'
+            }
+            pulsing={algoVizDetecting}
           />
         </div>
 

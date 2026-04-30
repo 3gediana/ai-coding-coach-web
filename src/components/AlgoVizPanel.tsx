@@ -319,7 +319,7 @@ function ReadyView({
       <div className="border border-line/60 rounded-lg overflow-hidden">
         <div className="px-3 py-1.5 bg-bg-elev/40 flex items-center gap-2 text-[11px]">
           <Play size={11} className="text-accent" />
-          <span className="text-ink font-medium">AC 动画</span>
+          <span className="text-ink font-medium">算法动画</span>
           <div className="flex-1" />
           <button
             onClick={onRegenerateAnim}
@@ -419,9 +419,7 @@ function AnimationPlayer({
           <Play size={13} />
           ▶ 播放动画
         </button>
-        <div className="text-[10px] text-ink-mute">
-          1280×720 · 30fps · 10 秒 · 点击弹出大窗
-        </div>
+        <div className="text-[10px] text-ink-mute">点击在大窗中播放 · 1280×720 · 10 秒</div>
       </div>
 
       {/* 模态框：fixed 居中 + 米黄半透明遮罩 + ~75% 屏幕 + 透明 Player 背景 */}
