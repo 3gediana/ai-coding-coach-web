@@ -22,7 +22,8 @@ export function ProblemOverviewCard() {
   const dismiss = useStore((s) => s.dismissProblemOverview);
   const requestOverview = useStore((s) => s.requestProblemOverview);
 
-  const [collapsed, setCollapsed] = useState(false);
+  // 默认折叠：编辑器顶部只显示 headline 一行；详细 notes 在右栏「题目」Tab 已有，避免重复
+  const [collapsed, setCollapsed] = useState(true);
   const [regenerating, setRegenerating] = useState(false);
 
   if (!activeProblemId) return null;

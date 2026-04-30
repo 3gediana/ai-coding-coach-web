@@ -35,8 +35,8 @@ export function FeedbackPanel() {
   const [width, setWidth] = usePersistedWidth('aicc.layout.feedbackWidth', 420, 280, 900);
   const [traceH, setTraceH] = usePersistedWidth(
     'aicc.layout.traceHeight',
-    180,
-    80,
+    96, // 默认更紧凑（旧默认 180px 太占视觉），用户拖拽可展开
+    32,
     640,
   );
   const activeProblemId = useStore((s) => s.activeProblemId);
@@ -130,7 +130,7 @@ export function FeedbackPanel() {
           )}
         </div>
 
-        <RowResizeHandle currentHeight={traceH} onResize={setTraceH} min={80} max={640} />
+        <RowResizeHandle currentHeight={traceH} onResize={setTraceH} min={32} max={640} />
         <div
           className="border-t border-line shrink-0 overflow-hidden"
           style={{ height: `${traceH}px` }}

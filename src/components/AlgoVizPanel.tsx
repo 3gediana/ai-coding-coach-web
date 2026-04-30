@@ -12,7 +12,8 @@
  * Animation 组件由 @remotion/player 接管渲染。
  */
 import * as React from 'react';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Loader2, Play, RefreshCw, AlertTriangle, Sparkles, X } from 'lucide-react';
 import { Player } from '@remotion/player';
 import * as Remotion from 'remotion';
@@ -362,6 +363,16 @@ function AnimationPlayer({
     return out;
   }, [schema]);
 
+  // ESC 关闭模态（hooks 必须在 early-return 之前声明，保证调用顺序稳定）
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen]);
+
   if (compiled.error || !compiled.Component) {
     return (
       <div className="px-4 py-6 text-[11px] text-bad break-all">
@@ -370,45 +381,67 @@ function AnimationPlayer({
     );
   }
 
-  if (!isOpen) {
-    return (
+  return (
+    <>
+      {/* panel 内：仅一个播放按钮（不再内嵌 Player，避免占据 panel 空间） */}
       <div className="flex flex-col items-center justify-center py-6 gap-2">
         <button
           onClick={() => setIsOpen(true)}
           className="btn-primary"
-          title="点击展开 Remotion Player（首次播放可能需要 1-2 秒载入）"
+          title="点击展开播放器（弹出大窗口）"
         >
           <Play size={13} />
           ▶ 播放动画
         </button>
         <div className="text-[10px] text-ink-mute">
-          1280×720 · 30fps · 10 秒
+          1280×720 · 30fps · 10 秒 · 点击弹出大窗
         </div>
       </div>
-    );
-  }
 
-  return (
-    <div className="relative bg-black">
-      <button
-        onClick={() => setIsOpen(false)}
-        className="absolute top-2 right-2 z-10 w-6 h-6 rounded-full bg-black/60 text-white/80 hover:bg-black/80 flex items-center justify-center"
-        title="关闭播放器"
-      >
-        <X size={12} />
-      </button>
-      <Player
-        component={compiled.Component as React.ComponentType<Record<string, unknown>>}
-        durationInFrames={300}
-        fps={30}
-        compositionWidth={1280}
-        compositionHeight={720}
-        inputProps={inputProps}
-        controls
-        autoPlay
-        loop
-        style={{ width: '100%', height: 'auto', aspectRatio: '16/9' }}
-      />
-    </div>
+      {/* 模态框：fixed 居中 + 米黄半透明遮罩 + ~75% 屏幕 + 透明 Player 背景 */}
+      {isOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-md"
+            style={{ background: 'rgba(244, 234, 205, 0.85)' }}
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setIsOpen(false);
+            }}
+          >
+            <div
+              className="relative shadow-2xl rounded-lg overflow-hidden border border-line/40"
+              style={{
+                width: 'min(75vw, calc(75vh * 16/9))',
+                aspectRatio: '16/9',
+                background: 'transparent',
+              }}
+            >
+              <button
+                onClick={() => setIsOpen(false)}
+                className="absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full bg-bg shadow-md border border-line text-ink-mute hover:text-ink hover:border-ink-mute transition flex items-center justify-center"
+                title="关闭（Esc）"
+              >
+                <X size={14} />
+              </button>
+              <Player
+                component={compiled.Component as React.ComponentType<Record<string, unknown>>}
+                durationInFrames={300}
+                fps={30}
+                compositionWidth={1280}
+                compositionHeight={720}
+                inputProps={inputProps}
+                controls
+                autoPlay
+                loop
+                style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
+              />
+            </div>
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[11px] text-ink-mute">
+              点空白处或按 Esc 关闭
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
   );
 }

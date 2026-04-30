@@ -512,6 +512,11 @@ export function CodeEditor() {
               value={file.content}
               onChange={(v) => updateFileContent(file.id, v ?? '')}
               onMount={onMount}
+              loading={
+                <div className="h-full flex items-center justify-center text-ink-mute text-xs">
+                  编辑器加载中…
+                </div>
+              }
               options={{
                 fontFamily: 'JetBrains Mono, Menlo, monospace',
                 fontSize: 14,

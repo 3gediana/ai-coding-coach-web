@@ -57,23 +57,19 @@ export function DailyPlanCard() {
     return dailyPlan.completedStepIndices.length / dailyPlan.plan.steps.length;
   }, [dailyPlan]);
 
-  // 生成中：单独的 loading 卡
+  // 生成中：右下角紧凑 chip（不再顶部居中大卡，避免抢用户视线）
   if (dailyPlanGenerating && !dailyPlan) {
     return (
       <motion.div
-        initial={{ y: -8, opacity: 0 }}
+        initial={{ y: 8, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
-        className="fixed top-14 left-1/2 -translate-x-1/2 z-30 glass-card px-4 py-3 flex items-center gap-3 border-accent/40 max-w-md"
+        className="fixed bottom-3 right-3 z-30 glass-card px-2.5 py-1.5 flex items-center gap-2 border-accent/30 max-w-[260px]"
+        title="学情诊断 → 题目筛选 → 计划编排（详情见 Agent 行动面板）"
       >
-        <Loader2 size={16} className="text-accent animate-spin shrink-0" />
-        <div className="flex-1 min-w-0">
-          <div className="text-[12px] font-semibold text-accent-glow">
-            🤖 学习规划 Agent 正在编排…
-          </div>
-          <div className="text-[10px] text-ink-mute mt-0.5">
-            学情诊断 → 题目筛选 → 计划编排（3 步链式调用，详情见 Agent 行动面板）
-          </div>
-        </div>
+        <Loader2 size={12} className="text-accent animate-spin shrink-0" />
+        <span className="text-[11px] text-ink-dim truncate">
+          学习规划 Agent 编排中…
+        </span>
       </motion.div>
     );
   }

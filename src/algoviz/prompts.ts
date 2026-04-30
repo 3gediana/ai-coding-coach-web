@@ -41,8 +41,8 @@ Examples of correct visualizations:
   - Knapsack:  draw the items list (weight/value), a 2D dp-table grid, an answer cell
 
 EACH MODULE corresponds to ONE visual sub-region of the canvas (NOT a card).
-  - moduleX = true  → that sub-region's strokes/fill are full opacity + green border (#22c55e) + subtle glow
-  - moduleX = false → that sub-region is dimmed (opacity 0.35) + gray border (#475569)
+  - moduleX = true  → that sub-region uses active styling (green stroke + glow + light green fill)
+  - moduleX = false → that sub-region uses inactive styling (slate-700 stroke + 0.55 opacity + light gray fill)
 
 Use REAL DATA from the problem's first example (parse it from input/output) so the visualization is concrete.
 
@@ -52,8 +52,9 @@ Use REAL DATA from the problem's first example (parse it from input/output) so t
 - Container: width 100%, padding 12px, background TRANSPARENT (no #0f172a — must blend into the host page which has a warm-flax background)
 - Use SVG <svg> for drawing shapes when possible (cleaner than nested div boxes); inline styles only — no CSS classes, no Tailwind
 - Color palette (works on warm flax bg): primary stroke #2563eb, success #16a34a, accent #d97706, dim #94a3b8, text #1e293b
-- For active sub-region: stroke #16a34a + filter 'drop-shadow(0 0 4px rgba(22,163,74,0.4))'
-- For inactive sub-region: stroke #94a3b8 + opacity 0.35
+- For active sub-region: stroke #16a34a + strokeWidth 2.5 + filter 'drop-shadow(0 0 4px rgba(22,163,74,0.4))' + fill 'rgba(22,163,74,0.06)' (light green tint)
+- For inactive sub-region: stroke #475569 (slate-700, NOT #94a3b8 which is too light on warm-flax bg) + strokeWidth 2 + opacity 0.55 + fill 'rgba(0,0,0,0.03)' (subtle gray tint to give shapes visual weight)
+- ★ Always provide BOTH stroke AND fill on rect/circle elements — bare strokes on warm-flax background look like floating numbers
 - Recommended canvas: ~280px wide × auto height; use viewBox so it scales
 - NO imports beyond React (use the global React). Begin with: const { ... } = React;
 - Component name: default export, e.g. "export default function StatusViz(props) { ... }"
@@ -149,8 +150,8 @@ Output format MUST be exactly:
 - The canvas (1280x720) has N FIXED REGIONS (absolute positioned), one per module from the schema. They NEVER disappear, all visible from frame 0 to frame 300.
 - The ANIMATION TIMELINE (pointer moving, numbers appearing, etc.) is driven SOLELY by useCurrentFrame(). It plays independently and is NOT affected by props.
 - The MODULE PROPS only control each region's CSS:
-  * moduleX=true:  borderColor #22c55e, opacity 1,    boxShadow '0 0 20px rgba(34,197,94,0.4)'
-  * moduleX=false: borderColor #475569, opacity 0.35, boxShadow 'none'
+  * moduleX=true:  borderColor #16a34a, opacity 1,    filter 'drop-shadow(0 0 12px rgba(22,163,74,0.35))'
+  * moduleX=false: borderColor #475569, opacity 0.35, no glow
 
 ────────  CODE RULES  ────────
 - Single default-exported function component
@@ -158,8 +159,16 @@ Output format MUST be exactly:
 - React also from global: const { useMemo } = React;
 - INLINE styles only — no className, no Tailwind, no external CSS
 - All motion via interpolate / spring with useCurrentFrame; NO setTimeout, NO CSS keyframes, NO setInterval
-- Canvas: 1280×720, background #0f172a, font sans-serif
-- Color palette: primary #3b82f6, success #22c55e, accent #fbbf24, text white / #94a3b8
+- Canvas: 1280×720, font sans-serif
+- ★ BACKGROUND: AbsoluteFill MUST have backgroundColor: 'transparent' (the host page is warm-flax / linen colored — DO NOT paint a dark canvas; let the page color show through)
+- Color palette (works on warm-flax background):
+  * primary stroke: #2563eb (blue-600)
+  * success / active: #16a34a (green-600)
+  * accent: #d97706 (amber-600)
+  * dim / inactive: #475569 (slate-700) — NOT #94a3b8 which is too light on warm bg
+  * text: #1e293b (slate-800)
+- For active region styling: borderColor #16a34a, opacity 1, filter 'drop-shadow(0 0 12px rgba(22,163,74,0.35))'
+- For inactive region: borderColor #475569, opacity 0.35, no glow
 - 300 frames @ 30fps total (10 seconds)
 - Layout for N regions:
   * 2 → top/bottom or left/right
