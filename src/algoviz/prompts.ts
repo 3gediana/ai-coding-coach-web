@@ -226,21 +226,27 @@ export function parseAnimationOutput(raw: string): string | null {
 // 3) Detect (实时填空)
 // ──────────────────────────────────────────────────────────────────────
 
-const DETECT_SYSTEM = `You analyze code completeness for module detection.
+const DETECT_SYSTEM = `You match code tokens against module hints.
 
-Input: a list of N modules (with detectHint each) and the user's current code.
-Output: EXACTLY N digits, no spaces, no newlines, no other text.
-  - Digit i is 1 if module i is present/complete in the code, 0 otherwise.
-  - When uncertain or code is too sparse, output 0 for that position (do not guess).
+Input: a list of N modules (each with a detectHint describing what tokens/structures to look for) and the user's current code.
 
-Examples (4 modules):
-  user code is empty            → 0000
-  only input reading present    → 1000
-  input + map declared          → 1100
-  almost done, only output left → 1110
-  fully done                    → 1111
+★ Output: EXACTLY N digits, no spaces, no newlines, no markdown, no explanation. Just N characters of '0' or '1'.
 
-CRITICAL: Output ONLY the N digits. Nothing else. No explanation, no JSON, no quotes.`;
+★ Decision rule (token-match, NOT completeness-check):
+  - Digit i = 1  if the user code contains ANY tokens, identifiers, or structures matching module i's detectHint.
+                  Partial code counts. Empty body counts. Just declared (no usage) counts.
+                  As long as the relevant tokens APPEAR in the code, output 1.
+  - Digit i = 0  ONLY when the user code is completely missing any tokens matching that hint.
+  - Do NOT require correctness, completeness, or actual usage. This is purely "do these tokens appear?"
+
+Examples (4 modules: input-read / hashmap / loop / output):
+  empty code                                            → 0000
+  "cin >> n;"                                           → 1000  (input tokens visible)
+  "cin >> n; unordered_map<int,int> mp;"                → 1100  (hashmap declared, even unused → 1)
+  "...mp; for(int i=0;i<n;i++) {}"                      → 1110  (loop appeared, empty body still → 1)
+  "...{ if(mp.count(x)) cout << i; mp[x]=i; }"          → 1111  (cout appeared → 1)
+
+CRITICAL: Output ONLY the N digits. No quotes, no \`\`\`, no thinking, no JSON.`;
 
 export interface DetectPromptInput {
   schema: AlgoVizDetectionSchema;

@@ -26,6 +26,7 @@ import { useStore } from './lib/store';
 import { startImportReceiver, stopImportReceiver } from './lib/importReceiver';
 import { startOjBridgeReceiver, stopOjBridgeReceiver } from './lib/ojBridge';
 import { loadDemoSeed } from './lib/demoSeed';
+import { warmupLocalModels } from './core/ai/warmup';
 import { toast } from 'sonner';
 
 export default function App() {
@@ -33,6 +34,46 @@ export default function App() {
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const startOnboarding = useStore((s) => s.startOnboarding);
   const multiFileMode = useStore((s) => s.multiFileMode);
+
+  // 启动后预热所有本地 ollama 工位（fastLane / intentRouter / algoViz.detect 等）。
+  // 不阻塞首屏；并行 warm；失败静默。配置变更时也重新 warm（用户切换模型后立即生效）。
+  useEffect(() => {
+    let cancelled = false;
+    // 100ms 后再发，避免和首屏 hydration 抢 CPU
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      void warmupLocalModels(aiConfig).then((results) => {
+        if (cancelled || results.length === 0) return;
+        const okCount = results.filter((r) => r.ok).length;
+        // 只在 dev / 调试时 toast；生产环境静默
+        if (typeof window !== 'undefined' && (window as any).__aiccDebug) {
+          toast.success(`本地模型预热：${okCount}/${results.length} 就绪`, {
+            description: results.map((r) => `${r.label}/${r.model}: ${r.ok ? r.latencyMs + 'ms' : '失败'}`).join('\n'),
+            duration: 4000,
+          });
+        }
+      });
+    }, 100);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // 用 baseUrl + model 字符串组合判依赖，避免 cfg 引用变化导致频繁触发
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    aiConfig.fastLane?.baseUrl,
+    aiConfig.fastLane?.model,
+    aiConfig.fastLane?.enabled,
+    aiConfig.intentRouter?.baseUrl,
+    aiConfig.intentRouter?.model,
+    aiConfig.intentRouter?.enabled,
+    aiConfig.algoVizModels?.status?.baseUrl,
+    aiConfig.algoVizModels?.status?.model,
+    aiConfig.algoVizModels?.animation?.baseUrl,
+    aiConfig.algoVizModels?.animation?.model,
+    aiConfig.algoVizModels?.detect?.baseUrl,
+    aiConfig.algoVizModels?.detect?.model,
+  ]);
 
   // ?seed=demo：清空 IndexedDB 并注入 5 题 + 错题 + 7 天学习记录，然后 reload
   useEffect(() => {
