@@ -1858,7 +1858,9 @@ export const useStore = create<State>((set, get) => {
           examples: problem.examples?.map((e) => ({ input: e.input, output: e.output })),
         });
         if (!text) return;
-        const updated = { ...problem, plainExplanation: text };
+        // 从 store 重拿最新版本（避免 stale snapshot 覆盖其它并发 LLM 任务写入的字段，如 algoViz / coachOverview）
+        const latest = get().problems.find((p) => p.id === problemId) ?? problem;
+        const updated = { ...latest, plainExplanation: text };
         await storage.saveProblem(updated);
         await get().refreshProblems();
         get().recordAgentTrace({
@@ -1911,8 +1913,10 @@ export const useStore = create<State>((set, get) => {
           tags: problem.tags,
         });
         if (!overview) return;
+        // 从 store 重拿最新版本（避免 stale snapshot 覆盖并发任务的写入）
+        const latest = get().problems.find((p) => p.id === problemId) ?? problem;
         const updated: Problem = {
-          ...problem,
+          ...latest,
           coachOverview: {
             headline: overview.headline,
             notes: overview.notes,
@@ -1975,8 +1979,10 @@ export const useStore = create<State>((set, get) => {
           code: file.content,
         });
         if (!review) return;
+        // 从 store 重拿最新版本（避免 stale snapshot 覆盖并发任务的写入）
+        const latest = get().problems.find((p) => p.id === problemId) ?? problem;
         const updated: Problem = {
-          ...problem,
+          ...latest,
           acReview: {
             passingPattern: review.passingPattern,
             betterApproach: review.betterApproach,
