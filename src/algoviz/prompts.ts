@@ -322,6 +322,33 @@ To prevent this, you MUST follow these rules with NO exceptions:
     Apply transform: \`scale(1.15)\` and box-shadow on the active cell driven by useCurrentFrame.
     DO NOT draw a separate <div style={{ position: 'absolute', left: 200 }} />.
 
+★ RULE 6 (★★ CRITICAL — region must be visible from frame 0):
+  The region CONTAINER's opacity is OWNED by moduleX prop (via regionStyle()):
+    moduleX=true  → opacity 1
+    moduleX=false → opacity 0.35
+  ★ NEVER override the container's opacity with useCurrentFrame interpolate.
+  ★ NEVER do: <div style={{ ...regionStyle(module1), opacity: someInterpolate }}>
+                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^ FORBIDDEN
+  
+  The animation timeline is for INNER CONTENT only, not for fading regions in/out.
+  The 4 regions are ALWAYS visible (controlled only by moduleX prop).
+  
+  ✓ CORRECT — animate the INSIDE content, not the region:
+    <div style={regionStyle(module1)}>                        // region opacity from props ONLY
+      <div style={{ opacity: phase1Opacity }}>                // INNER content can interpolate
+        Step 1 details...
+      </div>
+    </div>
+
+  ✗ WRONG — fades the whole region by frame:
+    <div style={{ ...regionStyle(module1), opacity: phase1Opacity }}>   // ★ NO ★
+      ...
+    </div>
+
+  Why this matters: when the user opens the player at frame 0, all 4 regions MUST be visible
+  (they're the static visual map of the algorithm). Only the highlights / pointers / step
+  numbers inside should animate.
+
 ────────  FORBIDDEN (these cause the layout bugs we're fixing)  ────────
 - ✗ SVG <text x="..." y="..." textAnchor="..."> for content text       — overflow risk
 - ✗ <div style={{ position: 'absolute', left: ..., top: ... }}>        — collision risk
@@ -332,6 +359,8 @@ To prevent this, you MUST follow these rules with NO exceptions:
 - ✗ Sequence (scene switching)                                          — all regions always visible
 - ✗ CSS transition / keyframes / animation property                    — use Remotion interpolate
 - ✗ props.moduleX gating animation playback                             — only style, never logic
+- ✗ { ...regionStyle(moduleX), opacity: <interpolate> }                  — ★ frame-driven opacity on region
+- ✗ { ...regionStyle(moduleX), filter: <interpolate> }                   — same; both override props
 - ✗ External imports                                                    — sandbox has only Remotion + React globals
 
 ────────  REGION STATE STYLING  ────────
