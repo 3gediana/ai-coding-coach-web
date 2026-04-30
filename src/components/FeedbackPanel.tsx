@@ -35,7 +35,7 @@ export function FeedbackPanel() {
   const [width, setWidth] = usePersistedWidth('aicc.layout.feedbackWidth', 420, 280, 900);
   const [traceH, setTraceH] = usePersistedWidth(
     'aicc.layout.traceHeight',
-    96, // 默认更紧凑（旧默认 180px 太占视觉），用户拖拽可展开
+    112, // 96 太挤，空状态文字几乎贴底；112 给 header(28) + 一两行内容 + 呼吸
     32,
     640,
   );
@@ -88,21 +88,11 @@ export function FeedbackPanel() {
         className="border-l border-line bg-bg flex flex-col min-h-0 flex-shrink-0"
         style={{ width: `${width}px` }}
       >
-        <div className="h-9 border-b border-line bg-bg-elev flex items-center px-3 gap-2 text-xs shrink-0">
-          <div className="flex items-center gap-1.5 text-accent-glow font-semibold">
-            <Sparkles size={13} />
-            Coach
+        {/* 顶部 Tab bar — Coach 标识合并到此处省一行 36px；spinner 浮在最右 */}
+        <div className="h-9 border-b border-line bg-bg-elev/60 flex items-stretch shrink-0 relative">
+          <div className="px-2 flex items-center gap-1 text-accent-glow shrink-0">
+            <Sparkles size={12} />
           </div>
-          <div className="flex-1" />
-          {qaCount > 0 && (
-            <span className="chip text-[9px] px-1.5 py-0">{qaCount} 问</span>
-          )}
-          {(qaActive || runningAnalysis) && (
-            <Loader2 size={11} className="animate-spin text-accent" />
-          )}
-        </div>
-
-        <div className="h-9 border-b border-line bg-bg-elev/60 flex items-stretch shrink-0">
           <TabButton
             active={tab === 'analyze'}
             onClick={() => setTab('analyze')}
@@ -129,6 +119,12 @@ export function FeedbackPanel() {
             }
             pulsing={algoVizDetecting}
           />
+          {/* spinner 浮在 Tab bar 最右，indicate 后台 LLM 在跑 */}
+          {(qaActive || runningAnalysis) && (
+            <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none">
+              <Loader2 size={12} className="animate-spin text-accent" />
+            </div>
+          )}
         </div>
 
         <div className="flex-1 flex flex-col min-h-0">

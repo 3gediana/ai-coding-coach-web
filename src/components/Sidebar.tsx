@@ -85,16 +85,16 @@ export function Sidebar() {
   }, [mistakes, mistakeSort]);
 
   const items = [
-    { id: 'problems' as const, icon: Library, label: '题目库', count: activeProblems.length },
-    { id: 'mistakes' as const, icon: BookOpen, label: '错题本', count: mistakes.length },
-    { id: 'sessions' as const, icon: History, label: '学习记录', count: sessions.length },
-    { id: 'dashboard' as const, icon: BarChart3, label: '学习空间', count: undefined },
+    { id: 'problems' as const, icon: Library, label: '题目库', shortLabel: '题库', count: activeProblems.length },
+    { id: 'mistakes' as const, icon: BookOpen, label: '错题本', shortLabel: '错题', count: mistakes.length },
+    { id: 'sessions' as const, icon: History, label: '学习记录', shortLabel: '记录', count: sessions.length },
+    { id: 'dashboard' as const, icon: BarChart3, label: '学习空间', shortLabel: '看板', count: undefined },
   ];
 
   return (
     <div className="flex border-r border-line">
-      {/* Rail */}
-      <div className="w-14 bg-bg-elev flex flex-col items-center py-3 gap-1.5 border-r border-line">
+      {/* Rail：icon + 短标签，避免新用户对图标含义产生猜测成本 */}
+      <div className="w-14 bg-bg-elev flex flex-col items-center py-2.5 gap-0.5 border-r border-line">
         {items.map((it) => {
           const active = tab === it.id;
           return (
@@ -102,19 +102,20 @@ export function Sidebar() {
               key={it.id}
               onClick={() => setTab(active ? null : it.id)}
               className={cn(
-                'w-10 h-10 rounded-lg flex items-center justify-center relative transition-all',
+                'w-12 py-1.5 rounded-lg flex flex-col items-center justify-center gap-0.5 relative transition-all',
                 active
                   ? 'bg-accent/20 text-accent-glow shadow-glow'
                   : 'text-ink-dim hover:text-ink hover:bg-bg-elev2',
               )}
               title={it.label}
             >
-              <it.icon size={18} />
+              <it.icon size={17} />
+              <span className="text-[9.5px] leading-none">{it.shortLabel}</span>
               {it.count !== undefined && it.count > 0 && (
                 // 用 bad/warn 色（高饱和），保证米黄 rail 上一眼可见
                 <span
                   className={cn(
-                    'absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-bold text-white flex items-center justify-center shadow-sm',
+                    'absolute top-0.5 right-0.5 min-w-[14px] h-[14px] px-1 rounded-full text-[9px] font-bold text-white flex items-center justify-center shadow-sm',
                     it.id === 'mistakes' ? 'bg-bad' : 'bg-cyan',
                   )}
                   style={{ boxShadow: '0 0 0 1.5px rgb(var(--c-bg-elev))' }}
