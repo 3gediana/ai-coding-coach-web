@@ -375,7 +375,7 @@ export function Sidebar() {
                               {m.verdict && (
                                 <span
                                   className={cn(
-                                    'text-[9px] font-mono font-bold px-1.5 py-0.5 rounded',
+                                    'text-[10.5px] font-mono font-bold px-1.5 py-0.5 rounded tracking-wider',
                                     m.verdict === 'WA' && 'bg-bad/15 text-bad',
                                     m.verdict === 'TLE' && 'bg-warn/15 text-warn',
                                     m.verdict === 'MLE' && 'bg-warn/15 text-warn',
@@ -479,14 +479,39 @@ export function Sidebar() {
                 {tab === 'sessions' && (
                   <ul className="space-y-1">
                     {sessions.length === 0 && <Empty text="尚未记录会话" />}
-                    {sessions.slice(0, 30).map((s) => (
-                      <li key={s.id} className="px-3 py-2 rounded-lg hover:bg-bg-elev2 text-xs">
-                        <div className="font-medium truncate">{s.problemTitle ?? '(无题目)'}</div>
-                        <div className="text-ink-dim mt-0.5">
-                          {new Date(s.startedAt).toLocaleString()} · 分析 {s.analyzeCount} 次
-                        </div>
-                      </li>
-                    ))}
+                    {sessions.slice(0, 30).map((s) => {
+                      const minutes = Math.round(s.effectiveMs / 60_000);
+                      const outcomeMeta =
+                        s.outcome === 'pass'
+                          ? { label: 'AC', color: 'bg-ok/15 text-ok border-ok/30' }
+                          : s.outcome === 'mistake'
+                            ? { label: 'WA', color: 'bg-bad/15 text-bad border-bad/30' }
+                            : s.outcome === 'incomplete'
+                              ? { label: '中断', color: 'bg-warn/15 text-warn border-warn/30' }
+                              : null;
+                      return (
+                        <li key={s.id} className="px-3 py-2 rounded-lg hover:bg-bg-elev2 text-xs">
+                          <div className="flex items-center gap-1.5 mb-0.5">
+                            {outcomeMeta && (
+                              <span
+                                className={cn(
+                                  'text-[10px] font-mono font-bold px-1.5 py-0.5 rounded border tracking-wider shrink-0',
+                                  outcomeMeta.color,
+                                )}
+                              >
+                                {outcomeMeta.label}
+                              </span>
+                            )}
+                            <div className="font-medium truncate">{s.problemTitle ?? '(无题目)'}</div>
+                          </div>
+                          <div className="text-ink-dim mt-0.5 text-[10.5px]">
+                            {new Date(s.startedAt).toLocaleString()}
+                            {minutes > 0 && ` · ${minutes} 分钟`}
+                            {s.analyzeCount > 0 && ` · 分析 ${s.analyzeCount} 次`}
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
 

@@ -37,10 +37,11 @@ export function AcReviewCard() {
             )}
             <button
               onClick={dismiss}
-              className="btn-ghost p-1 ml-auto shrink-0"
-              title="关闭（缓存已保留）"
+              className="ml-auto shrink-0 -my-1 -mr-1 w-7 h-7 rounded hover:bg-bg-elev2/60 text-ink-mute hover:text-ink flex items-center justify-center transition"
+              title="关闭（缓存已保留，下次进同题仍可在题面 Tab 看到）"
+              aria-label="关闭"
             >
-              <X size={12} />
+              <X size={14} />
             </button>
           </div>
           <div className="px-3 py-3 space-y-3">
