@@ -275,23 +275,22 @@ function ReadyView({
   }, [schema, moduleStatus]);
 
   return (
-    <div className="px-3 py-3 space-y-4">
-      {/* Status 实时区 */}
+    <div className="px-2 py-2 space-y-3">
+      {/* Status 实时区：DeepSeek 生成的"算法视觉骨架"（数组/表/节点等真实部件，不是文字卡片）。
+          不加任何容器边框/背景，让组件自带的 transparent / 米黄配色与主面板融合。 */}
       {statusCode ? (
-        <div className="rounded-lg overflow-hidden border border-line">
-          <LLMComponentRenderer
-            code={statusCode}
-            globals={STATUS_GLOBALS}
-            componentProps={componentProps}
-          />
-        </div>
+        <LLMComponentRenderer
+          code={statusCode}
+          globals={STATUS_GLOBALS}
+          componentProps={componentProps}
+        />
       ) : (
-        <div className="text-[11px] text-ink-mute">（老题模式，没有实时 Status；可直接播放动画）</div>
+        <div className="text-[11px] text-ink-mute px-2">（老题模式，没有实时 Status；可直接播放动画）</div>
       )}
 
-      {/* Animation 区 */}
-      <div className="border border-line rounded-lg overflow-hidden">
-        <div className="px-3 py-2 bg-bg-elev/60 flex items-center gap-2 text-[11px]">
+      {/* Animation 区：保留一个轻边框分隔，因为 Player 视觉本身就是一个独立动画画布 */}
+      <div className="border border-line/60 rounded-lg overflow-hidden">
+        <div className="px-3 py-1.5 bg-bg-elev/40 flex items-center gap-2 text-[11px]">
           <Play size={11} className="text-accent" />
           <span className="text-ink font-medium">AC 动画</span>
           <div className="flex-1" />

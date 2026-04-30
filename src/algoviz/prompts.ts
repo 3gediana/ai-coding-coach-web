@@ -17,7 +17,7 @@ import type { AlgoVizDetectionSchema, ProblemExample } from '../core/types';
 
 const STATUS_SYSTEM = `You generate TWO outputs for an algorithm visualization system:
 
-1) A static React component (the "Status panel")
+1) A React "Status visualization" component — a STATIC visual sketch of the algorithm's actual data structures
 2) A JSON detection schema describing modules
 
 Output format MUST be exactly:
@@ -28,32 +28,50 @@ Output format MUST be exactly:
 [a JSON object, no markdown fence]
 </SCHEMA_JSON>
 
-────────  STATUS COMPONENT RULES  ────────
-- A SINGLE default-exported React functional component, no Remotion, no animation hooks
+────────  STATUS COMPONENT — CRITICAL RULES  ────────
+
+★★ THIS IS NOT A TEXT-CARD-STACK. ★★
+DO NOT render rows of "Module 1: Read Input / Module 2: HashMap" labels.
+INSTEAD: render the ACTUAL VISUAL PARTS of the algorithm (the same kind of shapes the Animation will use), all visible at once, statically.
+
+Examples of correct visualizations:
+  - Two Sum:   draw the input array as a row of square cells [2][7][11][15], a HashMap-shaped table next to it (key/value rows), and a small "result: i,j" badge
+  - Dijkstra:  draw graph nodes as circles, edges as lines with weights, a distance array row, a small priority-queue stack
+  - StringHash: draw the string as character cells [a][b][c][a]..., a prefix-hash array row below, and a small query-result badge
+  - Knapsack:  draw the items list (weight/value), a 2D dp-table grid, an answer cell
+
+EACH MODULE corresponds to ONE visual sub-region of the canvas (NOT a card).
+  - moduleX = true  → that sub-region's strokes/fill are full opacity + green border (#22c55e) + subtle glow
+  - moduleX = false → that sub-region is dimmed (opacity 0.35) + gray border (#475569)
+
+Use REAL DATA from the problem's first example (parse it from input/output) so the visualization is concrete.
+
+────────  STATUS COMPONENT — TECH RULES  ────────
+- A SINGLE default-exported React functional component, no Remotion
 - Props: { module1?: boolean; module2?: boolean; module3?: boolean; module4?: boolean; module5?: boolean }, all default false
-- Render a vertical stack of cards (one per module), ~300px wide, dark theme
-- Active card style:   borderColor #22c55e, opacity 1,    boxShadow 0 0 12px rgba(34,197,94,0.3)
-- Inactive card style: borderColor #475569, opacity 0.35, boxShadow none
-- Each card shows: module index, label (15px), description (13px)
-- Background #0f172a; cards #1e293b; text white / #94a3b8
-- Use INLINE styles only (no className, no external CSS, no Tailwind) — runtime sandbox can't load Tailwind
-- After all modules active, render a small "ALL MODULES READY" badge at bottom
-- NO imports beyond React (use the global React from the sandbox window). Begin with: const { ... } = React;
-- Component name: must be a default export, e.g. "export default function StatusPanel(props) { ... }"
+- Container: width 100%, padding 12px, background TRANSPARENT (no #0f172a — must blend into the host page which has a warm-flax background)
+- Use SVG <svg> for drawing shapes when possible (cleaner than nested div boxes); inline styles only — no CSS classes, no Tailwind
+- Color palette (works on warm flax bg): primary stroke #2563eb, success #16a34a, accent #d97706, dim #94a3b8, text #1e293b
+- For active sub-region: stroke #16a34a + filter 'drop-shadow(0 0 4px rgba(22,163,74,0.4))'
+- For inactive sub-region: stroke #94a3b8 + opacity 0.35
+- Recommended canvas: ~280px wide × auto height; use viewBox so it scales
+- NO imports beyond React (use the global React). Begin with: const { ... } = React;
+- Component name: default export, e.g. "export default function StatusViz(props) { ... }"
 
 ────────  SCHEMA JSON RULES  ────────
 - Shape: { "algoName": "...", "modules": [ { "id": "m1", "label": "...", "description": "...", "detectHint": "..." }, ... ] }
 - algoName: PascalCase, e.g. "TwoSum" / "LIS" / "Knapsack"
-- 3-5 modules total based on REAL CODE STRUCTURE (not abstract concepts):
-  * If a single for-loop contains both lookup and storage → ONE module, not two
-  * Typical breakdown: input read / data structure init / core loop / output
-- label: ≤ 12 chars Chinese
+- 3-4 modules total based on REAL CODE STRUCTURE (NOT abstract concepts; NOT "return 0" as its own module):
+  * If a single for-loop contains both lookup and storage → ONE module
+  * Typical breakdown: input read / data structure init / core algorithm loop / output
+- label: ≤ 12 chars Chinese (this is the module name shown in debug info)
 - description: ≤ 24 chars Chinese describing what the code does
 - detectHint: ≤ 60 chars English describing what tokens/structures to look for in user code
-  Example: "look for 'cin >>' or 'scanf(' or vector reading in a for loop"
 
-CRITICAL: Output Chinese for visible UI text (label/description); English for detectHint.
-CRITICAL: NO markdown code fences anywhere in the output.`;
+CRITICAL OUTPUT RULES:
+- Chinese for label/description; English for detectHint
+- NO markdown code fences anywhere
+- The Status component must SHOW THE ALGORITHM VISUALLY, not describe it in words.`;
 
 export interface StatusPromptInput {
   title: string;
