@@ -16,6 +16,7 @@
  */
 import { AIClient } from '../core/ai/client';
 import type { AIConfig, AIProvider, AlgoVizAgentOverride } from '../core/types';
+import { resolvePrimaryModel, resolveFastLaneModel, resolveAlgoVizOverride } from '../lib/modelRegistry';
 
 export type AlgoVizRole = 'status' | 'animation' | 'detect';
 
@@ -38,24 +39,33 @@ function isLocalOllamaUrl(url: string): boolean {
   }
 }
 
-function overrideUsable(ov: AlgoVizAgentOverride | undefined): ov is AlgoVizAgentOverride {
+function overrideUsable(
+  ov: AlgoVizAgentOverride | undefined,
+  cfg?: AIConfig,
+): boolean {
   if (!ov?.enabled) return false;
-  if (!ov.baseUrl?.trim() || !ov.model?.trim()) return false;
+  const resolved = resolveAlgoVizOverride(cfg!, ov);
+  if (!resolved) return false;
   // 本地 ollama 不需要 apiKey；云端必须有
-  if (isLocalOllamaUrl(ov.baseUrl)) return true;
-  return !!ov.apiKey?.trim();
+  if (isLocalOllamaUrl(resolved.baseUrl)) {
+    // 本地 override 也受 ollamaMode 总开关控制：disabled 时一律不接受
+    if (cfg?.ollamaMode === 'disabled') return false;
+    return true;
+  }
+  return !!resolved.apiKey?.trim();
 }
 
-function buildOverrideClient(ov: AlgoVizAgentOverride, role: AlgoVizRole): AIClient {
+function buildOverrideClient(ov: AlgoVizAgentOverride, role: AlgoVizRole, cfg: AIConfig): AIClient {
+  const resolved = resolveAlgoVizOverride(cfg, ov)!;
   const provider: AIProvider =
-    ov.provider ?? (isLocalOllamaUrl(ov.baseUrl) ? 'ollama' : 'custom');
+    resolved.provider ?? (isLocalOllamaUrl(resolved.baseUrl) ? 'ollama' : 'custom');
   // 重活给充裕 token + 长 timeout；轻活极短 + 短 timeout
   const isHeavy = role === 'status' || role === 'animation';
   return new AIClient({
     provider,
-    baseUrl: ov.baseUrl.trim(),
-    apiKey: ov.apiKey.trim(),
-    model: ov.model.trim(),
+    baseUrl: resolved.baseUrl.trim(),
+    apiKey: resolved.apiKey.trim(),
+    model: resolved.model.trim(),
     maxTokens: isHeavy ? 8000 : 32,
     temperature: isHeavy ? 0.3 : 0,
     timeoutMs: isHeavy ? 180_000 : 8_000,
@@ -64,29 +74,36 @@ function buildOverrideClient(ov: AlgoVizAgentOverride, role: AlgoVizRole): AICli
 }
 
 function buildFastLaneClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null {
-  const fl = cfg.fastLane;
-  if (!fl?.enabled || !fl.baseUrl?.trim() || !fl.model?.trim()) return null;
-  if (!isLocalOllamaUrl(fl.baseUrl)) return null;
+  // ollamaMode='disabled' 直接拒绝（用户明确说"我没装 Ollama"）
+  if (cfg.ollamaMode === 'disabled') return null;
+  const resolved = resolveFastLaneModel(cfg);
+  if (!resolved) return null;
+  if (!isLocalOllamaUrl(resolved.baseUrl)) return null;
   const isHeavy = role === 'status' || role === 'animation';
   return new AIClient({
     provider: 'ollama',
-    baseUrl: fl.baseUrl.trim(),
+    baseUrl: resolved.baseUrl.trim(),
     apiKey: '',
-    model: fl.model.trim(),
+    model: resolved.model.trim(),
     maxTokens: isHeavy ? 4096 : 32,
     temperature: isHeavy ? 0.3 : 0,
     timeoutMs: isHeavy ? 120_000 : 8_000,
     maxRetries: 0,
-    numCtx: fl.numCtx,
+    numCtx: resolved.numCtx,
   });
 }
 
 function buildMainClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null {
-  const usable = cfg.provider === 'ollama' ? !!cfg.baseUrl.trim() : !!cfg.apiKey.trim();
+  const primary = resolvePrimaryModel(cfg);
+  const usable = primary.provider === 'ollama' ? !!primary.baseUrl.trim() : !!primary.apiKey.trim();
   if (!usable) return null;
   const isHeavy = role === 'status' || role === 'animation';
   return new AIClient({
-    ...cfg,
+    provider: primary.provider,
+    baseUrl: primary.baseUrl,
+    apiKey: primary.apiKey,
+    model: primary.model,
+    numCtx: primary.numCtx,
     maxTokens: isHeavy ? Math.max(cfg.maxTokens, 8000) : 32,
     temperature: isHeavy ? 0.3 : 0,
     timeoutMs: isHeavy ? 180_000 : 8_000,
@@ -99,10 +116,10 @@ function buildMainClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null {
  * @returns null 表示当前配置下该工位不可用（上层应优雅 fallback / 报错）
  */
 export function pickAlgoVizClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null {
-  // 1. override 优先
+  // 1. override 优先（本地 override 也受 ollamaMode 总开关约束）
   const ov = cfg.algoVizModels?.[role];
-  if (overrideUsable(ov)) {
-    return buildOverrideClient(ov, role);
+  if (overrideUsable(ov, cfg)) {
+    return buildOverrideClient(ov!, role, cfg);
   }
   // 2. detect 走 fastLane（本地）
   if (role === 'detect') {
@@ -120,13 +137,16 @@ export function pickAlgoVizClient(cfg: AIConfig, role: AlgoVizRole): AIClient | 
  */
 export function describeRoute(cfg: AIConfig, role: AlgoVizRole): string {
   const ov = cfg.algoVizModels?.[role];
-  if (overrideUsable(ov)) {
-    return `override · ${ov.model}`;
+  if (overrideUsable(ov, cfg)) {
+    const resolved = resolveAlgoVizOverride(cfg, ov!);
+    return `override · ${resolved?.model ?? '未配'}`;
   }
   if (role === 'detect') {
-    const fl = cfg.fastLane;
-    if (fl?.enabled && fl.baseUrl && fl.model) return `fastLane · ${fl.model}`;
+    if (cfg.ollamaMode === 'disabled') return '已关闭（无 Ollama 模式）';
+    const fl = resolveFastLaneModel(cfg);
+    if (fl) return `fastLane · ${fl.model}`;
     return '不可用（需 fastLane 或 override）';
   }
-  return `主云端 · ${cfg.model || '未配'}`;
+  const primary = resolvePrimaryModel(cfg);
+  return `主云端 · ${primary.model || '未配'}`;
 }

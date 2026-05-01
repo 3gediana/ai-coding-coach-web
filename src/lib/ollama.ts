@@ -1,5 +1,5 @@
 /**
- * Ollama 本地模型列表抓取。
+ * Ollama 本地模型列表抓取 + 总开关 helper。
  *
  * 设计：
  * - 复用 vite 的 /ai-proxy/<encoded-url> 中间件绕 CORS（dev）
@@ -9,6 +9,24 @@
  * Ollama API: GET /api/tags 返回 { models: OllamaModel[] }
  *   响应字段参考 https://github.com/ollama/ollama/blob/main/docs/api.md#list-local-models
  */
+import type { AIConfig } from '../core/types';
+
+/**
+ * 当前 AIConfig 是否启用 Ollama 模式（精确隔离的入口）。
+ *
+ * - 用户选「我没装 Ollama」→ ollamaMode='disabled' → 返回 false → 所有 ollama 触点 noop
+ * - undefined（旧存档）→ 默认 'enabled' 保持向后兼容
+ *
+ * 所有 fastLane / detect / 嗅探 / 意图路由 / OCR 等代码点都应在使用前先调用此 helper。
+ */
+export function isOllamaEnabled(cfg: { ollamaMode?: 'enabled' | 'disabled' } | undefined): boolean {
+  return cfg?.ollamaMode !== 'disabled';
+}
+
+/** 兼容老调用：直接传 AIConfig 即可 */
+export function isOllamaModeOn(cfg: AIConfig): boolean {
+  return isOllamaEnabled(cfg);
+}
 
 export interface OllamaModel {
   /** 形如 'qwen2.5-coder:7b' */

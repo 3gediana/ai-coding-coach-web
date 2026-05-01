@@ -22,7 +22,7 @@ export const SYSTEM_CODING_COACH = `你是一位资深的算法竞赛教练和�
 /** JSON 输出指令：要 JSON 输出的任务自己拼接到 system 末尾 */
 export const SYSTEM_JSON_OUTPUT = `\n\n输出严格使用 JSON 格式，不包含 \`\`\`json 标记或任何额外文字。`;
 
-interface PromptPair {
+export interface PromptPair {
   system: string;
   user: string;
 }
@@ -217,7 +217,7 @@ export function buildSanityCheckConstraintsPrompt(args: {
   return {
     system:
       '你是数据范围审计员。学生刚跑通样例，请扫一眼有没有数据范围爆掉的隐患。' +
-      '保守一点：看不到明显风险就返回空数组。' +
+      '保守一点：看不到明显风险就返回空数组；但约束上限很大且代码明显嵌套枚举时必须报警。' +
       SYSTEM_JSON_OUTPUT,
     user: `题目：${args.problem.title}
 ${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTRAINTS_MAX) : '（题目没给明确约束）'}
@@ -233,6 +233,11 @@ ${args.code.slice(0, 4000)}
 - 复杂度跟约束明显不符（如 N=1e6 但用 O(N²)）
 - 容器选择影响显著（vector<vector> 超大、map 当 hash）
 - C++ 的 cin/cout 没关同步在大数据下慢
+
+判定规则：
+- 若约束里出现 1e5 / 100000 / 10^5 级别，代码却有两层依赖 n 的嵌套循环，必须返回复杂度风险。
+- 若约束里出现 1e6 / 1000000 级别，任何明显 O(n²) 都必须返回复杂度风险。
+- 风险描述要点名数量级，例如 "n=1e5 时双重循环会 TLE"。
 
 不要重复 issues 里已经会说的语法/逻辑问题，**只看数据范围**。
 
@@ -437,7 +442,7 @@ ${exampleText}
  *
  * 输出 JSON：
  *   - headline: 1 句话点题眼，**不剧透解法**（≤ 40 字）
- *   - notes: 2-3 条注意点（边界 / 易错 / 思路提示，不给具体算法名），每条 ≤ 50 字
+ *   - notes: 2-3 条注意点（边界 / 易错 / 思路提示，不给具体算法名 / 数据结构名），每条 ≤ 50 字
  *
  * 这个 prompt 必须比 analyze 还谨慎，不能让 AI 把答案吐出来。
  */
@@ -461,9 +466,11 @@ export function buildProblemOverviewPrompt(args: {
       '你是讲题教练。学生刚激活一道新题，给他一个**简短的题眼速读**：' +
       '一句话点出题目本质 + 2-3 条值得提前注意的点。' +
       '\n\n硬性禁止：' +
-      '\n- 不许给完整解法、伪代码、具体算法名（"用动归"、"双指针"这种点到为止可以；"用 Kadane 算法"这种禁止）。' +
+      '\n- 不许给完整解法、伪代码、具体算法名或数据结构名。' +
+      '\n- 禁止出现：哈希表、map、unordered_map、字典、双指针、动归、DP、贪心、二分、栈、队列、堆、前缀和、并查集。' +
       '\n- 不许复述题面，不许翻译题面。' +
       '\n- 不许给样例答案。' +
+      '\n- 不许假设编程语言，不许写 Python/C++/Java 专属细节。' +
       '\n\n你的角色不是替学生想，而是帮他**抓住题眼**和**绕开常见坑**。' +
       SYSTEM_JSON_OUTPUT,
     user: `题目：${args.title}${args.difficulty ? `（${args.difficulty}）` : ''}${tagBlock}
@@ -475,7 +482,7 @@ ${constraintBlock}${exampleBlock}
 {
   "headline": "1 句话点题眼，≤ 40 字。例：'求每个柱子能接多少水，关键在左右最大值'",
   "notes": [
-    "≤ 50 字一条，2-3 条。优先讲：① 边界条件（空、单元素、最大数据） ② 易错点（off-by-one、爆 int） ③ 思路方向（不要给算法名）",
+    "≤ 50 字一条，2-3 条。优先讲：① 边界条件（空、单元素、最大数据） ② 易错点（off-by-one、重复使用同一元素） ③ 可观察的不变量（不要给算法名/数据结构名）",
     "...",
     "（可选第三条）"
   ]
@@ -829,14 +836,14 @@ ${convoText}
     "logic": 0-10,
     "accuracy": 0-10
   },
-  "strengths": ["string", ...],     // 2-4 条优点（具体引用对话内容）
-  "weaknesses": ["string", ...],    // 2-4 条不足（指出哪一轮里讲错或讲不清）
-  "suggestions": ["string", ...],   // 2-3 条改进建议
+  "strengths": ["string", ...],     // 1-2 条优点（具体引用对话内容）
+  "weaknesses": ["string", ...],    // 1-2 条不足（指出哪一轮里讲错或讲不清）
+  "suggestions": ["string", ...],   // 1-2 条改进建议
   "verdict": "mastered"|"partial"|"struggling",
   "summary": "string"               // 一句话总评（≤ 100 字）
 }
 
-⚠ strengths 和 weaknesses 必须**引用对话里的具体内容**，不能空话。`,
+⚠ strengths 和 weaknesses 必须**引用对话里的具体内容**，不能空话。每条 ≤ 60 字。`,
   };
 }
 
@@ -881,8 +888,8 @@ ${rawText}
  * profile 和 history 让 AI 给出"针对性、不重复"的反馈。
  */
 /** 字符上限（避免 prompt 爆炸） */
-const STATEMENT_MAX = 2000;
-const CONSTRAINTS_MAX = 800;
+export const STATEMENT_MAX = 2000;
+export const CONSTRAINTS_MAX = 800;
 const CODE_MAX = 6000;
 
 /** 给 AI 看带行号前缀的代码：明显降低 AI 数错行的概率
@@ -908,7 +915,7 @@ function withLineNumbers(code: string): { numbered: string; totalLines: number; 
   return { numbered, totalLines: lines.length, truncated };
 }
 
-function clip(s: string, max: number): string {
+export function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + '…[截断]' : s;
 }
 

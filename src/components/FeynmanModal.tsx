@@ -26,6 +26,11 @@ import {
 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
+import {
+  runFeynmanStudentTurn,
+  runFeynmanEvaluation,
+  FEYNMAN_MIN_USER_TURNS,
+} from '../core/feynmanSession';
 
 interface ConvoMsg {
   role: 'user' | 'student';
@@ -112,7 +117,7 @@ export function FeynmanModal() {
 
   const aiUsable =
     aiConfig.provider === 'ollama'
-      ? !!aiConfig.baseUrl?.trim()
+      ? aiConfig.ollamaMode !== 'disabled' && !!aiConfig.baseUrl?.trim()
       : !!aiConfig.apiKey?.trim();
 
   if (!aiUsable) {
@@ -140,9 +145,6 @@ export function FeynmanModal() {
     const text = draft.trim();
     if (!text || thinking) return;
     const turnIndex = convo.filter((m) => m.role === 'user').length;
-    const userMsg: ConvoMsg = { role: 'user', text };
-    const newConvo = [...convo, userMsg];
-    setConvo(newConvo);
     setDraft('');
     setThinking(true);
 
@@ -155,33 +157,44 @@ export function FeynmanModal() {
       route: 'cloud',
     });
 
+    // 用户输入即时落到对话录（占位）；真正的 student turn 通过纯函数 helper 跑
+    const optimistic: ConvoMsg = { role: 'user', text };
+    setConvo([...convo, optimistic]);
+
     const t0 = Date.now();
-    const res = await coach.generateFeynmanStudentReply({
-      problem: { title: problem.title, statement: problem.statement },
-      conversation: newConvo.map((m) => ({ role: m.role, text: m.text })),
-      userTurn: text,
-      turnIndex,
-    });
+    const result = await runFeynmanStudentTurn(
+      {
+        generateStudentReply: (a) => coach.generateFeynmanStudentReply(a),
+        generateEvaluation: (a) => coach.generateFeynmanEvaluation(a),
+      },
+      {
+        problem: { title: problem.title, statement: problem.statement },
+        conversation: convo.map((m) => ({ role: m.role, text: m.text })),
+        userText: text,
+      },
+    );
     const latency = Date.now() - t0;
 
-    if (!res) {
+    if (result.status === 'failed') {
       recordTrace({
         kind: 'feedback',
         level: 'warn',
         title: 'Feynman/Student · 失败',
-        detail: 'AI 学生没听懂这一轮，稍后再试',
+        detail: result.reason,
         agentName: 'Feynman/Student',
         latencyMs: latency,
         route: 'cloud',
       });
-      setConvo([
-        ...newConvo,
-        {
-          role: 'student',
-          text: '（AI 学生暂时没听懂，可以换种说法再讲一遍吗？）',
-          questions: [],
-        },
-      ]);
+      // helper 已经在 conversation 末尾追加了占位 student
+      setConvo(
+        result.conversation.map((t, i) => {
+          // 末尾占位 student 转成本地 ConvoMsg 形态（带 questions 字段空数组）
+          if (i === result.conversation.length - 1 && t.role === 'student') {
+            return { role: 'student', text: t.text, questions: [] };
+          }
+          return { role: t.role, text: t.text };
+        }),
+      );
       setThinking(false);
       return;
     }
@@ -189,20 +202,21 @@ export function FeynmanModal() {
     recordTrace({
       kind: 'feedback',
       level: 'success',
-      title: `Feynman/Student · 提了 ${res.questions.length} 个问题`,
-      detail: `回应：${res.studentReply}\n问题：\n- ${res.questions.join('\n- ')}`,
+      title: `Feynman/Student · 提了 ${result.reply.questions.length} 个问题`,
+      detail: `回应：${result.reply.studentReply}\n问题：\n- ${result.reply.questions.join('\n- ')}`,
       agentName: 'Feynman/Student',
       latencyMs: latency,
       route: 'cloud',
     });
 
     setConvo([
-      ...newConvo,
+      ...convo,
+      optimistic,
       {
         role: 'student',
-        text: res.studentReply,
-        questions: res.questions,
-        confusion: res.confusion,
+        text: result.reply.studentReply,
+        questions: result.reply.questions,
+        confusion: result.reply.confusion,
       },
     ]);
     setThinking(false);
@@ -210,10 +224,7 @@ export function FeynmanModal() {
 
   const finishAndEvaluate = async () => {
     const userTurns = convo.filter((m) => m.role === 'user').length;
-    if (userTurns < 2) {
-      // 太短不评估
-      return;
-    }
+    if (userTurns < FEYNMAN_MIN_USER_TURNS) return; // 太短不评估
     setEvaluating(true);
     recordTrace({
       kind: 'decide',
@@ -224,16 +235,28 @@ export function FeynmanModal() {
       route: 'cloud',
     });
     const t0 = Date.now();
-    const res = await coach.generateFeynmanEvaluation({
-      problem: { title: problem.title, statement: problem.statement },
-      conversation: convo.map((m) => ({ role: m.role, text: m.text })),
-    });
+    const result = await runFeynmanEvaluation(
+      {
+        generateStudentReply: (a) => coach.generateFeynmanStudentReply(a),
+        generateEvaluation: (a) => coach.generateFeynmanEvaluation(a),
+      },
+      {
+        problem: { title: problem.title, statement: problem.statement },
+        conversation: convo.map((m) => ({ role: m.role, text: m.text })),
+      },
+    );
     const latency = Date.now() - t0;
-    if (!res) {
+
+    if (result.status === 'too-short') {
+      setEvaluating(false);
+      return;
+    }
+    if (result.status === 'failed') {
       recordTrace({
         kind: 'feedback',
         level: 'error',
         title: 'Feynman/Evaluator · 失败',
+        detail: result.reason,
         agentName: 'Feynman/Evaluator',
         latencyMs: latency,
         route: 'cloud',
@@ -241,6 +264,7 @@ export function FeynmanModal() {
       setEvaluating(false);
       return;
     }
+    const res = result.evaluation;
     recordTrace({
       kind: 'feedback',
       level: res.verdict === 'mastered' ? 'success' : 'info',

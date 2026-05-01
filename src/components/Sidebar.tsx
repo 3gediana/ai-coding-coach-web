@@ -2,11 +2,12 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock, Plus, Search, Archive, ArchiveRestore } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
-import { Dashboard } from './Dashboard';
 import { getArea } from '../core/taxonomy';
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import { ResizeHandle } from './ResizeHandle';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
+
+const Dashboard = lazy(() => import('./Dashboard').then((m) => ({ default: m.Dashboard })));
 
 type MistakeSort = 'recent' | 'review-due' | 'unreviewed';
 

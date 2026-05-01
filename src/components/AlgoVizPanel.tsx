@@ -47,13 +47,14 @@ export function AlgoVizPanel(): React.ReactElement {
   );
   const requestGen = useStore((s) => s.requestAlgoVizGeneration);
   const requestAnimOnly = useStore((s) => s.requestAlgoVizAnimationOnly);
+  const showRealtimeStatus = useStore((s) => s.aiConfig.ollamaMode !== 'disabled');
 
   if (!problem) {
     return (
       <div className="flex-1 flex items-center justify-center text-[11px] text-ink-mute px-4 text-center">
         激活一道题后，这里会出现：
         <br />
-        左侧实时模块进度 + AC 后可播放的算法动画。
+        {showRealtimeStatus ? '左侧实时模块进度 + AC 后可播放的算法动画。' : 'AC 后可播放的算法动画。'}
       </div>
     );
   }
@@ -66,7 +67,7 @@ export function AlgoVizPanel(): React.ReactElement {
 
   // ★ 即使 failed，只要有旧的 statusCode 就让用户继续看/播放上一次的版本，
   //   不要把已生成好的内容因为这次"重新生成失败"而隐藏掉。
-  const hasUsable = !!statusCode;
+  const hasUsable = showRealtimeStatus ? !!statusCode : !!(statusCode || animationCode);
   const showIdle = status === 'idle' || (status === 'failed' && !hasUsable);
   const showGeneratingStatus = status === 'generating-status' && !hasUsable;
   const showReady =
@@ -81,8 +82,9 @@ export function AlgoVizPanel(): React.ReactElement {
       <HeaderBar
         algoName={schema?.algoName}
         status={status}
-        detecting={detecting}
+        detecting={showRealtimeStatus && detecting}
         errorMessage={algoViz?.errorMessage}
+        showRealtimeStatus={showRealtimeStatus}
       />
       <div className="flex-1 overflow-y-auto">
         {/* failed 状态但有旧产物：顶部一条小 banner 提示重生失败、保留旧版本 */}
@@ -107,11 +109,15 @@ export function AlgoVizPanel(): React.ReactElement {
             errorMessage={algoViz?.errorMessage}
             onGenerateFull={() => void requestGen(problem.id, { force: status === 'failed' })}
             onGenerateAnimOnly={() => void requestAnimOnly(problem.id)}
+            showRealtimeStatus={showRealtimeStatus}
           />
         )}
 
         {showGeneratingStatus && (
-          <GeneratingView title="生成 Status 模块卡片中…" subtitle="预计 ~20 秒" />
+          <GeneratingView
+            title={showRealtimeStatus ? '生成 Status 模块卡片中…' : '准备动画素材中…'}
+            subtitle="预计 ~20 秒"
+          />
         )}
 
         {showReady && (
@@ -123,6 +129,7 @@ export function AlgoVizPanel(): React.ReactElement {
             moduleStatus={moduleStatus}
             isAnimGenerating={status === 'generating-anim' || status === 'generating-status'}
             onRegenerateAnim={() => void requestAnimOnly(problem.id)}
+            showRealtimeStatus={showRealtimeStatus}
           />
         )}
       </div>
@@ -139,24 +146,26 @@ function HeaderBar({
   status,
   detecting,
   errorMessage,
+  showRealtimeStatus,
 }: {
   algoName?: string;
   status: NonNullable<Problem['algoViz']>['status'];
   detecting: boolean;
   errorMessage?: string;
+  showRealtimeStatus: boolean;
 }): React.ReactElement {
   const label = (() => {
     switch (status) {
       case 'idle':
         return '未生成';
       case 'generating-status':
-        return '生成 Status…';
+        return showRealtimeStatus ? '生成 Status…' : '准备动画素材…';
       case 'status-ready':
-        return 'Status 就绪 · Animation 生成中';
+        return showRealtimeStatus ? 'Status 就绪 · Animation 生成中' : '动画生成中…';
       case 'generating-anim':
         return 'Animation 生成中…';
       case 'ready':
-        return '就绪';
+        return showRealtimeStatus ? '就绪' : '动画就绪';
       case 'failed':
         return '失败';
     }
@@ -195,15 +204,19 @@ function IdleOrFailedView({
   errorMessage,
   onGenerateFull,
   onGenerateAnimOnly,
+  showRealtimeStatus,
 }: {
   problem: Problem;
   errorMessage?: string;
   onGenerateFull: () => void;
   onGenerateAnimOnly: () => void;
+  showRealtimeStatus: boolean;
 }): React.ReactElement {
   const aiOk = useStore((s) => {
     const cfg = s.aiConfig;
-    return cfg.provider === 'ollama' ? !!cfg.baseUrl : !!cfg.apiKey;
+    return cfg.provider === 'ollama'
+      ? cfg.ollamaMode !== 'disabled' && !!cfg.baseUrl
+      : !!cfg.apiKey;
   });
   const failed = !!errorMessage;
   return (
@@ -233,23 +246,31 @@ function IdleOrFailedView({
           onClick={onGenerateFull}
           disabled={!aiOk}
           className="btn-primary w-full justify-center disabled:opacity-50 disabled:cursor-not-allowed"
-          title="生成模块进度卡片 + AC 动画（耗时约 90-120 秒，后台进行不阻塞做题）"
+          title={
+            showRealtimeStatus
+              ? '生成模块进度卡片 + AC 动画（耗时约 90-120 秒，后台进行不阻塞做题）'
+              : '生成 AC 动画（耗时约 90-120 秒，后台进行不阻塞做题）'
+          }
         >
           <Sparkles size={13} />
-          {failed ? '重新生成全套（Status + Animation）' : '生成 Status + Animation（推荐）'}
+          {showRealtimeStatus
+            ? failed ? '重新生成全套（Status + Animation）' : '生成 Status + Animation（推荐）'
+            : failed ? '重新生成算法动画' : '生成算法动画'}
         </button>
-        <button
-          onClick={onGenerateAnimOnly}
-          disabled={!aiOk}
-          className="btn-ghost w-full justify-center disabled:opacity-50 disabled:cursor-not-allowed"
-          title="只生成 AC 后的动画，跳过实时模块进度（适合已经做过的老题）"
-        >
-          <Play size={12} />
-          只生成 AC 动画（老题模式）
-        </button>
+        {showRealtimeStatus && (
+          <button
+            onClick={onGenerateAnimOnly}
+            disabled={!aiOk}
+            className="btn-ghost w-full justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+            title="只生成 AC 后的动画，跳过实时模块进度（适合已经做过的老题）"
+          >
+            <Play size={12} />
+            只生成 AC 动画（老题模式）
+          </button>
+        )}
       </div>
       <div className="text-[10px] text-ink-mute leading-relaxed pt-2">
-        生成由"重活"模型完成（默认主云端，可在 Settings 里把 Status / Animation 单独换成 DeepSeek）。
+        生成由"重活"模型完成（默认主云端，可在 Settings 里单独换成 DeepSeek）。
         <br />
         生成期间你可以继续做题，结果会自动出现在这里。
       </div>
@@ -281,6 +302,7 @@ function ReadyView({
   moduleStatus,
   isAnimGenerating,
   onRegenerateAnim,
+  showRealtimeStatus,
 }: {
   problem: Problem;
   statusCode: string | null;
@@ -289,6 +311,7 @@ function ReadyView({
   moduleStatus: Record<string, boolean> | undefined;
   isAnimGenerating: boolean;
   onRegenerateAnim: () => void;
+  showRealtimeStatus: boolean;
 }): React.ReactElement {
   // schema → React props 映射：status 模块的 prop 名是 module1/module2/...
   // schema.modules 顺序就是 1/2/3/4，按 id 在 moduleStatus 里查
@@ -305,15 +328,15 @@ function ReadyView({
     <div className="px-2 py-2 space-y-3">
       {/* Status 实时区：DeepSeek 生成的"算法视觉骨架"（数组/表/节点等真实部件，不是文字卡片）。
           不加任何容器边框/背景，让组件自带的 transparent / 米黄配色与主面板融合。 */}
-      {statusCode ? (
+      {showRealtimeStatus && statusCode ? (
         <LLMComponentRenderer
           code={statusCode}
           globals={STATUS_GLOBALS}
           componentProps={componentProps}
         />
-      ) : (
+      ) : showRealtimeStatus ? (
         <div className="text-[11px] text-ink-mute px-2">（老题模式，没有实时 Status；可直接播放动画）</div>
-      )}
+      ) : null}
 
       {/* Animation 区：保留一个轻边框分隔，因为 Player 视觉本身就是一个独立动画画布 */}
       <div className="border border-line/60 rounded-lg overflow-hidden">
@@ -333,7 +356,7 @@ function ReadyView({
         </div>
         {isAnimGenerating ? (
           <GeneratingView title="生成 Animation 中…" subtitle="预计 60–100 秒" />
-        ) : animationCode ? (
+        ) : animationCode && schema ? (
           <AnimationPlayer animationCode={animationCode} schema={schema} />
         ) : (
           <div className="px-4 py-6 text-[11px] text-ink-mute text-center">
@@ -343,7 +366,7 @@ function ReadyView({
       </div>
 
       {/* 调试信息 */}
-      {schema && (
+      {showRealtimeStatus && schema && (
         <details className="text-[10px] text-ink-mute">
           <summary className="cursor-pointer hover:text-ink transition">
             schema 调试信息（{schema.modules.length} 模块）

@@ -28,7 +28,9 @@ export function QuickSetupCard() {
 
   // 只在还没配置 + Settings 没打开时显示（避免和 SettingsModal 同时存在）
   const usable =
-    cfg.provider === 'ollama' ? !!cfg.baseUrl?.trim() : !!cfg.apiKey?.trim();
+    cfg.provider === 'ollama'
+      ? cfg.ollamaMode !== 'disabled' && !!cfg.baseUrl?.trim()
+      : !!cfg.apiKey?.trim();
 
   // 用户「先不填，关掉看看」的本会话隐藏标记
   const [dismissed, setDismissed] = useState(false);

@@ -1,5 +1,5 @@
 import type { AnalysisResult } from '../types';
-import type { CoachContextInput } from './types';
+import type { CoachContextInput, CoachRoute } from './types';
 
 export function buildCoachContext(input: CoachContextInput): string {
   const behavior = renderBehavior(input);
@@ -26,17 +26,30 @@ export function buildCoachContext(input: CoachContextInput): string {
   return [body, behavior].filter(Boolean).join('\n\n');
 }
 
+export function formatInlineCoachPrelude(route: CoachRoute): string {
+  if (route.intent === 'debug_runtime_error') {
+    return '先别等完整批注：你能先看一眼 `stderr` 里最靠后的报错词，再对照最近改过的那一行吗？\n\n我会在后台继续生成行内批注；你先把“输入 → 报错行 → 变量值”这条链串起来。';
+  }
+  return '先别等完整批注：你能先构造一个最小样例，观察某个变量在一轮循环前后是否仍满足题目要求吗？\n\n我会在后台继续生成行内批注；你先不要急着改代码，先验证这个不变量。';
+}
+
 export function formatAnalysisAsCoachMessage(result: AnalysisResult): string {
   const lines: string[] = [];
-  if (result.overallComment) lines.push(result.overallComment);
   if (result.issues.length === 0) {
-    lines.push('我没有发现特别明显的代码问题。你可以继续补充具体卡点，或者先用样例和边界数据验证。');
+    if (result.overallComment) lines.push(`我目前的观察：${result.overallComment}`);
+    lines.push('我没有发现特别明显的代码问题。你可以先换一个边界样例验证，或告诉我你期望哪一步和实际哪一步不一致。');
   } else {
-    lines.push(`我在代码里标了 ${result.issues.length} 处重点，先看最关键的：`);
-    for (const issue of result.issues.slice(0, 3)) {
-      lines.push(`- 第 ${issue.line} 行：${issue.message}${issue.suggestion ? `。建议：${issue.suggestion}` : ''}`);
+    lines.push('行内批注已完成。我目前怀疑有一个关键不变量被破坏了，先验证这些位置：');
+    const seenLines = new Set<number>();
+    const focusIssues = result.issues.filter((issue) => {
+      if (seenLines.has(issue.line)) return false;
+      seenLines.add(issue.line);
+      return true;
+    });
+    for (const issue of focusIssues.slice(0, 3)) {
+      lines.push(`- 第 ${issue.line} 行：先观察这一步执行前后，相关变量是否仍满足题目要求。`);
     }
-    lines.push('详细位置已经同步到编辑器行内批注。');
+    lines.push('详细位置已经同步到编辑器行内批注。建议你先只改一处，再用同一个样例复跑验证。');
   }
   if (result.complexitySummary) lines.push(`复杂度：${result.complexitySummary}`);
   return lines.join('\n\n');

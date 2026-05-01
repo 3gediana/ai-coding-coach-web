@@ -26,10 +26,13 @@ import { MathMarkdown } from './MathMarkdown';
 import { QAPanel } from './QAPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { AgentTracePanel } from './AgentTracePanel';
-import { AlgoVizPanel } from './AlgoVizPanel';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
-import { useRef, useState } from 'react';
+import { lazy, Suspense, useRef, useState } from 'react';
+
 import { codeHash } from '../core/utils';
+
+const AlgoVizPanel = lazy(() => import('./AlgoVizPanel').then((m) => ({ default: m.AlgoVizPanel })));
+const TRACE_COLLAPSED_KEY = 'aicc.layout.traceCollapsed';
 
 export function FeedbackPanel() {
   const [width, setWidth] = usePersistedWidth('aicc.layout.feedbackWidth', 420, 280, 900);
@@ -39,6 +42,15 @@ export function FeedbackPanel() {
     32,
     640,
   );
+  const [traceCollapsed, setTraceCollapsed] = useState(() =>
+    localStorage.getItem(TRACE_COLLAPSED_KEY) !== '0',
+  );
+  const toggleTraceCollapsed = () => {
+    setTraceCollapsed((v) => {
+      localStorage.setItem(TRACE_COLLAPSED_KEY, v ? '0' : '1');
+      return !v;
+    });
+  };
   const activeProblemId = useStore((s) => s.activeProblemId);
   const analysisByProblem = useStore((s) => s.analysisByProblem);
   const tasks = useStore((s) => s.tasks);
@@ -50,6 +62,7 @@ export function FeedbackPanel() {
   const qaPendingProblemId = useStore((s) => s.qaPendingProblemId);
   const tab = useStore((s) => s.feedbackTab);
   const setTab = useStore((s) => s.setFeedbackTab);
+  const ollamaMode = useStore((s) => s.aiConfig.ollamaMode);
 
   const key = activeProblemId ?? '__draft__';
   const result = analysisByProblem[key];
@@ -80,6 +93,7 @@ export function FeedbackPanel() {
   const algoVizDetecting = useStore((s) =>
     activeProblemId ? !!s.algoVizDetectingByProblem[activeProblemId] : false,
   );
+  const showAlgoVizProgress = ollamaMode !== 'disabled';
 
   return (
     <>
@@ -113,11 +127,11 @@ export function FeedbackPanel() {
             onClick={() => setTab('algoviz')}
             icon={<Wand2 size={12} />}
             label={
-              algoVizTotalCount > 0
+              showAlgoVizProgress && algoVizTotalCount > 0
                 ? `算法 ${algoVizActiveCount}/${algoVizTotalCount}`
-                : '算法可视化'
+                : '算法动画'
             }
-            pulsing={algoVizDetecting}
+            pulsing={showAlgoVizProgress && algoVizDetecting}
           />
           {/* spinner 浮在 Tab bar 最右，indicate 后台 LLM 在跑 */}
           {(qaActive || runningAnalysis) && (
@@ -139,17 +153,31 @@ export function FeedbackPanel() {
           ) : tab === 'ask' ? (
             <QAPanel />
           ) : (
+            <Suspense fallback={<div className="p-3 text-xs text-ink-mute">加载可视化面板…</div>}>
             <AlgoVizPanel />
+          </Suspense>
           )}
         </div>
 
-        <RowResizeHandle currentHeight={traceH} onResize={setTraceH} min={32} max={640} />
-        <div
-          className="border-t border-line shrink-0 overflow-hidden"
-          style={{ height: `${traceH}px` }}
-        >
-          <AgentTracePanel />
-        </div>
+        {traceCollapsed ? (
+          <button
+            onClick={toggleTraceCollapsed}
+            className="h-7 w-full flex items-center px-2 border-t border-line bg-bg-elev/40 text-[11px] text-ink-mute hover:text-ink hover:bg-bg-elev2 transition shrink-0"
+          >
+            <Activity size={11} className="text-accent mr-1.5" />
+            Agent · {useStore((s) => s.agentTrace).length} 条行动 · 点击展开
+          </button>
+        ) : (
+          <>
+            <RowResizeHandle currentHeight={traceH} onResize={setTraceH} min={32} max={640} />
+            <div
+              className="border-t border-line shrink-0 overflow-hidden"
+              style={{ height: `${traceH}px` }}
+            >
+              <AgentTracePanel onToggleCollapsed={toggleTraceCollapsed} />
+            </div>
+          </>
+        )}
       </aside>
     </>
   );

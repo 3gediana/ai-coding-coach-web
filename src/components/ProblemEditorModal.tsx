@@ -13,7 +13,9 @@ export function ProblemEditorModal() {
   const setOpen = useStore((s) => s.setProblemEditorOpen);
   const enqueueParseProblem = useStore((s) => s.enqueueParseProblem);
   const aiOk = useStore((s) =>
-    s.aiConfig.provider === 'ollama' ? !!s.aiConfig.baseUrl : !!s.aiConfig.apiKey,
+    s.aiConfig.provider === 'ollama'
+      ? s.aiConfig.ollamaMode !== 'disabled' && !!s.aiConfig.baseUrl
+      : !!s.aiConfig.apiKey,
   );
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
 

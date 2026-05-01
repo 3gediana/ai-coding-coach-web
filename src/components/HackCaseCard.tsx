@@ -27,8 +27,10 @@ const SEVERITY_COLOR: Record<string, string> = {
 
 export function HackCaseCard() {
   const pending = useStore((s) => s.pendingHackCase);
+  const ollamaMode = useStore((s) => s.aiConfig.ollamaMode);
   const dismiss = useStore((s) => s.dismissHackCase);
   const setRuntimePaneOpen = useStore((s) => s.setRuntimePaneOpen);
+  const visible = pending && ollamaMode !== 'disabled';
 
   const onRun = () => {
     if (!pending) return;
@@ -41,7 +43,7 @@ export function HackCaseCard() {
 
   return (
     <AnimatePresence>
-      {pending && (
+      {visible && (
         <motion.div
           initial={{ y: 24, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}

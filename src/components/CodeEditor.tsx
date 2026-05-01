@@ -32,6 +32,7 @@ export function CodeEditor() {
   const analysisByProblem = useStore((s) => s.analysisByProblem);
   const coachHintsByScope = useStore((s) => s.coachHintsByScope);
   const dismissCoachHint = useStore((s) => s.dismissCoachHint);
+  const ollamaMode = useStore((s) => s.aiConfig.ollamaMode);
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const files = filesByScope[scope] ?? [];
@@ -46,9 +47,10 @@ export function CodeEditor() {
     (!result.codeHash || result.codeHash === codeHash(file.content));
 
   // 当前 scope 下、属于当前 file 的 coach hint（其它 file 的不展示）
-  const coachHints: CoachHint[] = (coachHintsByScope[scope] ?? []).filter(
-    (h) => !h.fileId || h.fileId === activeId,
-  );
+  const coachHints: CoachHint[] =
+    ollamaMode === 'disabled'
+      ? []
+      : (coachHintsByScope[scope] ?? []).filter((h) => !h.fileId || h.fileId === activeId);
 
   // 角标 popover 展开状态
   const [hintPopoverOpen, setHintPopoverOpen] = useState(false);

@@ -58,8 +58,10 @@ export function TopBar() {
   );
 
   const activeProblem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
-  // ollama 等本地服务不需要 apiKey；其它都要
-  const apiOk = aiConfig.provider === 'ollama' ? !!aiConfig.baseUrl : !!aiConfig.apiKey;
+  const apiOk =
+    aiConfig.provider === 'ollama'
+      ? aiConfig.ollamaMode !== 'disabled' && !!aiConfig.baseUrl
+      : !!aiConfig.apiKey;
   const scope = activeProblemId ?? '__draft__';
   const activeFile = (filesByScope[scope] ?? []).find(
     (f) => f.id === activeFileIdByScope[scope],
@@ -253,13 +255,15 @@ export function TopBar() {
 function OfflineChip() {
   const status = useOnlineStatus();
   const aiConfig = useStore((s) => s.aiConfig);
-  // FastLane 是否可用（决定离线时还能不能干活）
+  const ollamaOff = aiConfig.ollamaMode === 'disabled';
   const fastUsable =
+    !ollamaOff &&
     !!aiConfig.fastLane?.enabled &&
     !!aiConfig.fastLane?.baseUrl &&
     !!aiConfig.fastLane?.model;
 
   if (status === 'online') {
+    if (ollamaOff) return null;
     // 在线时：fastLane 启用 → 显一个明显的 ⚡ Local chip；未启用 → 只挂隐藏的「飞行模式」入口
     return (
       <div className="hidden md:flex items-center gap-1">
@@ -274,6 +278,12 @@ function OfflineChip() {
         <button
           type="button"
           onClick={() => {
+            if (ollamaOff) {
+              toast.warning('当前为「无 Ollama 模式」', {
+                description: '飞行模式需要本地 Ollama；可在「设置」顶部切换 Ollama 模式',
+              });
+              return;
+            }
             if (!fastUsable) {
               toast.warning('飞行模式需要先配本地 FastLane (Ollama)');
               return;
@@ -301,11 +311,16 @@ function OfflineChip() {
           setForcedOffline(false);
           toast.success('已退出飞行模式');
         } else {
-          toast.message('网络已断开 · AI 自动切到本地 FastLane', {
-            description: fastUsable
-              ? '本地 sam:latest 在线，可继续批注 / 总结 / 问答'
-              : '⚠ 没配 FastLane，云端任务会失败',
-          });
+          toast.message(
+            ollamaOff ? '网络已断开 · 当前无本地 AI 兜底' : '网络已断开 · AI 自动切到本地 FastLane',
+            {
+              description: fastUsable
+                ? '本地 FastLane 在线，可继续批注 / 总结 / 问答'
+                : ollamaOff
+                  ? '⚠ 当前是无 Ollama 模式，离线后云端任务会失败'
+                  : '⚠ 没配 FastLane，云端任务会失败',
+            },
+          );
         }
       }}
       className={cn(
@@ -318,7 +333,11 @@ function OfflineChip() {
       title={
         isForced
           ? '飞行模式中 · 点击退出'
-          : '检测到无网络 · 已切到本地 FastLane'
+          : fastUsable
+            ? '检测到无网络 · 已切到本地 FastLane'
+            : ollamaOff
+              ? '检测到无网络 · 无 Ollama 本地兜底'
+              : '检测到无网络 · 无本地 FastLane 可用'
       }
     >
       {isForced ? <Plane size={11} /> : <WifiOff size={11} />}

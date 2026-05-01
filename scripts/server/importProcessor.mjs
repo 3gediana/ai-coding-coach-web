@@ -118,7 +118,13 @@ export async function processImportFile(rawPath) {
 
   // 没图直接跳过 sam，但仍输出 processed 文件保持流程一致
   if (payload.images?.length > 0) {
-    if (!(await ollamaIsRunning())) {
+    // 总开关（与浏览器侧 ollamaMode='disabled' 对齐）：
+    //   AICC_OLLAMA=0  → 直接跳过识图，不发任何 ollama 请求
+    //   AICC_OLLAMA=1  → 显式启用（默认行为）
+    //   未设置          → fall back 到 ollamaIsRunning() 探测
+    if (process.env.AICC_OLLAMA === '0') {
+      warn('AICC_OLLAMA=0 已显式禁用 Ollama 模式，跳过识图');
+    } else if (!(await ollamaIsRunning())) {
       warn('ollama 未运行，跳过识图（保留原始 placeholder）');
     } else {
       try {

@@ -36,12 +36,12 @@ export const PRESETS: AIPreset[] = [
     label: 'DeepSeek',
     hint: 'V4 旗舰（1M 上下文，2026.04 开源）；价格屠夫，百万上下文 ≈ 2 毛 · 中文用户首选',
     baseUrl: 'https://api.deepseek.com/v1/chat/completions',
-    defaultModel: 'deepseek-chat',
+    defaultModel: 'deepseek-v4-flash',
     modelExamples: [
-      'deepseek-chat',       // 默认：v4-flash 非思考，最常用
-      'deepseek-reasoner',   // v4-flash 思考版
-      'deepseek-v4-pro',     // 满血，1M 上下文
-      'deepseek-v4-flash',   // 经济版，速度快
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'deepseek-chat',
+      'deepseek-reasoner',
     ],
     apiKeyPage: 'https://platform.deepseek.com/api_keys',
   },
@@ -131,7 +131,27 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
   baseUrl: PRESETS[0].baseUrl,
   apiKey: '',
   model: PRESETS[0].defaultModel,
+  qualityModelId: 'deepseek-v4-pro',
+  modelRegistry: [
+    {
+      id: 'deepseek-v4-flash',
+      label: 'DeepSeek V4 Flash（默认）',
+      provider: 'deepseek',
+      baseUrl: PRESETS[0].baseUrl,
+      apiKey: '',
+      model: 'deepseek-v4-flash',
+    },
+    {
+      id: 'deepseek-v4-pro',
+      label: 'DeepSeek V4 Pro（高质量）',
+      provider: 'deepseek',
+      baseUrl: PRESETS[0].baseUrl,
+      apiKey: '',
+      model: 'deepseek-v4-pro',
+    },
+  ],
   maxTokens: 8000,
+  ollamaMode: 'enabled',
   temperature: 0.3,
   timeoutMs: 180_000,
   maxRetries: 2,
@@ -151,6 +171,24 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
     baseUrl: 'http://localhost:11434',
     apiKey: '',
     model: 'qwen3:4b',
+  },
+  algoVizModels: {
+    status: {
+      enabled: true,
+      modelId: 'deepseek-v4-pro',
+      provider: 'deepseek',
+      baseUrl: PRESETS[0].baseUrl,
+      apiKey: '',
+      model: 'deepseek-v4-pro',
+    },
+    animation: {
+      enabled: true,
+      modelId: 'deepseek-v4-pro',
+      provider: 'deepseek',
+      baseUrl: PRESETS[0].baseUrl,
+      apiKey: '',
+      model: 'deepseek-v4-pro',
+    },
   },
 };
 

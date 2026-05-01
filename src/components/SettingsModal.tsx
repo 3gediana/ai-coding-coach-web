@@ -24,10 +24,17 @@ import {
   Compass,
   Ruler,
   ChevronDown,
+  Cpu,
+  PowerOff,
+  Image,
+  Activity,
+  ScanLine,
 } from 'lucide-react';
 import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
 import { DEFAULT_ROUTER_HINTS } from '../core/ai/router';
+import { ModelRegistrySection, ModelPicker } from './ModelRegistry';
+import { resolvePrimaryModel } from '../lib/modelRegistry';
 
 export function SettingsModal() {
   const open = useStore((s) => s.settingsOpen);
@@ -43,18 +50,20 @@ export function SettingsModal() {
   const intentSniffEnabled = useStore((s) => s.intentSniffEnabled);
   const setIntentSniffEnabled = useStore((s) => s.setIntentSniffEnabled);
 
-  /** fastLane 是否就绪：enabled + 本地 baseUrl + model 都配齐才算 */
-  const fastLaneReady = !!(
-    cfg.fastLane?.enabled &&
-    cfg.fastLane.baseUrl?.trim() &&
-    cfg.fastLane.model?.trim() &&
-    isLocalOllamaUrl(cfg.fastLane.baseUrl)
-  );
-
   const [draft, setDraft] = useState<AIConfig>(cfg);
   const [showKey, setShowKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  /** fastLane 是否就绪：enabled + 本地 baseUrl + model + Ollama 模式打开 */
+  const fastLaneReady = !!(
+    draft.ollamaMode !== 'disabled' &&
+    draft.fastLane?.enabled &&
+    draft.fastLane.baseUrl?.trim() &&
+    draft.fastLane.model?.trim() &&
+    isLocalOllamaUrl(draft.fastLane.baseUrl)
+  );
+  const ollamaEnabled = draft.ollamaMode !== 'disabled';
 
   /**
    * 智能识别 apiKey 前缀，提示用户是否要切到对应 provider。
@@ -111,33 +120,57 @@ export function SettingsModal() {
    * 这是「主体」最关键的操作：用户填一个 apikey 点一下 → 立刻知道行不行。
    */
   const onSaveAndTest = async () => {
-    if (!draft.baseUrl.trim()) {
-      setTestResult({ ok: false, msg: 'Base URL 不能为空（在「高级」里填）' });
+    // 校验"实际生效的主模型"——若分配了 primaryModelId 就走 registry，否则走顶层字段
+    const primary = resolvePrimaryModel(draft);
+    if (!primary.baseUrl.trim()) {
+      setTestResult({ ok: false, msg: 'Base URL 不能为空（请到注册表登记或填写下方字段）' });
+      return;
+    }
+    if (draft.ollamaMode === 'disabled' && primary.provider === 'ollama') {
+      setTestResult({
+        ok: false,
+        msg: '当前是「无 Ollama 模式」，主 AI 服务不能选择 Ollama。请切到 DeepSeek / OpenAI 兼容云端，或打开 Ollama 模式。',
+      });
       return;
     }
     // ollama 本地服务可以不要 apiKey
-    const needsKey = draft.provider !== 'ollama';
-    if (needsKey && !draft.apiKey.trim()) {
+    const needsKey = primary.provider !== 'ollama';
+    if (needsKey && !primary.apiKey.trim()) {
       setTestResult({ ok: false, msg: 'API Key 不能为空' });
       return;
     }
-    if (!draft.model.trim()) {
+    if (!primary.model.trim()) {
       setTestResult({ ok: false, msg: 'Model 不能为空' });
       return;
     }
-    if (draft.fastLane?.enabled) {
-      if (!draft.fastLane.baseUrl?.trim()) {
-        setTestResult({ ok: false, msg: 'FastLane Base URL 不能为空（在「高级」里填）' });
+    if (draft.ollamaMode !== 'disabled' && draft.fastLane?.enabled) {
+      // FastLane 也支持注册制：modelId 优先，否则看 fastLane 自身字段
+      const flEntry = draft.fastLane.modelId
+        ? draft.modelRegistry?.find((m) => m.id === draft.fastLane!.modelId)
+        : null;
+      const flBase = flEntry?.baseUrl ?? draft.fastLane.baseUrl;
+      const flModel = flEntry?.model ?? draft.fastLane.model;
+      if (!flBase?.trim()) {
+        setTestResult({ ok: false, msg: 'FastLane Base URL 不能为空（在「高级」里填或注册一个本地模型）' });
         return;
       }
-      if (!draft.fastLane.model?.trim()) {
-        setTestResult({ ok: false, msg: 'FastLane 模型不能为空（在「高级」里填）' });
+      if (!flModel?.trim()) {
+        setTestResult({ ok: false, msg: 'FastLane 模型不能为空（在「高级」里填或注册一个本地模型）' });
         return;
       }
     }
     setTesting(true);
     setTestResult(null);
-    const client = new AIClient(draft);
+    // 用解析后的 primary 字段拼一个临时 AIConfig 给 AIClient
+    const resolvedDraft: AIConfig = {
+      ...draft,
+      provider: primary.provider,
+      baseUrl: primary.baseUrl,
+      apiKey: primary.apiKey,
+      model: primary.model,
+      numCtx: primary.numCtx ?? draft.numCtx,
+    };
+    const client = new AIClient(resolvedDraft);
     try {
       const text = await client.chat({
         messages: [
@@ -189,7 +222,30 @@ export function SettingsModal() {
             </div>
 
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
-              {/* Preset chips */}
+              <OllamaModeSwitch
+                mode={draft.ollamaMode ?? 'enabled'}
+                onChange={(m) => setDraft({ ...draft, ollamaMode: m })}
+              />
+
+              {/* 模型注册表：先注册好模型，再分配给各 Agent slot */}
+              <ModelRegistrySection />
+
+              {/* 主模型分配：从注册表里挑一个；选了之后下面的预设/key/model 就被注册表覆盖 */}
+              <div>
+                <div className="label">主模型（默认走云端的所有任务）</div>
+                <ModelPicker
+                  value={draft.primaryModelId}
+                  onChange={(id) => setDraft({ ...draft, primaryModelId: id })}
+                  placeholder="— 未分配 / 用下方手填字段 —"
+                />
+                <p className="text-[11px] text-ink-mute mt-1">
+                  分配后，下面的 <strong>预设 / API Key / 模型</strong> 字段被注册表条目覆盖；想改连接信息请回到上面
+                  <strong>「模型注册表」</strong>编辑该条目。
+                </p>
+              </div>
+
+              {/* Preset chips（仅在未分配主模型时显示） */}
+              {!draft.primaryModelId && (
               <div>
                 <div className="label">快速预设（点击填充，仍可改）</div>
                 <div className="flex flex-wrap gap-1.5">
@@ -210,8 +266,10 @@ export function SettingsModal() {
                   <p className="text-[11px] text-ink-mute mt-1.5">{currentPreset.hint}</p>
                 )}
               </div>
+              )}
 
-              {/* API Key */}
+              {/* API Key（仅在未分配主模型时显示） */}
+              {!draft.primaryModelId && (
               <Field
                 label="API Key"
                 hint={
@@ -263,8 +321,10 @@ export function SettingsModal() {
                   </div>
                 )}
               </Field>
+              )}
 
-              {/* Model（dropdown 模式） */}
+              {/* Model（dropdown 模式）：未分配主模型时显示 */}
+              {!draft.primaryModelId && (
               <Field
                 label="模型"
                 hint={currentPreset?.modelExamples.length ? '从预设挑或选 「其他…」 自定义' : '输入模型名'}
@@ -275,6 +335,21 @@ export function SettingsModal() {
                   onChange={(model) => setDraft({ ...draft, model })}
                 />
               </Field>
+              )}
+
+              {/* 已分配主模型 → 给个简洁的预览，告知用户当前路径 */}
+              {draft.primaryModelId && (
+                <div className="rounded-md border border-accent/40 bg-accent/5 px-3 py-2 text-[12px] text-ink">
+                  <Sparkles size={12} className="inline text-accent mr-1" />
+                  当前主模型：
+                  <strong className="ml-1">
+                    {(() => {
+                      const r = resolvePrimaryModel(draft);
+                      return `${r.model}（${r.provider}）`;
+                    })()}
+                  </strong>
+                </div>
+              )}
 
               {/* Test result */}
               <AnimatePresence>
@@ -306,12 +381,16 @@ export function SettingsModal() {
                   高级设置
                   <span className="text-[10px] text-ink-mute font-normal ml-1">Base URL · 调优 · FastLane · 进阶能力</span>
                   {/* fastLane 未启用时折叠状态下也提示休眠功能：避免用户不知情 */}
-                  {!draft.fastLane?.enabled && (
+                  {(draft.ollamaMode === 'disabled' || !draft.fastLane?.enabled) && (
                     <span
                       className="ml-auto px-2 py-0.5 rounded-full bg-warn/15 border border-warn/40 text-[10px] font-medium text-warn"
-                      title="启用本地 FastLane 后自动激活：运行时报错诊断 / 数据范围 sanity check / 题意偏离嗅探"
+                      title={
+                        draft.ollamaMode === 'disabled'
+                          ? '无 Ollama 模式下，所有本地 AI 功能已隔离'
+                          : '启用本地 FastLane 后自动激活：运行时报错诊断 / 数据范围 sanity check / 题意偏离嗅探'
+                      }
                     >
-                      ⚠ 3 项嗅探休眠中
+                      {draft.ollamaMode === 'disabled' ? '无 Ollama 模式' : '⚠ 3 项嗅探休眠中'}
                     </span>
                   )}
                 </summary>
@@ -378,7 +457,8 @@ export function SettingsModal() {
                   <input
                     type="checkbox"
                     className="accent-warn"
-                    checked={!!draft.fastLane?.enabled}
+                    checked={draft.ollamaMode !== 'disabled' && !!draft.fastLane?.enabled}
+                    disabled={draft.ollamaMode === 'disabled'}
                     onChange={(e) =>
                       setDraft({
                         ...draft,
@@ -393,7 +473,9 @@ export function SettingsModal() {
                   <Zap size={14} className="text-warn" />
                   <span className="text-sm font-semibold">本地快车道（FastLane）</span>
                   <span className="chip text-[9px] px-1.5 py-0 ml-1">可选</span>
-                  <span className="text-[10px] text-ink-mute ml-auto">实时类任务走本地 Ollama</span>
+                  <span className="text-[10px] text-ink-mute ml-auto">
+                    {draft.ollamaMode === 'disabled' ? '已由无 Ollama 模式隔离' : '实时类任务走本地 Ollama'}
+                  </span>
                 </label>
                 <p className="text-[11px] text-ink-mute mb-3 pl-6 leading-relaxed">
                   <span className="text-ok">不启用也能完整使用 Coach</span>
@@ -403,10 +485,12 @@ export function SettingsModal() {
                 </p>
 
                 {/* 透明度提示：fastLane 未启用时，3 个主动嗅探 Agent 静默不工作 —— 显眼告诉用户 */}
-                {!draft.fastLane?.enabled && (
+                {(draft.ollamaMode === 'disabled' || !draft.fastLane?.enabled) && (
                   <div className="ml-6 mb-3 px-3 py-2 rounded-md border border-line/60 bg-warn/5 text-[11px] leading-relaxed text-ink-mute">
                     <div className="font-semibold text-ink mb-0.5">
-                      ⚠ 当前以下 3 个主动嗅探功能正在休眠：
+                      {draft.ollamaMode === 'disabled'
+                        ? '⚠ 无 Ollama 模式：以下 8 项本地功能已隔离'
+                        : '⚠ 当前以下 3 个主动嗅探功能正在休眠：'}
                     </div>
                     <ul className="list-disc list-inside space-y-0.5">
                       <li>
@@ -421,64 +505,108 @@ export function SettingsModal() {
                         <span className="text-ink">题意偏离嗅探</span>
                         <span className="opacity-70">（代码方向跑偏时给一句提醒）</span>
                       </li>
+                      {draft.ollamaMode === 'disabled' && (
+                        <>
+                          <li>
+                            <span className="text-ink">实时模块点亮</span>
+                            <span className="opacity-70">（算法可视化 Detect）</span>
+                          </li>
+                          <li>
+                            <span className="text-ink">FastLane 实时批注</span>
+                            <span className="opacity-70">（前台批注 / 卡住引导 / 粘贴解释）</span>
+                          </li>
+                          <li>
+                            <span className="text-ink">意图路由器</span>
+                            <span className="opacity-70">（本地小模型路由问题类型）</span>
+                          </li>
+                          <li>
+                            <span className="text-ink">AC 后 Hack Case</span>
+                            <span className="opacity-70">（本地生成极端测试）</span>
+                          </li>
+                          <li>
+                            <span className="text-ink">题目图片识别 OCR</span>
+                            <span className="opacity-70">（TM 导入截图转文字）</span>
+                          </li>
+                        </>
+                      )}
                     </ul>
                     <div className="mt-1 opacity-80">
-                      启用本地 FastLane 后自动激活，不会偷偷蹭主云端 token。
+                      {draft.ollamaMode === 'disabled'
+                        ? '打开设置顶部「Ollama 模式」后，这些功能才会恢复；关闭时不会偷偷蹭主云端 token。'
+                        : '启用本地 FastLane 后自动激活，不会偷偷蹭主云端 token。'}
                     </div>
                   </div>
                 )}
 
-                {draft.fastLane?.enabled && (
+                {draft.ollamaMode !== 'disabled' && draft.fastLane?.enabled && (
                   <div className="pl-6 space-y-3">
-                    <OllamaSetupHint />
-                    <Field label="Base URL" hint="必须本地（localhost / 127.* / 局域网）">
-                      <input
-                        className="input font-mono text-xs"
-                        placeholder={DEFAULT_AI_CONFIG.fastLane!.baseUrl}
-                        value={draft.fastLane.baseUrl}
-                        onChange={(e) =>
+                    {/* 注册制：从已注册的本地 Ollama 模型挑一个分配给 FastLane */}
+                    <Field label="分配模型（从注册表）" hint="只列出本地 Ollama 模型；选中后下方手填字段自动隐藏">
+                      <ModelPicker
+                        value={draft.fastLane.modelId}
+                        onChange={(id) =>
                           setDraft({
                             ...draft,
-                            fastLane: { ...draft.fastLane!, baseUrl: e.target.value },
+                            fastLane: { ...draft.fastLane!, modelId: id },
                           })
                         }
+                        filter={(m) => m.provider === 'ollama'}
+                        placeholder="— 未分配 / 用下方手填 —"
                       />
                     </Field>
-                    <Field label="模型" hint="必须是 Ollama 已 pull 的模型；点「探测」自动列出">
-                      <OllamaModelPicker
-                        baseUrl={draft.fastLane.baseUrl}
-                        value={draft.fastLane.model}
-                        onChange={(model) =>
-                          setDraft({
-                            ...draft,
-                            fastLane: { ...draft.fastLane!, model },
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label="num_ctx" hint="上下文窗口；VRAM 紧张可降到 8192">
-                      <input
-                        className="input font-mono"
-                        type="number"
-                        placeholder="20480"
-                        value={draft.fastLane.numCtx ?? ''}
-                        onChange={(e) =>
-                          setDraft({
-                            ...draft,
-                            fastLane: {
-                              ...draft.fastLane!,
-                              numCtx: e.target.value ? Number(e.target.value) : undefined,
-                            },
-                          })
-                        }
-                      />
-                    </Field>
+                    {!draft.fastLane.modelId && (
+                      <>
+                        <OllamaSetupHint />
+                        <Field label="Base URL" hint="必须本地（localhost / 127.* / 局域网）">
+                          <input
+                            className="input font-mono text-xs"
+                            placeholder={DEFAULT_AI_CONFIG.fastLane!.baseUrl}
+                            value={draft.fastLane.baseUrl}
+                            onChange={(e) =>
+                              setDraft({
+                                ...draft,
+                                fastLane: { ...draft.fastLane!, baseUrl: e.target.value },
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field label="模型" hint="必须是 Ollama 已 pull 的模型；点「探测」自动列出">
+                          <OllamaModelPicker
+                            baseUrl={draft.fastLane.baseUrl}
+                            value={draft.fastLane.model}
+                            onChange={(model) =>
+                              setDraft({
+                                ...draft,
+                                fastLane: { ...draft.fastLane!, model },
+                              })
+                            }
+                          />
+                        </Field>
+                        <Field label="num_ctx" hint="上下文窗口；VRAM 紧张可降到 8192">
+                          <input
+                            className="input font-mono"
+                            type="number"
+                            placeholder="20480"
+                            value={draft.fastLane.numCtx ?? ''}
+                            onChange={(e) =>
+                              setDraft({
+                                ...draft,
+                                fastLane: {
+                                  ...draft.fastLane!,
+                                  numCtx: e.target.value ? Number(e.target.value) : undefined,
+                                },
+                              })
+                            }
+                          />
+                        </Field>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
 
               {/* ━━ 🔀 路由策略（高级折叠） ━━ */}
-              {draft.fastLane?.enabled && (
+              {draft.ollamaMode !== 'disabled' && draft.fastLane?.enabled && (
                 <details className="border-t border-line pt-4">
                   <summary className="cursor-pointer flex items-center gap-2 text-sm font-semibold list-none select-none">
                     <Settings2 size={14} className="text-cyan" />
@@ -601,77 +729,96 @@ export function SettingsModal() {
               )}
 
               {/* ━━ 🧭 Coach 意图路由 ━━ */}
-              <div className="border-t border-line pt-4">
-                <label className="flex items-center gap-2 cursor-pointer mb-2">
-                  <input
-                    type="checkbox"
-                    className="accent-cyan"
-                    checked={!!draft.intentRouter?.enabled}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        intentRouter: {
-                          ...DEFAULT_AI_CONFIG.intentRouter!,
-                          ...(draft.intentRouter ?? {}),
-                          enabled: e.target.checked,
-                        },
-                      })
-                    }
-                  />
-                  <span className="text-sm font-semibold">Coach 意图路由（AI 兜底）</span>
-                  <span className="chip text-[9px] px-1.5 py-0 ml-1">可选</span>
-                  <span className="text-[10px] text-ink-mute ml-auto">
-                    规则识别不到时，让一个轻模型再判一遍
-                  </span>
-                </label>
-                <p className="text-[11px] text-ink-mute mb-3 pl-6 leading-relaxed">
-                  <span className="text-ok">不启用也能正常用</span>
-                  ：只走规则路由（速度最快、无成本）。开启后，模糊问题再调一次该模型返回 JSON
-                  分类（intent / contextTemplate / outputMode），失败自动回落到规则。
-                </p>
-                {draft.intentRouter?.enabled && (
-                  <div className="pl-6 space-y-3">
-                    <Field label="Base URL" hint="OpenAI 兼容 chat 接口或本地 ollama">
-                      <input
-                        className="input font-mono text-xs"
-                        placeholder={DEFAULT_AI_CONFIG.intentRouter!.baseUrl}
-                        value={draft.intentRouter.baseUrl}
-                        onChange={(e) =>
-                          setDraft({
-                            ...draft,
-                            intentRouter: { ...draft.intentRouter!, baseUrl: e.target.value },
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label="模型" hint="本地 Ollama 模型可点「探测」自动列出">
-                      <OllamaModelPicker
-                        baseUrl={draft.intentRouter.baseUrl}
-                        value={draft.intentRouter.model}
-                        onChange={(model) =>
-                          setDraft({
-                            ...draft,
-                            intentRouter: { ...draft.intentRouter!, model },
-                          })
-                        }
-                      />
-                    </Field>
-                    <Field label="API Key（可选）" hint="ollama 等本地服务可留空">
-                      <input
-                        className="input font-mono text-xs"
-                        placeholder=""
-                        value={draft.intentRouter.apiKey ?? ''}
-                        onChange={(e) =>
-                          setDraft({
-                            ...draft,
-                            intentRouter: { ...draft.intentRouter!, apiKey: e.target.value },
-                          })
-                        }
-                      />
-                    </Field>
-                  </div>
-                )}
-              </div>
+              {ollamaEnabled && (
+                <div className="border-t border-line pt-4">
+                  <label className="flex items-center gap-2 cursor-pointer mb-2">
+                    <input
+                      type="checkbox"
+                      className="accent-cyan"
+                      checked={!!draft.intentRouter?.enabled}
+                      onChange={(e) =>
+                        setDraft({
+                          ...draft,
+                          intentRouter: {
+                            ...DEFAULT_AI_CONFIG.intentRouter!,
+                            ...(draft.intentRouter ?? {}),
+                            enabled: e.target.checked,
+                          },
+                        })
+                      }
+                    />
+                    <span className="text-sm font-semibold">Coach 意图路由（AI 兜底）</span>
+                    <span className="chip text-[9px] px-1.5 py-0 ml-1">可选</span>
+                    <span className="text-[10px] text-ink-mute ml-auto">
+                      规则识别不到时，让一个轻模型再判一遍
+                    </span>
+                  </label>
+                  <p className="text-[11px] text-ink-mute mb-3 pl-6 leading-relaxed">
+                    <span className="text-ok">不启用也能正常用</span>
+                    ：只走规则路由（速度最快、无成本）。开启后，模糊问题再调一次该模型返回 JSON
+                    分类（intent / contextTemplate / outputMode），失败自动回落到规则。
+                  </p>
+                  {draft.intentRouter?.enabled && (
+                    <div className="pl-6 space-y-3">
+                      {/* 注册制：从已注册模型挑一个分配给意图路由器 */}
+                      <Field label="分配模型（从注册表）" hint="选中后下方手填字段自动隐藏">
+                        <ModelPicker
+                          value={draft.intentRouter.modelId}
+                          onChange={(id) =>
+                            setDraft({
+                              ...draft,
+                              intentRouter: { ...draft.intentRouter!, modelId: id },
+                            })
+                          }
+                          placeholder="— 未分配 / 用下方手填 —"
+                        />
+                      </Field>
+                      {!draft.intentRouter.modelId && (
+                        <>
+                          <Field label="Base URL" hint="OpenAI 兼容 chat 接口或本地 ollama">
+                            <input
+                              className="input font-mono text-xs"
+                              placeholder={DEFAULT_AI_CONFIG.intentRouter!.baseUrl}
+                              value={draft.intentRouter.baseUrl}
+                              onChange={(e) =>
+                                setDraft({
+                                  ...draft,
+                                  intentRouter: { ...draft.intentRouter!, baseUrl: e.target.value },
+                                })
+                              }
+                            />
+                          </Field>
+                          <Field label="模型" hint="本地 Ollama 模型可点「探测」自动列出">
+                            <OllamaModelPicker
+                              baseUrl={draft.intentRouter.baseUrl}
+                              value={draft.intentRouter.model}
+                              onChange={(model) =>
+                                setDraft({
+                                  ...draft,
+                                  intentRouter: { ...draft.intentRouter!, model },
+                                })
+                              }
+                            />
+                          </Field>
+                          <Field label="API Key（可选）" hint="ollama 等本地服务可留空">
+                            <input
+                              className="input font-mono text-xs"
+                              placeholder=""
+                              value={draft.intentRouter.apiKey ?? ''}
+                              onChange={(e) =>
+                                setDraft({
+                                  ...draft,
+                                  intentRouter: { ...draft.intentRouter!, apiKey: e.target.value },
+                                })
+                              }
+                            />
+                          </Field>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* ━━ 🎨 算法可视化模型（3 个工位独立可配） ━━ */}
               <details className="border-t border-line pt-4 group/algoviz">
@@ -680,20 +827,32 @@ export function SettingsModal() {
                   <span>🎨 算法可视化模型</span>
                   <span className="chip text-[9px] px-1.5 py-0 ml-1">可选</span>
                   <span className="text-[10px] text-ink-mute font-normal ml-auto">
-                    Status / Animation / Detect 三工位独立可配
+                    {ollamaEnabled ? 'Status / Animation / Detect 三工位独立可配' : 'Animation 保留 · Detect 已隐藏'}
                   </span>
                 </summary>
                 <p className="text-[11px] text-ink-mute mb-3 pl-6 leading-relaxed">
                   <span className="text-ok">不启用也能用</span>
-                  ：默认 Status / Animation 走主云端（重活耗时长），Detect 走 fastLane（轻活高频）。
-                  推荐把 <strong>Status / Animation</strong> 单独配成 DeepSeek-v4-pro（生成质量更稳）；
-                  <strong> Detect</strong> 保持 fastLane 即可。
+                  {ollamaEnabled ? (
+                    <>
+                      ：默认 Status / Animation 走主云端（重活耗时长），Detect 走 fastLane（轻活高频）。
+                      推荐把 <strong>Status / Animation</strong> 单独配成 DeepSeek-v4-pro（生成质量更稳）；
+                      <strong> Detect</strong> 保持 fastLane 即可。
+                    </>
+                  ) : (
+                    <>
+                      ：AC 动画仍走主云端生成；实时模块点亮 / Detect 已随 Ollama 模式关闭。
+                    </>
+                  )}
                 </p>
                 <div className="pl-6 space-y-4">
                   <AlgoVizRoleConfig
                     role="status"
-                    label="Status 生成"
-                    desc="一次性生成模块进度卡片（~20s，质量优先）"
+                    label={ollamaEnabled ? 'Status 生成' : '动画素材生成'}
+                    desc={
+                      ollamaEnabled
+                        ? '一次性生成模块进度卡片（~20s，质量优先）'
+                        : '一次性生成动画所需结构化素材（后台使用，不显示实时点亮）'
+                    }
                     fallback="走主云端"
                     draft={draft}
                     setDraft={setDraft}
@@ -706,136 +865,140 @@ export function SettingsModal() {
                     draft={draft}
                     setDraft={setDraft}
                   />
-                  <AlgoVizRoleConfig
-                    role="detect"
-                    label="实时模块检测"
-                    desc="每 15s 跑一次，输出极短（轻活，速度优先）"
-                    fallback="走 fastLane"
-                    draft={draft}
-                    setDraft={setDraft}
-                  />
+                  {ollamaEnabled && (
+                    <AlgoVizRoleConfig
+                      role="detect"
+                      label="实时模块检测"
+                      desc="每 15s 跑一次，输出极短（轻活，速度优先）"
+                      fallback="走 fastLane"
+                      draft={draft}
+                      setDraft={setDraft}
+                    />
+                  )}
                 </div>
               </details>
 
               {/* ━━ 💡 学习辅助 ━━ */}
-              <div className="border-t border-line pt-4">
-                <label className="flex items-center gap-2 cursor-pointer mb-2">
-                  <input
-                    type="checkbox"
-                    className="accent-warn"
-                    checked={stuckHintEnabled}
-                    onChange={(e) => setStuckHintEnabled(e.target.checked)}
-                  />
-                  <Lightbulb size={14} className="text-warn" />
-                  <span className="text-sm font-semibold">120s 卡住主动提醒</span>
-                  <span className="text-[10px] text-ink-mute ml-auto">
-                    {stuckHintEnabled ? '已开启' : '未开启'}
-                  </span>
-                </label>
-                <p className="text-[11px] text-ink-mute pl-6">
-                  连续 2 分钟没编辑代码时，AI 自动给一条引导式提示（不直接给答案）。
-                  关闭后，仍可点顶栏 <span className="inline-flex items-center gap-0.5"><Lightbulb size={10} className="text-warn" />求助</span> 按钮手动触发。
-                </p>
-              </div>
-
-              {/* ━━ ✨ Coach 主动嗅探（FastLane 专属） ━━ */}
-              <div className="border-t border-line pt-4 space-y-3">
-                <div>
-                  <h3 className="text-sm font-semibold flex items-center gap-1.5 mb-1">
-                    <Sparkles size={13} className="text-accent" />
-                    Coach 主动嗅探（FastLane 专属）
-                    {fastLaneReady ? (
-                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-ok/15 text-ok border border-ok/40 flex items-center gap-1">
-                        <Check size={9} /> fastLane 已就绪
-                      </span>
-                    ) : (
-                      <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-bad/10 text-bad border border-bad/40 flex items-center gap-1">
-                        <AlertTriangle size={9} /> fastLane 未配置 · 三个开关无效
-                      </span>
-                    )}
-                  </h3>
-                  <p className="text-[11px] text-ink-mute leading-relaxed">
-                    本地模型在<strong>有意义事件</strong>（跑代码失败、跑通样例、长时间停顿后代码净增）发生时
-                    自己扫一眼代码，<strong>静默</strong>把发现写到 Agent 行动面板和编辑器右上角小角标。
-                    不弹窗、不抢焦点、可随时关掉。
-                  </p>
-                  <p className="text-[11px] text-warn leading-relaxed mt-1">
-                    ⚠ <strong>仅走本地 fastLane</strong>：fastLane 没配好这三个开关全部静默不生效，
-                    绝不会偷偷蹭主云端 token。
+              {ollamaEnabled && (
+                <div className="border-t border-line pt-4">
+                  <label className="flex items-center gap-2 cursor-pointer mb-2">
+                    <input
+                      type="checkbox"
+                      className="accent-warn"
+                      checked={stuckHintEnabled}
+                      onChange={(e) => setStuckHintEnabled(e.target.checked)}
+                    />
+                    <Lightbulb size={14} className="text-warn" />
+                    <span className="text-sm font-semibold">120s 卡住主动提醒</span>
+                    <span className="text-[10px] text-ink-mute ml-auto">
+                      {stuckHintEnabled ? '已开启' : '未开启'}
+                    </span>
+                  </label>
+                  <p className="text-[11px] text-ink-mute pl-6">
+                    连续 2 分钟没编辑代码时，AI 自动给一条引导式提示（不直接给答案）。
+                    关闭后，仍可点顶栏 <span className="inline-flex items-center gap-0.5"><Lightbulb size={10} className="text-warn" />求助</span> 按钮手动触发。
                   </p>
                 </div>
+              )}
 
-                {/* A. 跑失败归因 */}
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="accent-bad mt-1"
-                    checked={diagnoseOnFailEnabled}
-                    onChange={(e) => setDiagnoseOnFailEnabled(e.target.checked)}
-                  />
-                  <Bug size={14} className="text-bad mt-0.5 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium flex items-center gap-2">
-                      跑失败 → 秒级错误归因
-                      <span className="text-[10px] text-ink-mute">
-                        {diagnoseOnFailEnabled ? '已开启' : '未开启'}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-ink-mute mt-0.5">
-                      退出码 ≠ 0 时，本地模型在 0.8 秒内根据 stderr 给一句话定位（e.g. "可能在 L42 数组 a 越界"）。
-                      <strong className="text-ink">推荐开</strong>，最直接的 FastLane 价值。
+              {/* ━━ ✨ Coach 主动嗅探（FastLane 专属） ━━ */}
+              {ollamaEnabled && (
+                <div className="border-t border-line pt-4 space-y-3">
+                  <div>
+                    <h3 className="text-sm font-semibold flex items-center gap-1.5 mb-1">
+                      <Sparkles size={13} className="text-accent" />
+                      Coach 主动嗅探（FastLane 专属）
+                      {fastLaneReady ? (
+                        <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-ok/15 text-ok border border-ok/40 flex items-center gap-1">
+                          <Check size={9} /> fastLane 已就绪
+                        </span>
+                      ) : (
+                        <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-bad/10 text-bad border border-bad/40 flex items-center gap-1">
+                          <AlertTriangle size={9} />
+                          fastLane 未配置 · 三个开关无效
+                        </span>
+                      )}
+                    </h3>
+                    <p className="text-[11px] text-ink-mute leading-relaxed">
+                      本地模型在<strong>有意义事件</strong>（跑代码失败、跑通样例、长时间停顿后代码净增）发生时
+                      自己扫一眼代码，<strong>静默</strong>把发现写到 Agent 行动面板和编辑器右上角小角标。
+                      不弹窗、不抢焦点、可随时关掉。
+                    </p>
+                    <p className="text-[11px] text-warn leading-relaxed mt-1">
+                      ⚠ <strong>仅走本地 fastLane</strong>：fastLane 没配好这三个开关全部静默不生效，
+                      绝不会偷偷蹭主云端 token。
                     </p>
                   </div>
-                </label>
 
-                {/* C. 数据范围 sanity */}
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="accent-warn mt-1"
-                    checked={constraintSanityEnabled}
-                    onChange={(e) => setConstraintSanityEnabled(e.target.checked)}
-                  />
-                  <Ruler size={14} className="text-warn mt-0.5 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium flex items-center gap-2">
-                      跑通样例 → 数据范围审计
-                      <span className="text-[10px] text-ink-mute">
-                        {constraintSanityEnabled ? '已开启' : '未开启'}
-                      </span>
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-bad mt-1"
+                      checked={diagnoseOnFailEnabled}
+                      onChange={(e) => setDiagnoseOnFailEnabled(e.target.checked)}
+                    />
+                    <Bug size={14} className="text-bad mt-0.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium flex items-center gap-2">
+                        跑失败 → 秒级错误归因
+                        <span className="text-[10px] text-ink-mute">
+                          {diagnoseOnFailEnabled ? '已开启' : '未开启'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-ink-mute mt-0.5">
+                        退出码 ≠ 0 时，本地模型在 0.8 秒内根据 stderr 给一句话定位（e.g. "可能在 L42 数组 a 越界"）。
+                        <strong className="text-ink">推荐开</strong>，最直接的 FastLane 价值。
+                      </p>
                     </div>
-                    <p className="text-[11px] text-ink-mute mt-0.5">
-                      首次跑通样例时一次性扫数据范围风险（int 是否够、数组是否开小、复杂度是否过得去）。
-                      每题终生只跑一次，<strong className="text-ink">推荐开</strong>。
-                    </p>
-                  </div>
-                </label>
+                  </label>
 
-                {/* B. 题意偏离嗅探（最慎重，默认 OFF） */}
-                <label className="flex items-start gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    className="accent-accent mt-1"
-                    checked={intentSniffEnabled}
-                    onChange={(e) => setIntentSniffEnabled(e.target.checked)}
-                  />
-                  <Compass size={14} className="text-accent mt-0.5 shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium flex items-center gap-2">
-                      90s 停顿 + 代码净增 → 题意校对
-                      <span className="text-[10px] text-warn ml-1">实验性</span>
-                      <span className="text-[10px] text-ink-mute">
-                        {intentSniffEnabled ? '已开启' : '未开启'}
-                      </span>
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-warn mt-1"
+                      checked={constraintSanityEnabled}
+                      onChange={(e) => setConstraintSanityEnabled(e.target.checked)}
+                    />
+                    <Ruler size={14} className="text-warn mt-0.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium flex items-center gap-2">
+                        跑通样例 → 数据范围审计
+                        <span className="text-[10px] text-ink-mute">
+                          {constraintSanityEnabled ? '已开启' : '未开启'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-ink-mute mt-0.5">
+                        首次跑通样例时一次性扫数据范围风险（int 是否够、数组是否开小、复杂度是否过得去）。
+                        每题终生只跑一次，<strong className="text-ink">推荐开</strong>。
+                      </p>
                     </div>
-                    <p className="text-[11px] text-ink-mute mt-0.5">
-                      停下 90 秒且代码净增 ≥ 30 字时，本地模型扫一眼判方向是否对。
-                      只在<strong>明显偏题</strong>时才报警，否则全静默。
-                      5 分钟全局节流，同段代码不重复嗅探。<strong className="text-warn">默认关</strong>，担心打扰先别开。
-                    </p>
-                  </div>
-                </label>
-              </div>
+                  </label>
+
+                  <label className="flex items-start gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      className="accent-accent mt-1"
+                      checked={intentSniffEnabled}
+                      onChange={(e) => setIntentSniffEnabled(e.target.checked)}
+                    />
+                    <Compass size={14} className="text-accent mt-0.5 shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium flex items-center gap-2">
+                        90s 停顿 + 代码净增 → 题意校对
+                        <span className="text-[10px] text-warn ml-1">实验性</span>
+                        <span className="text-[10px] text-ink-mute">
+                          {intentSniffEnabled ? '已开启' : '未开启'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-ink-mute mt-0.5">
+                        停下 90 秒且代码净增 ≥ 30 字时，本地模型扫一眼判方向是否对。
+                        只在<strong>明显偏题</strong>时才报警，否则全静默。
+                        5 分钟全局节流，同段代码不重复嗅探。<strong className="text-warn">默认关</strong>，担心打扰先别开。
+                      </p>
+                    </div>
+                  </label>
+                </div>
+              )}
                 </div>
               </details>
             </div>
@@ -846,12 +1009,14 @@ export function SettingsModal() {
               </button>
               <button
                 onClick={onSaveAndTest}
-                disabled={
-                  testing ||
-                  !draft.baseUrl.trim() ||
-                  !draft.model.trim() ||
-                  (draft.provider !== 'ollama' && !draft.apiKey.trim())
-                }
+                disabled={(() => {
+                  if (testing) return true;
+                  // 校验"实际生效的主模型"——若用了注册制就看注册条目，否则看顶层字段
+                  const r = resolvePrimaryModel(draft);
+                  if (!r.baseUrl.trim() || !r.model.trim()) return true;
+                  if (r.provider !== 'ollama' && !r.apiKey.trim()) return true;
+                  return false;
+                })()}
                 className="btn-primary"
               >
                 {testing ? (
@@ -929,6 +1094,7 @@ function AlgoVizRoleConfig({
 }) {
   const cur = draft.algoVizModels?.[role];
   const enabled = !!cur?.enabled;
+  const boundEntry = cur?.modelId ? draft.modelRegistry?.find((m) => m.id === cur.modelId) : undefined;
   const update = (patch: Partial<NonNullable<AIConfig['algoVizModels']>[typeof role]>) => {
     setDraft({
       ...draft,
@@ -956,44 +1122,61 @@ function AlgoVizRoleConfig({
         />
         <span className="text-[13px] font-medium text-ink">{label}</span>
         <span className="text-[10px] text-ink-mute ml-auto">
-          {enabled ? `独立配置 · ${cur?.model || '未配 model'}` : `继承 ${fallback}`}
+          {enabled
+            ? boundEntry
+              ? `分配 · ${boundEntry.label}`
+              : `独立配置 · ${cur?.model || '未配 model'}`
+            : `继承 ${fallback}`}
         </span>
       </label>
       <p className="text-[10.5px] text-ink-mute mt-1 pl-6 leading-relaxed">{desc}</p>
       {enabled && (
         <div className="pl-6 mt-2 space-y-2">
-          {/* detect 工位每 15s 调一次，云端高频会持续烧 token；显式提示 */}
-          {role === 'detect' && cur?.baseUrl && !isLocalUrl(cur.baseUrl) && (
-            <div className="rounded border border-warn/50 bg-warn/10 px-2 py-1.5 text-[10.5px] text-warn leading-relaxed">
-              ⚠️ <strong>不建议云端 detect</strong>：每 15 秒触发一次，长期使用会持续消耗云端 token。
-              建议改用本地 Ollama 小模型（如 <code className="font-mono">http://localhost:11434/v1/chat/completions</code> + <code className="font-mono">qwen3:4b</code>）。
-            </div>
+          {/* 注册制：从已注册模型挑一个 */}
+          <Field label="分配模型（从注册表）" hint="选中后下方手填字段自动隐藏">
+            <ModelPicker
+              value={cur?.modelId}
+              onChange={(id) => update({ modelId: id })}
+              filter={role === 'detect' ? (m) => m.provider === 'ollama' : undefined}
+              placeholder="— 未分配 / 用下方手填 —"
+            />
+          </Field>
+          {!cur?.modelId && (
+            <>
+              {/* detect 工位每 15s 调一次，云端高频会持续烧 token；显式提示 */}
+              {role === 'detect' && cur?.baseUrl && !isLocalUrl(cur.baseUrl) && (
+                <div className="rounded border border-warn/50 bg-warn/10 px-2 py-1.5 text-[10.5px] text-warn leading-relaxed">
+                  ⚠️ <strong>不建议云端 detect</strong>：每 15 秒触发一次，长期使用会持续消耗云端 token。
+                  建议改用本地 Ollama 小模型（如 <code className="font-mono">http://localhost:11434/v1/chat/completions</code> + <code className="font-mono">qwen3:4b</code>）。
+                </div>
+              )}
+              <Field label="Base URL" hint={role === 'detect' ? '建议本地 Ollama；云端会持续消耗 token' : 'OpenAI 兼容 chat-completions endpoint'}>
+                <input
+                  className="input font-mono text-xs"
+                  placeholder={role === 'detect' ? 'http://localhost:11434/v1/chat/completions' : 'https://api.deepseek.com/v1/chat/completions'}
+                  value={cur?.baseUrl ?? ''}
+                  onChange={(e) => update({ baseUrl: e.target.value })}
+                />
+              </Field>
+              <Field label="API Key" hint="本地 Ollama 可留空">
+                <input
+                  className="input font-mono text-xs"
+                  type="password"
+                  placeholder="sk-..."
+                  value={cur?.apiKey ?? ''}
+                  onChange={(e) => update({ apiKey: e.target.value })}
+                />
+              </Field>
+              <Field label="Model" hint={role === 'detect' ? '推荐本地小模型（如 qwen3:4b）' : '推荐 deepseek-v4-pro 或同等大模型'}>
+                <input
+                  className="input font-mono text-xs"
+                  placeholder={role === 'detect' ? 'qwen3:4b' : 'deepseek-v4-pro'}
+                  value={cur?.model ?? ''}
+                  onChange={(e) => update({ model: e.target.value })}
+                />
+              </Field>
+            </>
           )}
-          <Field label="Base URL" hint={role === 'detect' ? '建议本地 Ollama；云端会持续消耗 token' : 'OpenAI 兼容 chat-completions endpoint'}>
-            <input
-              className="input font-mono text-xs"
-              placeholder={role === 'detect' ? 'http://localhost:11434/v1/chat/completions' : 'https://api.deepseek.com/v1/chat/completions'}
-              value={cur?.baseUrl ?? ''}
-              onChange={(e) => update({ baseUrl: e.target.value })}
-            />
-          </Field>
-          <Field label="API Key" hint="本地 Ollama 可留空">
-            <input
-              className="input font-mono text-xs"
-              type="password"
-              placeholder="sk-..."
-              value={cur?.apiKey ?? ''}
-              onChange={(e) => update({ apiKey: e.target.value })}
-            />
-          </Field>
-          <Field label="Model" hint={role === 'detect' ? '推荐本地小模型（如 qwen3:4b）' : '推荐 deepseek-v4-pro 或同等大模型'}>
-            <input
-              className="input font-mono text-xs"
-              placeholder={role === 'detect' ? 'qwen3:4b' : 'deepseek-v4-pro'}
-              value={cur?.model ?? ''}
-              onChange={(e) => update({ model: e.target.value })}
-            />
-          </Field>
         </div>
       )}
     </div>
@@ -1281,6 +1464,174 @@ function OllamaModelPicker({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+interface OllamaImpact {
+  icon: typeof Cpu;
+  title: string;
+  desc: string;
+}
+
+const OLLAMA_IMPACTS: OllamaImpact[] = [
+  { icon: Activity, title: '实时模块点亮', desc: '算法可视化每 15s 自动检测代码进度' },
+  { icon: Bug, title: '运行时报错诊断', desc: 'exit ≠ 0 时一键定位错误行 + 一句话提示' },
+  { icon: Ruler, title: '数据范围 sanity check', desc: '样例通过后扫 TLE/MLE 风险' },
+  { icon: Compass, title: '题意偏离嗅探', desc: '代码方向跑偏时给一句提醒' },
+  { icon: Zap, title: 'FastLane 实时批注', desc: '前台流式批注 / 卡住引导 / 粘贴解释走本地' },
+  { icon: Lightbulb, title: '意图路由器', desc: '小模型识别问题类型，路由到合适工位' },
+  { icon: ScanLine, title: 'AC 后 Hack Case', desc: '样例通过后本地生成极端测试挑战代码' },
+  { icon: Image, title: '题目图片识别 (OCR)', desc: 'TM 推送的题目截图自动转文字（minicpm-v）' },
+];
+
+function OllamaModeSwitch({
+  mode,
+  onChange,
+}: {
+  mode: 'enabled' | 'disabled';
+  onChange: (m: 'enabled' | 'disabled') => void;
+}) {
+  const [showImpacts, setShowImpacts] = useState(false);
+  const enabled = mode === 'enabled';
+
+  return (
+    <div
+      className={cn(
+        'rounded-lg border-2 transition-all',
+        enabled
+          ? 'border-warn/50 bg-warn/[0.03]'
+          : 'border-line bg-line/[0.03] opacity-90',
+      )}
+    >
+      {/* 顶部：状态 + 大开关 */}
+      <div className="flex items-center gap-3 px-4 py-3">
+        <div
+          className={cn(
+            'shrink-0 w-10 h-10 rounded-lg flex items-center justify-center',
+            enabled ? 'bg-warn/15 text-warn' : 'bg-line/40 text-ink-mute',
+          )}
+        >
+          {enabled ? <Cpu size={20} /> : <PowerOff size={20} />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-sm">
+              Ollama 模式
+            </span>
+            <span
+              className={cn(
+                'chip text-[10px] px-1.5 py-0',
+                enabled
+                  ? 'border-warn/50 text-warn bg-warn/10'
+                  : 'border-line text-ink-mute',
+              )}
+            >
+              {enabled ? '已启用' : '已关闭'}
+            </span>
+          </div>
+          <p className="text-[11px] text-ink-mute mt-0.5 leading-relaxed">
+            {enabled
+              ? '本机已装 Ollama · 8 项实时本地 AI 功能可用（推荐）'
+              : '纯云端模式 · 8 项本地 AI 功能已隔离，不会调云端兜底'}
+          </p>
+        </div>
+        {/* 大 toggle */}
+        <button
+          type="button"
+          onClick={() => onChange(enabled ? 'disabled' : 'enabled')}
+          className={cn(
+            'relative shrink-0 w-12 h-6 rounded-full transition-colors',
+            enabled ? 'bg-warn' : 'bg-line',
+          )}
+          title={enabled ? '点击关闭 Ollama 模式（隔离 8 项本地功能）' : '点击启用 Ollama 模式'}
+        >
+          <span
+            className={cn(
+              'absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform',
+              enabled ? 'translate-x-6' : 'translate-x-0.5',
+            )}
+          />
+        </button>
+      </div>
+
+      {/* 切换 → 影响列表 */}
+      <button
+        type="button"
+        onClick={() => setShowImpacts((v) => !v)}
+        className="w-full px-4 py-2 border-t border-line/60 text-[11px] text-ink-mute hover:bg-line/20 transition flex items-center gap-1.5"
+      >
+        <ChevronDown
+          size={11}
+          className={cn(
+            'transition-transform',
+            showImpacts ? 'rotate-180' : 'rotate-0',
+          )}
+        />
+        {enabled ? '查看 8 项受 Ollama 驱动的功能' : '查看 8 项被关闭的功能'}
+      </button>
+
+      <AnimatePresence initial={false}>
+        {showImpacts && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.18 }}
+            className="overflow-hidden"
+          >
+            <div className="px-4 pb-3 pt-1 space-y-2">
+              {OLLAMA_IMPACTS.map((it) => {
+                const Icon = it.icon;
+                return (
+                  <div key={it.title} className="flex items-start gap-2">
+                    <Icon
+                      size={13}
+                      className={cn(
+                        'shrink-0 mt-0.5',
+                        enabled ? 'text-warn' : 'text-ink-mute opacity-60',
+                      )}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div
+                        className={cn(
+                          'text-xs font-medium',
+                          enabled ? 'text-ink' : 'text-ink-mute line-through opacity-70',
+                        )}
+                      >
+                        {it.title}
+                      </div>
+                      <div className="text-[11px] text-ink-mute leading-relaxed">{it.desc}</div>
+                    </div>
+                  </div>
+                );
+              })}
+              {!enabled && (
+                <div className="mt-3 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-[11px] leading-relaxed">
+                  <div className="font-semibold text-warn mb-1 flex items-center gap-1.5">
+                    <ScanLine size={11} />
+                    想要这些功能？
+                  </div>
+                  <div className="text-ink-mute">
+                    安装 Ollama（约 100 MB）+ pull 一个 4B 小模型（约 3 GB）即可全部解锁。
+                    访问{' '}
+                    <a
+                      href="https://ollama.com/download"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-warn hover:underline inline-flex items-center gap-0.5"
+                    >
+                      ollama.com/download
+                      <ExternalLink size={9} />
+                    </a>
+                    ，安装后回到这里打开开关。
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

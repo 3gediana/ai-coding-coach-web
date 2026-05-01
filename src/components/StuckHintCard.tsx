@@ -19,6 +19,7 @@ export function StuckHintCard() {
     const tick = () => {
       const st = useStore.getState();
       if (!st.stuckHintEnabled) return;
+      if (st.aiConfig.ollamaMode === 'disabled') return;
       if (!st.activeProblemId) return;
       const usable =
         st.aiConfig.provider === 'ollama'

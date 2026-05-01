@@ -22,6 +22,7 @@ import {
   Loader2,
   Settings as SettingsIcon,
   Sparkles,
+  Swords,
 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { runPython, runCpp, isRuntimeSupported } from '../lib/runtime';
@@ -57,6 +58,11 @@ export function RuntimePane() {
   const setCoachDraft = useStore((s) => s.setCoachDraft);
   const setLastRun = useStore((s) => s.setLastRun);
   const enqueueHackCase = useStore((s) => s.enqueueHackCase);
+  const runHackChain = useStore((s) => s.runHackChain);
+  const hackChainRunning = useStore(
+    (s) => !!s.hackChainState && !s.hackChainState.result,
+  );
+  const ollamaMode = useStore((s) => s.aiConfig.ollamaMode);
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const file = (filesByScope[scope] ?? []).find((f) => f.id === activeFileIdByScope[scope]);
@@ -170,7 +176,8 @@ export function RuntimePane() {
         sample.input.trim() &&
         normalizeSampleText(stdinForRun) === normalizeSampleText(sample.input) &&
         normalizeSampleText(result.stdout || '') === normalizeSampleText(sample.output) &&
-        !pendingHackRunRef.current
+        !pendingHackRunRef.current &&
+        ollamaMode !== 'disabled'
       ) {
         const last = lastHackTriggerRef.current;
         if (!last || last.fileId !== file.id || Date.now() - last.ts > 30_000) {
@@ -283,6 +290,25 @@ export function RuntimePane() {
         )}
 
         <div className="ml-auto flex items-center gap-1">
+          {/* Hack Chain：4-agent 编排链；与 Ollama 模式无关（LLM 走主云端，Executor 用本地沙箱） */}
+          <button
+            onClick={() => void runHackChain()}
+            disabled={hackChainRunning || !supported || !file?.content?.trim()}
+            className={cn(
+              'py-1 px-2 text-[11px] rounded border transition flex items-center gap-1 font-semibold',
+              !supported || !file?.content?.trim()
+                ? 'border-line/40 text-ink-mute cursor-not-allowed'
+                : 'border-warn/50 bg-warn/10 text-warn hover:bg-warn/20 hover:border-warn/70',
+            )}
+            title="4-agent 编排链：Attacker → Executor → Explainer → FixSuggestor"
+          >
+            {hackChainRunning ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <Swords size={11} />
+            )}
+            Hack Chain
+          </button>
           {!running ? (
             <button
               data-runtime-pane-run

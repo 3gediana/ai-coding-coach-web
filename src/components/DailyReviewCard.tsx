@@ -41,7 +41,7 @@ export function DailyReviewCard() {
   // 没配 AI 别打扰（QuickSetupCard 优先）
   const aiUsable =
     aiConfig.provider === 'ollama'
-      ? !!aiConfig.baseUrl?.trim()
+      ? aiConfig.ollamaMode !== 'disabled' && !!aiConfig.baseUrl?.trim()
       : !!aiConfig.apiKey?.trim();
 
   // 今天已关过 → 不显示

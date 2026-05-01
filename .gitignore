@@ -22,7 +22,10 @@ playwright-report/
 # 工具状态目录（oh-my-claude-code 等本地工具）
 .omc/
 # 测试文件 / 测试配置（按个人偏好不入库；本地保留可跑）
-tests/
+tests/*
+!tests/e2e/
+tests/e2e/*
+!tests/e2e/no-ollama.spec.ts
 playwright.config.ts
 # 文档 / codebase 笔记（本地保留，不入库）
 docs/

@@ -16,13 +16,15 @@ import {
   List,
   Network,
   BarChart3,
+  Minimize2,
 } from 'lucide-react';
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { useStore } from '../lib/store';
 import type { AgentTraceEvent, AgentTraceKind, AgentTraceLevel } from '../lib/store';
 import { cn } from '../lib/cn';
-import { AgentGraph } from './AgentGraph';
-import { AgentDashboard } from './AgentDashboard';
+
+const AgentGraph = lazy(() => import('./AgentGraph').then((m) => ({ default: m.AgentGraph })));
+const AgentDashboard = lazy(() => import('./AgentDashboard').then((m) => ({ default: m.AgentDashboard })));
 
 type View = 'list' | 'graph' | 'stats';
 
@@ -49,11 +51,17 @@ function formatTime(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-export function AgentTracePanel() {
+export function AgentTracePanel({
+  onToggleCollapsed,
+  defaultView = 'list',
+}: {
+  onToggleCollapsed?: () => void;
+  defaultView?: View;
+}) {
   const trace = useStore((s) => s.agentTrace);
   const clear = useStore((s) => s.clearAgentTrace);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [view, setView] = useState<View>('list');
+  const [view, setView] = useState<View>(defaultView);
 
   return (
     <div className="flex flex-col min-h-0 h-full bg-bg-elev/40">
@@ -68,6 +76,15 @@ export function AgentTracePanel() {
           <ViewBtn icon={Network} active={view === 'graph'} onClick={() => setView('graph')} title="协作拓扑" />
           <ViewBtn icon={BarChart3} active={view === 'stats'} onClick={() => setView('stats')} title="仪表板" />
         </div>
+        {onToggleCollapsed && (
+          <button
+            onClick={onToggleCollapsed}
+            className="text-ink-mute hover:text-ink transition flex items-center text-[10px] ml-1"
+            title="折叠 Agent 面板"
+          >
+            <Minimize2 size={10} />
+          </button>
+        )}
         {trace.length > 0 && (
           <button
             onClick={clear}
@@ -103,8 +120,16 @@ export function AgentTracePanel() {
           )}
         </div>
       )}
-      {view === 'graph' && <AgentGraph />}
-      {view === 'stats' && <AgentDashboard />}
+      {view === 'graph' && (
+        <Suspense fallback={<div className="p-2 text-[10px] text-ink-mute">加载拓扑…</div>}>
+          <AgentGraph />
+        </Suspense>
+      )}
+      {view === 'stats' && (
+        <Suspense fallback={<div className="p-2 text-[10px] text-ink-mute">加载统计…</div>}>
+          <AgentDashboard />
+        </Suspense>
+      )}
     </div>
   );
 }

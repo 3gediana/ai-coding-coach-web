@@ -3,7 +3,7 @@
  *
  * 全部支持流式：UI 可在 AI 还在输出时就实时看到内容，不再 40s 干等。
  */
-import { AIClient } from './ai/client';
+import { AIClient, parseJsonLoose } from './ai/client';
 import {
   buildAcReviewPrompt,
   buildAnalyzeCodePrompt,
@@ -24,6 +24,17 @@ import {
   buildSummarizePrompt,
 } from './ai/prompts';
 import { pickRoute, type RouteHints, type RouteDecision, type RouterHints } from './ai/router';
+import {
+  buildAttackerPrompt,
+  buildExplainerPrompt,
+  buildFixSuggestorPrompt,
+  type AttackerCandidate,
+  type AttackerOutput,
+  type ExecutorRunResult,
+  type ExplainerOutput,
+  type FixSuggestorOutput,
+  type HackChainContext,
+} from './hackChain';
 import { isEffectivelyOffline } from '../lib/offlineMode';
 import { formatFeaturesForPrompt } from './astLite';
 import { buildCoachPrompt } from './coach/prompts';
@@ -59,6 +70,7 @@ export class Coach {
     private readonly aiFast?: AIClient,
     /** 用户在 Settings 自定义的路由阈值，未传走 DEFAULT_ROUTER_HINTS */
     private routerHints?: RouterHints,
+    private readonly aiQuality?: AIClient,
   ) {}
 
   updateClient(client: AIClient) {
@@ -69,9 +81,17 @@ export class Coach {
     (this as any).aiFast = client;
   }
 
+  updateQualityClient(client: AIClient | undefined) {
+    (this as any).aiQuality = client;
+  }
+
   /** 用户改了路由阈值时调用 */
   updateRouterHints(hints: RouterHints | undefined) {
     this.routerHints = hints;
+  }
+
+  private qualityClient(): AIClient {
+    return this.aiQuality ?? this.ai;
   }
 
   /**
@@ -230,9 +250,9 @@ export class Coach {
         maxTokens: 500,
         temperature: 0.3,
         signal: args.signal,
-        // 云端只 1 次（失败立即降级 fastLane，避免 retry 吃光时间）；
+        // 云端允许 2 次：题眼速读输出很短，但偶发 JSON 截断/格式漂移时重试可显著提升稳定性；
         // fastLane 本地稳定，仍允许默认 3 次 retry 增加成功率
-        jsonAttempts: isCloud ? 1 : 3,
+        jsonAttempts: isCloud ? 2 : 3,
       });
     let data: OverviewRaw;
     try {
@@ -324,7 +344,7 @@ export class Coach {
       });
     let data: AcReviewRaw;
     try {
-      data = await callWith(this.ai);
+      data = await callWith(this.qualityClient());
     } catch (e) {
       // 主云端连续失败 → fastLane 本地兜底（如果用户启用了 fastLane）
       if (this.aiFast) {
@@ -446,7 +466,7 @@ export class Coach {
       });
     let data: DiagRaw;
     try {
-      data = await callWith(this.ai, true);
+      data = await callWith(this.qualityClient(), true);
     } catch (e) {
       // 云端挂了 → fastLane 兜底
       if (this.aiFast) {
@@ -540,7 +560,7 @@ export class Coach {
     try {
       // 同义字段兜底：headline / title; estimatedMinutes / minutes / totalMinutes;
       // steps / plan / tasks; encouragement / motto / cheer
-      const data = await this.ai.chatJson<{
+      const data = await this.qualityClient().chatJson<{
         headline?: string;
         title?: string;
         estimatedMinutes?: number;
@@ -673,7 +693,7 @@ export class Coach {
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
-        maxTokens: 500,
+        maxTokens: 360,
         temperature: 0.6, // 高一点让 AI 学生显得"自然"
         signal: args.signal,
       });
@@ -715,23 +735,35 @@ export class Coach {
     summary: string;
   } | null> {
     const { system, user } = buildFeynmanEvaluatorPrompt(args);
-    try {
-      const data = await this.ai.chatJson<{
+    const callEvaluator = async (client: AIClient) => {
+      const raw = await client.chat({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 650,
+        temperature: 0.3,
+        signal: args.signal,
+      });
+      return parseJsonLoose<{
         scores?: { clarity?: number; logic?: number; accuracy?: number };
         strengths?: unknown;
         weaknesses?: unknown;
         suggestions?: unknown;
         verdict?: string;
         summary?: string;
-      }>({
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        maxTokens: 1000,
-        temperature: 0.3,
-        signal: args.signal,
-      });
+      }>(raw);
+    };
+    try {
+      let data: Awaited<ReturnType<typeof callEvaluator>>;
+      try {
+        data = await callEvaluator(this.qualityClient());
+      } catch (e) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach.generateFeynmanEvaluation] quality failed, trying primary', e);
+        }
+        data = await callEvaluator(this.ai);
+      }
       const clamp = (v: unknown) => {
         const n = typeof v === 'number' ? v : 0;
         return Math.max(0, Math.min(10, Math.round(n)));
@@ -753,13 +785,19 @@ export class Coach {
         verdictRaw === 'mastered' || verdictRaw === 'partial' || verdictRaw === 'struggling'
           ? verdictRaw
           : 'partial';
-      const summary = (data.summary ?? '').toString().trim().slice(0, 150);
-      if (!summary) return null;
+      const strengths = toStrArr(data.strengths, 2, 100);
+      const weaknesses = toStrArr(data.weaknesses, 2, 100);
+      const suggestions = toStrArr(data.suggestions, 2, 100);
+      const summary =
+        (data.summary ?? '').toString().trim().slice(0, 150) ||
+        weaknesses[0] ||
+        suggestions[0] ||
+        '讲解完成，但评估摘要缺失。';
       return {
         scores,
-        strengths: toStrArr(data.strengths, 4, 100),
-        weaknesses: toStrArr(data.weaknesses, 4, 100),
-        suggestions: toStrArr(data.suggestions, 3, 100),
+        strengths,
+        weaknesses,
+        suggestions,
         verdict,
         summary,
       };
@@ -1286,6 +1324,125 @@ export class Coach {
    * 主动出 hack case：跑通样例后让 Coach 自己挑战边界。
    * 返回结构化 JSON，让上层可以直接把 stdin 灌进运行终端。
    */
+  /**
+   * Hack Chain Step 1：Attacker Agent — 产候选攻击 case 列表（≥1，≤3）。
+   * 与单步 generateHackCase 区别：返回 candidates[] 而非单个，方便 Executor 挨个跑。
+   */
+  async generateHackAttacker(
+    ctx: HackChainContext,
+    opts: StreamOpts = {},
+  ): Promise<AttackerOutput> {
+    const { system, user } = buildAttackerPrompt(ctx);
+    const client = this.qualityClient();
+    const data = await client.chatJsonStream<{
+      hypothesis?: string;
+      candidates?: Array<{
+        kind?: string;
+        description?: string;
+        stdin?: string;
+        expectedOutput?: string;
+      }>;
+    }>({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      maxTokens: 1600,
+      ...opts,
+    });
+    const allowed: Array<AttackerCandidate['kind']> = ['edge', 'large', 'degenerate', 'tricky'];
+    const candidates: AttackerCandidate[] = (data.candidates ?? [])
+      .map((c) => {
+        const kind = (allowed as string[]).includes(c.kind ?? '')
+          ? (c.kind as AttackerCandidate['kind'])
+          : 'edge';
+        const stdin = (c.stdin ?? '').replace(/\r\n/g, '\n');
+        return {
+          kind,
+          description: (c.description ?? '').trim() || '边界 case',
+          stdin: stdin.trim(),
+          expectedOutput: c.expectedOutput?.trim() || undefined,
+        };
+      })
+      .filter((c) => !!c.stdin)
+      .slice(0, 3);
+    return {
+      hypothesis: (data.hypothesis ?? '').trim() || '（攻击者未给出明确假设）',
+      candidates,
+    };
+  }
+
+  /**
+   * Hack Chain Step 3：Explainer Agent — 解释为啥学生代码挂了。
+   * 输入：Attacker 假设 + 成功 hack 的 case + Executor 真实结果。
+   */
+  async generateHackExplanation(
+    args: {
+      ctx: HackChainContext;
+      attackerHypothesis: string;
+      winningCandidate: AttackerCandidate;
+      executorResult: ExecutorRunResult;
+    },
+    opts: StreamOpts = {},
+  ): Promise<ExplainerOutput> {
+    const { system, user } = buildExplainerPrompt(args);
+    const client = this.qualityClient();
+    const data = await client.chatJsonStream<{
+      diagnosis?: string;
+      rootCause?: string;
+    }>({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      maxTokens: 600,
+      ...opts,
+    });
+    return {
+      diagnosis: (data.diagnosis ?? '').trim() || '（无诊断结论）',
+      rootCause: (data.rootCause ?? '').trim() || '（未给出根因分析）',
+    };
+  }
+
+  /**
+   * Hack Chain Step 4：FixSuggestor Agent — 给修改方向，不直接给答案。
+   */
+  async generateHackFixSuggestion(
+    args: {
+      ctx: HackChainContext;
+      attackerHypothesis: string;
+      diagnosis: string;
+      rootCause: string;
+    },
+    opts: StreamOpts = {},
+  ): Promise<FixSuggestorOutput> {
+    const { system, user } = buildFixSuggestorPrompt(args);
+    const client = this.qualityClient();
+    const data = await client.chatJsonStream<{
+      direction?: string;
+      hint?: string;
+      conceptKeywords?: unknown;
+    }>({
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      maxTokens: 500,
+      ...opts,
+    });
+    const kw = Array.isArray(data.conceptKeywords)
+      ? data.conceptKeywords
+          .map((x) => String(x ?? '').trim())
+          .filter((x) => !!x)
+          .slice(0, 4)
+      : [];
+    return {
+      direction: (data.direction ?? '').trim() || '（无方向提示）',
+      hint: (data.hint ?? '').trim() || '（无引导问题）',
+      conceptKeywords: kw,
+    };
+  }
+
   async generateHackCase(
     args: {
       problem: Problem;

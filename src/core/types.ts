@@ -292,6 +292,33 @@ export type AIProvider =
   | 'ollama'
   | 'custom';
 
+/**
+ * Ollama 总开关：
+ * - 'enabled'：本机已装 Ollama（推荐）。启用后 fastLane / detect / 3 个嗅探 / 意图路由 / 图片识别 全部可用
+ * - 'disabled'：本机未装 Ollama（精确隔离模式）。所有 ollama 路径全部 noop，不调云端、不报错、不出 chip
+ *
+ * 这是 user-facing 的"双模式"——首次启动 OllamaIntroModal 让用户选；之后可在 Settings 顶部切换。
+ * 缺省：'enabled'（保持现有行为不变）；undefined 也按 enabled 处理保证旧存档兼容。
+ */
+export type OllamaMode = 'enabled' | 'disabled';
+
+/**
+ * 模型注册表条目 — 注册制核心。
+ * 用户先在此注册好模型（含连接信息），再把 id 分配给各 agent slot。
+ */
+export interface ModelEntry {
+  /** 唯一标识，如 "deepseek-main" / "local-qwen3" */
+  id: string;
+  /** 用户自定义显示名，如 "DeepSeek V4 主力" */
+  label: string;
+  provider: AIProvider;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  /** Ollama 专用：上下文窗口大小 */
+  numCtx?: number;
+}
+
 /** AI 服务配置 */
 export interface AIConfig {
   provider: AIProvider;
@@ -299,6 +326,25 @@ export interface AIConfig {
   apiKey: string;
   model: string;
   maxTokens: number;
+  /**
+   * Ollama 总开关 — 见 {@link OllamaMode}。
+   * 'disabled' 时所有 ollama 触点（fastLane / detect / 嗅探 / OCR）全部 noop，
+   * UI 显示「需 Ollama」灰显标签；不会偷偷走云端。
+   * undefined（旧存档）按 'enabled' 处理保持兼容。
+   */
+  ollamaMode?: OllamaMode;
+  /**
+   * 模型注册表：所有可用模型的中央列表。
+   * 各 agent slot 通过 modelId 引用此表中的条目。
+   */
+  modelRegistry?: ModelEntry[];
+  /**
+   * 主模型 ID（引用 modelRegistry 中的条目）。
+   * 设置后 provider/baseUrl/apiKey/model 从 registry 解析；
+   * 未设置时仍按旧的顶层字段工作（兼容迁移）。
+   */
+  primaryModelId?: string;
+  qualityModelId?: string;
   /** 单次请求超时（毫秒）；不填用 client 默认 */
   timeoutMs?: number;
   /** 最大重试次数；不填用 client 默认 */
@@ -323,6 +369,8 @@ export interface AIConfig {
    */
   fastLane?: {
     enabled: boolean;
+    /** 引用 modelRegistry 中的模型 ID；设置后 baseUrl/model/numCtx 从 registry 解析 */
+    modelId?: string;
     /** 本地 ollama endpoint（baseUrl 必须是 localhost / 127.* / 局域网） */
     baseUrl: string;
     /** ollama 模型名，例如 'sam:latest' */
@@ -349,6 +397,8 @@ export interface AIConfig {
    */
   intentRouter?: {
     enabled: boolean;
+    /** 引用 modelRegistry 中的模型 ID；设置后 provider/baseUrl/apiKey/model 从 registry 解析 */
+    modelId?: string;
     provider?: AIProvider;
     baseUrl: string;
     apiKey?: string;
@@ -377,6 +427,8 @@ export interface AIConfig {
 /** algoViz 单个工位的模型 override（OpenAI 兼容协议；未启用时按规则兜底） */
 export interface AlgoVizAgentOverride {
   enabled: boolean;
+  /** 引用 modelRegistry 中的模型 ID；设置后 provider/baseUrl/apiKey/model 从 registry 解析 */
+  modelId?: string;
   provider?: AIProvider;
   baseUrl: string;
   apiKey: string;

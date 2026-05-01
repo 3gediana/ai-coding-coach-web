@@ -90,6 +90,7 @@ function formatRelative(ts: number, now: number): string {
 
 export function AgentDashboard() {
   const trace = useStore((s) => s.agentTrace);
+  const ollamaEnabled = useStore((s) => s.aiConfig.ollamaMode !== 'disabled');
   const stats = useMemo(() => buildStats(trace), [trace]);
   const now = Date.now();
 
@@ -102,19 +103,21 @@ export function AgentDashboard() {
   return (
     <div className="flex-1 overflow-y-auto min-h-0 p-2 text-[10px]">
       {/* 总览 */}
-      <div className="grid grid-cols-4 gap-1.5 mb-2">
+      <div className={cn('grid gap-1.5 mb-2', ollamaEnabled ? 'grid-cols-4' : 'grid-cols-3')}>
         <SummaryCard
           icon={Activity}
           label="总调用"
           value={totalCalls.toString()}
           color="text-accent"
         />
-        <SummaryCard
-          icon={Zap}
-          label="本地"
-          value={totalFast.toString()}
-          color="text-warn"
-        />
+        {ollamaEnabled && (
+          <SummaryCard
+            icon={Zap}
+            label="本地"
+            value={totalFast.toString()}
+            color="text-warn"
+          />
+        )}
         <SummaryCard
           icon={Cloud}
           label="云端"
@@ -149,7 +152,12 @@ export function AgentDashboard() {
       <div className="mt-3 pt-2 border-t border-line/40 text-[9px] text-ink-mute leading-relaxed">
         <strong>说明</strong>：调用次数从最近 200 条 trace 聚合；延迟自动按 perceive→feedback
         配对推算（DailyPlan 编排链有最准确的延迟数据）；token 统计仅在 trace 显式带
-        tokenIn/Out 时累加。<strong>本地 Agent (绿色)</strong> 不消耗 token。
+        tokenIn/Out 时累加。
+        {ollamaEnabled && (
+          <>
+            <strong>本地 Agent (绿色)</strong> 不消耗 token。
+          </>
+        )}
       </div>
     </div>
   );

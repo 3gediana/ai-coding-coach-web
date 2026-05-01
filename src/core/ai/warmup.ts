@@ -88,6 +88,8 @@ export interface WarmupResult {
  * 返回每个目标的成功/失败 + 延迟，方便 UI 上报。
  */
 export async function warmupLocalModels(cfg: AIConfig): Promise<WarmupResult[]> {
+  // ollamaMode='disabled' 完全跳过预热（避免 console 噪音 + 防止误唤起 ollama 进程）
+  if (cfg.ollamaMode === 'disabled') return [];
   const targets = collectTargets(cfg);
   if (targets.length === 0) return [];
 

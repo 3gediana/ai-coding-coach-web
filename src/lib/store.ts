@@ -23,6 +23,7 @@ import type {
   Lang,
   LearnerProfile,
   Mistake,
+  ModelEntry,
   OnboardingStep,
   Problem,
   Session,
@@ -36,7 +37,7 @@ import { isLocalOllamaUrl } from './ollama';
 import { AlgoVizService, type AlgoVizClients } from '../algoviz/service';
 import { pickAlgoVizClient } from '../algoviz/clients';
 import { buildLearnerProfile, codeHash } from '../core/utils';
-import { buildCoachContext, formatAnalysisAsCoachMessage } from '../core/coach/context';
+import { buildCoachContext, formatAnalysisAsCoachMessage, formatInlineCoachPrelude } from '../core/coach/context';
 import { routeCoachRequest } from '../core/coach/router';
 import type { CoachAskInput, CoachDraft, CoachRoute } from '../core/coach/types';
 import { submitToOj, type OjSubmitResult } from './ojBridge';
@@ -48,6 +49,35 @@ import {
   type ProgressOverview,
 } from '../core/recommend';
 import { extractFeatures, type CodeStructFeatures } from '../core/astLite';
+import { runPython, runCpp } from './runtime';
+import { orchestrateHackChain, type SandboxRunResult } from '../core/hackChainOrchestrator';
+import { orchestrateDailyPlan } from '../core/dailyPlanOrchestrator';
+import type {
+  AttackerCandidate,
+  AttackerOutput,
+  ExecutorOutput,
+  ExecutorRunResult,
+  ExplainerOutput,
+  FixSuggestorOutput,
+  HackChainContext,
+  HackChainResult,
+  HackChainStep,
+} from '../core/hackChain';
+export type {
+  AttackerOutput,
+  ExecutorOutput,
+  ExplainerOutput,
+  FixSuggestorOutput,
+  HackChainResult,
+  HackChainStep,
+} from '../core/hackChain';
+import {
+  migrateConfigToRegistry,
+  resolveFastLaneModel,
+  resolveIntentRouterModel,
+  resolvePrimaryModel,
+  resolveQualityModel,
+} from './modelRegistry';
 import bankData from '../data/problemBank.json';
 
 const PROBLEM_BANK = bankData as BankProblem[];
@@ -100,14 +130,18 @@ function pruneFailureStats(stats: FailureStats, now = Date.now()): FailureStats 
  *   - 否则返回 null（Coach 会回落到主 client）
  */
 function deriveFastConfig(cfg: AIConfig): AIConfig | null {
-  const fl = cfg.fastLane;
-  if (!fl?.enabled || !fl.baseUrl?.trim() || !fl.model?.trim()) return null;
-  if (!isLocalOllamaUrl(fl.baseUrl)) return null;
+  // ollamaMode='disabled' 直接拒绝（用户明确说"我没装 Ollama"）：
+  // - fastLane 不会被构建出来 → Coach.aiFast=undefined → 所有路由强制走主云端
+  // - 3 个嗅探函数 (diagnoseRuntimeError / sanityCheckConstraints / sniffIntent) 自动 noop
+  if (cfg.ollamaMode === 'disabled') return null;
+  const resolved = resolveFastLaneModel(cfg);
+  if (!resolved) return null;
+  if (!isLocalOllamaUrl(resolved.baseUrl)) return null;
   return {
     provider: 'ollama',
-    baseUrl: fl.baseUrl.trim(),
+    baseUrl: resolved.baseUrl.trim(),
     apiKey: '',
-    model: fl.model.trim(),
+    model: resolved.model.trim(),
     // 兜底默认值。注意：analyzer.ts 的每个任务（analyzeCode / stuckHint / explainPaste）
     // 都会显式传 maxTokens 覆盖此值，所以这里只在调用方未传时生效。
     maxTokens: 2048,
@@ -115,23 +149,44 @@ function deriveFastConfig(cfg: AIConfig): AIConfig | null {
     timeoutMs: 60_000,
     maxRetries: 1,
     // 用户在 fastLane 区域配置的 num_ctx；不填走 client.ts 默认 20480
-    numCtx: fl.numCtx,
+    numCtx: resolved.numCtx,
   };
 }
 
 function hasUsableAIConfig(cfg: AIConfig): boolean {
-  return cfg.provider === 'ollama' ? !!cfg.baseUrl.trim() : !!cfg.apiKey.trim();
+  const resolved = resolvePrimaryModel(cfg);
+  if (cfg.ollamaMode === 'disabled' && resolved.provider === 'ollama') return false;
+  return resolved.provider === 'ollama' ? !!resolved.baseUrl.trim() : !!resolved.apiKey.trim();
+}
+
+/**
+ * 给 AIClient 用的"已解析主模型"AIConfig：
+ * 把 registry 中 primaryModelId 指向的连接信息覆盖到顶层字段上，
+ * 其他可选字段（maxTokens / temperature / timeoutMs / numCtx 等）保持不变。
+ */
+function resolveAIClientConfig(cfg: AIConfig): AIConfig {
+  const p = resolvePrimaryModel(cfg);
+  return {
+    ...cfg,
+    provider: p.provider,
+    baseUrl: p.baseUrl,
+    apiKey: p.apiKey,
+    model: p.model,
+    numCtx: p.numCtx ?? cfg.numCtx,
+  };
 }
 
 function createIntentRouterClient(cfg: AIConfig): AIClient | null {
-  const ir = cfg.intentRouter;
-  if (!ir?.enabled || !ir.baseUrl?.trim() || !ir.model?.trim()) return null;
-  const provider: AIProvider = ir.provider ?? (isLocalOllamaUrl(ir.baseUrl) ? 'ollama' : cfg.provider);
+  const resolved = resolveIntentRouterModel(cfg);
+  if (!resolved) return null;
+  // ollamaMode='disabled' 时，意图路由器只允许走云端；本地 ollama 触点全部 noop
+  if (cfg.ollamaMode === 'disabled' && isLocalOllamaUrl(resolved.baseUrl)) return null;
+  const provider: AIProvider = resolved.provider ?? (isLocalOllamaUrl(resolved.baseUrl) ? 'ollama' : cfg.provider);
   return new AIClient({
     provider,
-    baseUrl: ir.baseUrl.trim(),
-    apiKey: ir.apiKey?.trim() ?? '',
-    model: ir.model.trim(),
+    baseUrl: resolved.baseUrl.trim(),
+    apiKey: resolved.apiKey?.trim() ?? '',
+    model: resolved.model.trim(),
     maxTokens: 256,
     temperature: 0,
     timeoutMs: 8_000,
@@ -228,6 +283,10 @@ export type AgentName =
   | 'AcReview'
   | 'DailyReview'
   | 'HackCase'
+  | 'HackChain/Attacker'
+  | 'HackChain/Executor'
+  | 'HackChain/Explainer'
+  | 'HackChain/FixSuggestor'
   | 'StuckHint'
   | 'IntentSniffer'
   | 'RuntimeDiagnose'
@@ -265,6 +324,10 @@ export function inferAgentName(title: string): AgentName {
   if (t.includes('PlainExplanation') || t.includes('题面通读')) return 'PlainExplanation';
   if (t.includes('AskCoach') || t.includes('问教练')) return 'AskCoach';
   if (t.includes('ParseProblem') || t.includes('题面解析')) return 'ParseProblem';
+  if (t.includes('Hack Chain · Attacker') || t.includes('HackChain/Attacker')) return 'HackChain/Attacker';
+  if (t.includes('Hack Chain · Executor') || t.includes('HackChain/Executor')) return 'HackChain/Executor';
+  if (t.includes('Hack Chain · Explainer') || t.includes('HackChain/Explainer')) return 'HackChain/Explainer';
+  if (t.includes('Hack Chain · FixSuggestor') || t.includes('HackChain/FixSuggestor')) return 'HackChain/FixSuggestor';
   if (t.includes('HackCase') || t.includes('Hack')) return 'HackCase';
   if (t.includes('StuckHint') || t.includes('卡住') || t.includes('苏格拉底')) return 'StuckHint';
   if (t.includes('IntentSniff') || t.includes('意图嗅探')) return 'IntentSniffer';
@@ -277,6 +340,19 @@ export function inferAgentName(title: string): AgentName {
 }
 
 const AGENT_TRACE_LIMIT = 200;
+
+// ============== Hack Chain 状态机（UI 用） ==============
+
+/** UI 渲染 timeline 时用的步骤状态 */
+export interface HackChainStepState {
+  step: HackChainStep;
+  status: 'idle' | 'running' | 'success' | 'failed' | 'skipped';
+  /** 步骤起止时间，UI 显示耗时 */
+  startedAt?: number;
+  endedAt?: number;
+  /** 失败时的简短错因 */
+  error?: string;
+}
 
 // ============== Coach Hint（FastLane 主动嗅探的产物） ==============
 
@@ -492,6 +568,10 @@ interface State {
 
   // ===== actions =====
   setAIConfig: (cfg: AIConfig) => void;
+  /** 模型注册表 CRUD（返回更新后的 cfg，方便 SettingsModal 即时联动） */
+  registerModel: (entry: Omit<ModelEntry, 'id'> & { id?: string }) => string;
+  updateModel: (id: string, patch: Partial<Omit<ModelEntry, 'id'>>) => void;
+  removeModel: (id: string) => void;
   setDefaultLang: (l: Lang) => void;
   setActiveProblem: (id: string | null) => Promise<void>;
 
@@ -609,6 +689,26 @@ interface State {
     | null;
   dismissHackCase: () => void;
 
+  /**
+   * Hack Chain：4-agent 严格链式编排（Attacker → Executor → Explainer → FixSuggestor）。
+   * 与单步 enqueueHackCase 共存：用户可以选老的"快出 1 个 case"或新的"完整链路"。
+   */
+  runHackChain: (opts?: { reason?: string }) => Promise<void>;
+  /** runHackChain 在跑吗（防重） */
+  /** Chain 当前运行状态；UI 用来渲染时间线 */
+  hackChainState:
+    | {
+        problemId: string;
+        fileId: string;
+        startedAt: number;
+        /** 各步状态机；每完成一步追加 */
+        steps: HackChainStepState[];
+        /** 全链结束后挂的最终 result（含整段 trace） */
+        result: HackChainResult | null;
+      }
+    | null;
+  dismissHackChain: () => void;
+
   // Agent 行动日志
   agentTrace: AgentTraceEvent[];
   recordAgentTrace: (
@@ -714,6 +814,27 @@ function readEnvAIConfig(): Partial<AIConfig> {
   return out;
 }
 
+function withDefaultCloudModels(cfg: AIConfig): AIConfig {
+  if (cfg.provider !== 'deepseek' || cfg.baseUrl !== DEFAULT_AI_CONFIG.baseUrl) return cfg;
+  const defaults = DEFAULT_AI_CONFIG.modelRegistry ?? [];
+  const byId = new Map((cfg.modelRegistry ?? []).map((m) => [m.id, m]));
+  for (const m of defaults) {
+    const existing = byId.get(m.id);
+    byId.set(m.id, { ...m, ...(existing ?? {}), apiKey: existing?.apiKey || cfg.apiKey });
+  }
+  return {
+    ...cfg,
+    model: cfg.model || 'deepseek-v4-flash',
+    qualityModelId: cfg.qualityModelId ?? 'deepseek-v4-pro',
+    modelRegistry: [...byId.values()],
+    algoVizModels: {
+      ...cfg.algoVizModels,
+      status: cfg.algoVizModels?.status ?? DEFAULT_AI_CONFIG.algoVizModels?.status,
+      animation: cfg.algoVizModels?.animation ?? DEFAULT_AI_CONFIG.algoVizModels?.animation,
+    },
+  };
+}
+
 const initialAIConfig: AIConfig = (() => {
   const envCfg = readEnvAIConfig();
   try {
@@ -722,7 +843,7 @@ const initialAIConfig: AIConfig = (() => {
       const parsed = JSON.parse(raw);
       // 浅合并：默认 → .env → localStorage（用户保存的优先级最高）
       // fastLane / intentRouter 做嵌套兜底
-      return {
+      const merged: AIConfig = {
         ...DEFAULT_AI_CONFIG,
         ...envCfg,
         ...parsed,
@@ -732,12 +853,14 @@ const initialAIConfig: AIConfig = (() => {
           ...(parsed.intentRouter ?? {}),
         },
       };
+      // 旧存档没有 modelRegistry → 自动把现有连接信息注册成 ModelEntry
+      return withDefaultCloudModels(migrateConfigToRegistry(merged));
     }
   } catch {
     /* ignore */
   }
   // 没有 localStorage 存档：用默认 + .env，并立刻写回（让设置面板里 hint「保存在浏览器」是真的）
-  const merged: AIConfig = { ...DEFAULT_AI_CONFIG, ...envCfg };
+  const merged: AIConfig = withDefaultCloudModels({ ...DEFAULT_AI_CONFIG, ...envCfg });
   try {
     if (envCfg.apiKey) {
       localStorage.setItem(LS_AI_CFG, JSON.stringify(merged));
@@ -808,11 +931,12 @@ function buildAlgoVizClients(cfg: AIConfig): AlgoVizClients {
 }
 
 export const useStore = create<State>((set, get) => {
-  const ai = new AIClient(initialAIConfig);
+  const ai = new AIClient(resolveAIClientConfig(initialAIConfig));
+  const aiQuality = new AIClient({ ...initialAIConfig, ...resolveQualityModel(initialAIConfig) });
   // fastLane: 本地 ollama 客户端，专做实时前台任务
   const fastCfg = deriveFastConfig(initialAIConfig);
   const aiFast = fastCfg ? new AIClient(fastCfg) : undefined;
-  const coach = new Coach(ai, aiFast, initialAIConfig.routerHints);
+  const coach = new Coach(ai, aiFast, initialAIConfig.routerHints, aiQuality);
   // algoViz Service：3 个工位 client，按 cfg 实时派生
   const algoVizService = new AlgoVizService(buildAlgoVizClients(initialAIConfig));
 
@@ -1012,6 +1136,8 @@ export const useStore = create<State>((set, get) => {
     agentTrace: [],
     pendingHackCase: null,
     dismissHackCase: () => set({ pendingHackCase: null }),
+    hackChainState: null,
+    dismissHackChain: () => set({ hackChainState: null }),
 
     recordAgentTrace: (e) => {
       const event: AgentTraceEvent = {
@@ -1091,12 +1217,24 @@ export const useStore = create<State>((set, get) => {
     intentSniffEnabled: localStorage.getItem('aicc.coach.intentSniff.v1') === 'on',
 
     setAIConfig: (cfg) => {
+      cfg = withDefaultCloudModels(cfg);
       try {
         localStorage.setItem(LS_AI_CFG, JSON.stringify(cfg));
       } catch {
         /* ignore */
       }
-      get().ai.updateConfig(cfg);
+      if (typeof fetch !== 'undefined' && (import.meta as any).env?.DEV) {
+        void fetch('/__aicc-ollama-mode', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode: cfg.ollamaMode === 'disabled' ? 'disabled' : 'enabled' }),
+        }).catch(() => {
+          /* dev server endpoint may be absent in tests/prod */
+        });
+      }
+      // 主 client 用解析后的 primary（registry 优先 → fallback 顶层字段）
+      get().ai.updateConfig(resolveAIClientConfig(cfg));
+      get().coach.updateQualityClient(new AIClient({ ...cfg, ...resolveQualityModel(cfg) }));
       // 同步 fastLane：根据新 cfg 派生本地 client
       const newFastCfg = deriveFastConfig(cfg);
       if (newFastCfg) {
@@ -1115,6 +1253,67 @@ export const useStore = create<State>((set, get) => {
       // 重建 algoVizService：3 个工位 client 都得跟着 cfg 重新挑（override / fastLane / 主 cfg）
       const newAlgoVizService = new AlgoVizService(buildAlgoVizClients(cfg));
       set({ aiConfig: cfg, algoVizService: newAlgoVizService });
+    },
+
+    /**
+     * 注册一个新模型到 registry。返回新条目的 id（或传入的 id）。
+     * 重名 label 不报错，由调用方自行去重；id 冲突时覆盖原条目。
+     */
+    registerModel: (entry) => {
+      const cfg = get().aiConfig;
+      const id = entry.id ?? `m${nanoid(6)}`;
+      const newEntry: ModelEntry = {
+        id,
+        label: entry.label,
+        provider: entry.provider,
+        baseUrl: entry.baseUrl,
+        apiKey: entry.apiKey,
+        model: entry.model,
+        numCtx: entry.numCtx,
+      };
+      const existing = cfg.modelRegistry ?? [];
+      const next = existing.some((m) => m.id === id)
+        ? existing.map((m) => (m.id === id ? newEntry : m))
+        : [...existing, newEntry];
+      get().setAIConfig({ ...cfg, modelRegistry: next });
+      return id;
+    },
+
+    /** 更新指定 id 的注册条目；找不到则 noop */
+    updateModel: (id, patch) => {
+      const cfg = get().aiConfig;
+      const existing = cfg.modelRegistry ?? [];
+      if (!existing.some((m) => m.id === id)) return;
+      const next = existing.map((m) => (m.id === id ? { ...m, ...patch, id } : m));
+      get().setAIConfig({ ...cfg, modelRegistry: next });
+    },
+
+    /**
+     * 从 registry 删除指定 id 的条目。
+     * 若该 id 仍被某个 slot 引用，相应 slot 的 modelId 一并清空，避免悬挂引用。
+     */
+    removeModel: (id) => {
+      const cfg = get().aiConfig;
+      const existing = cfg.modelRegistry ?? [];
+      const next = existing.filter((m) => m.id !== id);
+      const cleaned: AIConfig = { ...cfg, modelRegistry: next };
+      if (cfg.primaryModelId === id) cleaned.primaryModelId = undefined;
+      if (cfg.fastLane?.modelId === id) {
+        cleaned.fastLane = { ...cfg.fastLane, modelId: undefined };
+      }
+      if (cfg.intentRouter?.modelId === id) {
+        cleaned.intentRouter = { ...cfg.intentRouter, modelId: undefined };
+      }
+      if (cfg.algoVizModels) {
+        const av = { ...cfg.algoVizModels };
+        for (const role of ['status', 'animation', 'detect'] as const) {
+          if (av[role]?.modelId === id) {
+            av[role] = { ...av[role]!, modelId: undefined };
+          }
+        }
+        cleaned.algoVizModels = av;
+      }
+      get().setAIConfig(cleaned);
     },
 
     /**
@@ -2432,6 +2631,12 @@ export const useStore = create<State>((set, get) => {
 
     enqueueHackCase: (opts) => {
       const st = get();
+      if (st.aiConfig.ollamaMode === 'disabled') {
+        toast.warning('Hack Case 需要 Ollama 模式', {
+          description: '这是 AC 后本地挑战功能；可在「设置」顶部开启 Ollama 模式后使用',
+        });
+        return null;
+      }
       if (!st.activeProblemId) {
         toast.error('请先激活一道题目');
         return null;
@@ -2531,6 +2736,233 @@ export const useStore = create<State>((set, get) => {
         },
         { problemId: problem.id, fileId: file.id, reason: opts?.reason },
       );
+    },
+
+    /**
+     * Hack Chain：4-agent 严格链式编排。
+     *
+     * 流程：
+     *   1. Attacker(LLM)：分析代码 + 题目约束 → 给 1-3 个候选攻击 case
+     *   2. Executor(本地沙箱)：挨个跑用户代码 → 找出第一个能 hack 成功的
+     *   3. Explainer(LLM)：基于 1+2 的输出 → 给学生听得懂的归因
+     *   4. FixSuggestor(LLM)：基于 1+2+3 → 给方向（不直接给答案）
+     *
+     * 关键设计：
+     *   - 每一步进 agentTrace（perceive/decide/act/feedback），UI 可重放
+     *   - 任意一步失败后续 skip，不破坏整链
+     *   - Executor 没 hack 成功（用户代码都过了）→ 后续 skip，照样上报"无法 hack"
+     *   - 与 enqueueHackCase 共存：用户可选老的"快出 1 个"或新的"完整链路"
+     */
+    runHackChain: async (opts) => {
+      const st = get();
+      // Hack Chain 与无 Ollama 模式兼容：Attacker/Explainer/FixSuggestor 走主云端，
+      // Executor 是本地沙箱（pyodide / Wandbox），与 Ollama 无关。
+      if (!st.activeProblemId) {
+        toast.error('请先激活一道题目');
+        return;
+      }
+      if (!hasUsableAIConfig(st.aiConfig)) {
+        toast.error('请先配置 AI 服务');
+        set({ settingsOpen: true });
+        return;
+      }
+      const problem = st.problems.find((p) => p.id === st.activeProblemId);
+      if (!problem) return;
+      const scopeKey = problem.id;
+      const fileId = st.activeFileIdByScope[scopeKey];
+      const file = (st.filesByScope[scopeKey] ?? []).find((f) => f.id === fileId);
+      if (!file || (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python')) {
+        toast.error('当前活跃文件不是可执行代码');
+        return;
+      }
+      // 防重：已有 chain 在跑则不再启动
+      if (st.hackChainState && !st.hackChainState.result) {
+        toast.message('Hack Chain 正在跑，请等本次结束');
+        return;
+      }
+
+      const startedAt = Date.now();
+      const ctx: HackChainContext = {
+        problem,
+        code: file.content,
+        language: langOfFile(file.language),
+        passedSamples: (problem.examples ?? [])
+          .filter((ex) => ex.input && ex.output)
+          .map((ex) => ({ input: ex.input, output: ex.output })),
+      };
+      const initialSteps: HackChainStepState[] = [
+        { step: 'attacker', status: 'idle' },
+        { step: 'executor', status: 'idle' },
+        { step: 'explainer', status: 'idle' },
+        { step: 'fixSuggestor', status: 'idle' },
+      ];
+      set({
+        hackChainState: {
+          problemId: problem.id,
+          fileId: file.id,
+          startedAt,
+          steps: initialSteps,
+          result: null,
+        },
+      });
+
+      /** 改某个 step 状态的 helper（不可变更新） */
+      const patchStep = (
+        step: HackChainStep,
+        patch: Partial<HackChainStepState>,
+      ) => {
+        const cur = get().hackChainState;
+        if (!cur) return;
+        set({
+          hackChainState: {
+            ...cur,
+            steps: cur.steps.map((s) => (s.step === step ? { ...s, ...patch } : s)),
+          },
+        });
+      };
+
+      // 步骤标题映射，让 trace 标题和 agentName 对得上 inferAgentName 的关键字
+      const stepTitle: Record<HackChainStep, string> = {
+        attacker: '[1/4] Hack Chain · Attacker',
+        executor: '[2/4] Hack Chain · Executor',
+        explainer: '[3/4] Hack Chain · Explainer',
+        fixSuggestor: '[4/4] Hack Chain · FixSuggestor',
+      };
+      const stepAgent: Record<HackChainStep, AgentName> = {
+        attacker: 'HackChain/Attacker',
+        executor: 'HackChain/Executor',
+        explainer: 'HackChain/Explainer',
+        fixSuggestor: 'HackChain/FixSuggestor',
+      };
+
+      // 执行编排（纯函数），副作用通过 observer 注入回 store
+      const result = await orchestrateHackChain(ctx, {
+        generateAttacker: (c) => get().coach.generateHackAttacker(c),
+        generateExplanation: (a) => get().coach.generateHackExplanation(a),
+        generateFixSuggestion: (a) => get().coach.generateHackFixSuggestion(a),
+        runCode: async (code, stdin, language): Promise<SandboxRunResult> => {
+          if (language === 'python') {
+            return runPython(code, stdin, { timeoutMs: 5000 });
+          }
+          return runCpp(code, stdin, {
+            timeoutMs: 8000,
+            language: language === 'c' ? 'c' : 'cpp',
+          });
+        },
+        observer: {
+          onStepStart: (step, ts) => {
+            patchStep(step, { status: 'running', startedAt: ts });
+            get().recordAgentTrace({
+              kind: 'perceive',
+              level: 'info',
+              title: `${stepTitle[step]} · 输入`,
+              detail:
+                step === 'attacker'
+                  ? `题目：${problem.title}\n代码 ${ctx.code.length} 字 · ${ctx.language}\n样例：${ctx.passedSamples?.length ?? 0} 个`
+                  : step === 'executor'
+                    ? '挨个跑 Attacker 给的候选 case'
+                    : `基于上一步输出（含 winning case）`,
+              problemId: problem.id,
+              agentName: stepAgent[step],
+              route: step === 'executor' ? 'fast' : 'cloud',
+            });
+          },
+          onStepSuccess: (step, ts) => {
+            patchStep(step, { status: 'success', endedAt: ts });
+          },
+          onStepFailed: (step, ts, error) => {
+            patchStep(step, { status: 'failed', endedAt: ts, error });
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: 'error',
+              title: `${stepTitle[step]} · 失败`,
+              detail: error,
+              problemId: problem.id,
+              agentName: stepAgent[step],
+            });
+          },
+          onStepSkipped: (step) => patchStep(step, { status: 'skipped' }),
+          onAttackerOutput: (out) => {
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: 'success',
+              title: `${stepTitle.attacker} · 输出 ${out.candidates.length} 个候选`,
+              detail: `假设：${out.hypothesis}\n${out.candidates
+                .map((c, i) => `${i + 1}. [${c.kind}] ${c.description}`)
+                .join('\n')}`,
+              problemId: problem.id,
+              agentName: stepAgent.attacker,
+            });
+          },
+          onExecutorProgress: () => {
+            // 暂不每条上 trace（避免噪音）；最后总结一条
+          },
+          onExplainerOutput: (out) => {
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: 'success',
+              title: `${stepTitle.explainer} · 输出`,
+              detail: `${out.diagnosis}\n根因：${out.rootCause}`,
+              problemId: problem.id,
+              agentName: stepAgent.explainer,
+            });
+          },
+          onFixSuggestorOutput: (out) => {
+            get().recordAgentTrace({
+              kind: 'act',
+              level: 'success',
+              title: `${stepTitle.fixSuggestor} · 输出`,
+              detail: `方向：${out.direction}\n提示：${out.hint}\n概念：${out.conceptKeywords.join(' / ')}`,
+              problemId: problem.id,
+              agentName: stepAgent.fixSuggestor,
+            });
+          },
+        },
+      });
+
+      // Executor 整体反馈条（一次性总结所有 case 结果）
+      if (result.executor) {
+        const winFound = result.executor.winningIndex !== null;
+        get().recordAgentTrace({
+          kind: 'feedback',
+          level: winFound ? 'success' : 'warn',
+          title: winFound
+            ? `${stepTitle.executor} · hack 成功 (case #${(result.executor.winningIndex ?? 0) + 1})`
+            : `${stepTitle.executor} · 未能 hack（用户代码全过）`,
+          detail: result.executor.results
+            .map(
+              (r, i) =>
+                `${i + 1}. exit ${r.exitCode} · ${r.durationMs}ms · ${
+                  r.hacked ? '✗ hacked' : '✓ ok'
+                }${r.reason ? ` (${r.reason})` : ''}`,
+            )
+            .join('\n'),
+          problemId: problem.id,
+          agentName: stepAgent.executor,
+          route: 'fast',
+        });
+      }
+
+      // 合并最终结果到 store
+      const cur = get().hackChainState;
+      set({
+        hackChainState: cur && {
+          ...cur,
+          result,
+        },
+      });
+
+      // toast 友好反馈
+      const noHack = result.executor && result.executor.winningIndex === null;
+      toast.message('Hack Chain 完成', {
+        description: result.attacker
+          ? noHack
+            ? `Attacker 提了 ${result.attacker.candidates.length} 个候选 case，全被挡掉 — 鲁棒性不错！`
+            : (result.explainer?.diagnosis ?? '攻击成功；查看时间线')
+          : 'Attacker 失败，查看时间线了解原因',
+        duration: 6000,
+      });
+      void opts;
     },
 
     cancelTask: (id) => {
@@ -2740,12 +3172,16 @@ export const useStore = create<State>((set, get) => {
           file &&
           (file.language === 'cpp' || file.language === 'c' || file.language === 'python')
         ) {
+          const quickPrelude = formatInlineCoachPrelude(route);
           set((st) => {
             const list = st.qaByProblem[scope] ?? [];
             const idx = list.findIndex((m) => m.id === assistMsg.id);
             if (idx < 0) return st;
             const next = list.slice();
-            next[idx] = { ...next[idx], content: '我在结合题面、代码和最近运行结果检查。' };
+            next[idx] = {
+              ...next[idx],
+              content: `${quickPrelude}\n\n_已开始后台代码审查…_`,
+            };
             return { qaByProblem: { ...st.qaByProblem, [scope]: next } };
           });
           const events = await storage.listEvents({ sessionId, limit: 200 });
@@ -2841,7 +3277,7 @@ export const useStore = create<State>((set, get) => {
                   const next = list.slice();
                   next[idx] = {
                     ...next[idx],
-                    content: `${phase}\n\n_已生成 ${tokens} 字_`,
+                    content: `${quickPrelude}\n\n---\n\n${phase}\n\n_行内批注生成中 · 已生成 ${tokens} 字_`,
                   };
                   return { qaByProblem: { ...st.qaByProblem, [scope]: next } };
                 });
@@ -2885,7 +3321,7 @@ export const useStore = create<State>((set, get) => {
             const next = list.slice();
             next[idx] = {
               ...next[idx],
-              content: formatAnalysisAsCoachMessage(stamped),
+              content: `${quickPrelude}\n\n---\n\n${formatAnalysisAsCoachMessage(stamped)}`,
               streaming: false,
             };
             return {
@@ -3139,7 +3575,7 @@ int main() {
       });
 
       try {
-        // ── [1/3] 学情诊断 Agent ──
+        // 收集 stats
         const now = Date.now();
         const DAY = 24 * 60 * 60 * 1000;
         const recentMistakes = st.mistakes
@@ -3163,7 +3599,6 @@ int main() {
             : weekSessions
                 .map((s) => ((s.endedAt ?? s.startedAt) - s.startedAt) / 60000)
                 .reduce((a, b) => a + b, 0) / totalSubmissions;
-        // stuckProblems：复用 escalation 阈值与 7 天滑窗（保持与单题升级语义一致）
         const stuckProblems = Object.entries(st.failureStatsByProblem)
           .map(([pid, v]) => [pid, pruneFailureStats(v)] as const)
           .filter(([, v]) => v.count >= FAILURE_STATS_ESCALATE_THRESHOLD)
@@ -3173,97 +3608,104 @@ int main() {
             verdicts: v.recentVerdicts.slice(),
           }));
 
-        get().recordAgentTrace({
-          kind: 'perceive',
-          level: 'info',
-          title: '[1/3] 学情诊断 Agent · 输入',
-          detail: `近期错题 ${recentMistakes.length} 条 · 7 天 ${totalSubmissions} 次提交（AC率 ${(acRate * 100).toFixed(0)}%）· 屡败题目 ${stuckProblems.length} 条`,
-        });
-
-        const diagnosis = await st.coach.generateLearningDiagnosis({
-          recentMistakes,
-          weekStats: {
-            totalProblems: weekSessions.filter((s) => !!s.problemId).length,
-            totalSubmissions,
-            acRate,
-            avgSessionMinutes,
+        // 跑编排（纯函数），副作用通过 observer 注入回 store
+        const result = await orchestrateDailyPlan(
+          {
+            diagnosisInput: {
+              recentMistakes,
+              weekStats: {
+                totalProblems: weekSessions.filter((s) => !!s.problemId).length,
+                totalSubmissions,
+                acRate,
+                avgSessionMinutes,
+              },
+              stuckProblems,
+            },
+            candidateContext: {
+              mistakes: st.mistakes,
+              alreadyAdded: st.problems,
+              bank: PROBLEM_BANK,
+              now,
+            },
           },
-          stuckProblems,
-        });
-        if (!diagnosis) {
-          get().recordAgentTrace({
-            kind: 'feedback',
-            level: 'warn',
-            title: '[1/3] 学情诊断 Agent · 失败',
-            detail: '云端模型未返回有效诊断；编排终止。',
-          });
-          set({ dailyPlanGenerating: false });
-          return;
-        }
-        get().recordAgentTrace({
-          kind: 'feedback',
-          level: 'success',
-          title: `[1/3] 学情诊断 Agent · 输出`,
-          detail: `薄弱：${diagnosis.weakConcepts.join(' / ')}\n强项：${diagnosis.strengths.join(' / ') || '（无）'}\n${diagnosis.todayFocus}`,
-        });
+          {
+            generateDiagnosis: (input) => st.coach.generateLearningDiagnosis(input),
+            pickCandidates: (input) =>
+              pickPlanCandidates(input as Parameters<typeof pickPlanCandidates>[0]),
+            generatePlan: (args) => st.coach.generatePlanOrchestration(args),
+            observer: {
+              onDiagnosisInput: (input) => {
+                get().recordAgentTrace({
+                  kind: 'perceive',
+                  level: 'info',
+                  title: '[1/3] 学情诊断 Agent · 输入',
+                  detail: `近期错题 ${input.recentMistakes.length} 条 · 7 天 ${input.weekStats.totalSubmissions} 次提交（AC率 ${(input.weekStats.acRate * 100).toFixed(0)}%）· 屡败题目 ${input.stuckProblems.length} 条`,
+                });
+              },
+              onDiagnosisOutput: (out) => {
+                get().recordAgentTrace({
+                  kind: 'feedback',
+                  level: 'success',
+                  title: `[1/3] 学情诊断 Agent · 输出`,
+                  detail: `薄弱：${out.weakConcepts.join(' / ')}\n强项：${out.strengths.join(' / ') || '（无）'}\n${out.todayFocus}`,
+                });
+              },
+              onDiagnosisFailed: (reason) => {
+                get().recordAgentTrace({
+                  kind: 'feedback',
+                  level: 'warn',
+                  title: '[1/3] 学情诊断 Agent · 失败',
+                  detail: `${reason}；编排终止。`,
+                });
+              },
+              onCandidatesOutput: (out) => {
+                get().recordAgentTrace({
+                  kind: 'decide',
+                  level: 'info',
+                  title: `[2/3] 题目筛选 Agent (本地) · 输出`,
+                  detail: `新题候选 ${out.newProblems.length} 道 · 复习候选 ${out.reviewMistakes.length} 道`,
+                });
+              },
+              onCandidatesEmpty: () => {
+                get().recordAgentTrace({
+                  kind: 'feedback',
+                  level: 'warn',
+                  title: '[2/3] 题目筛选 Agent · 候选为空',
+                  detail: '题库 + 错题本里没有匹配薄弱点的候选；规划终止。',
+                });
+              },
+              onPlanOutput: (out) => {
+                get().recordAgentTrace({
+                  kind: 'feedback',
+                  level: 'success',
+                  title: `[3/3] 计划编排 Agent · 输出`,
+                  detail: `${out.headline}\n共 ${out.steps.length} 步 / 估时 ${out.estimatedMinutes} 分钟`,
+                });
+              },
+              onPlanFailed: (reason) => {
+                get().recordAgentTrace({
+                  kind: 'feedback',
+                  level: 'warn',
+                  title: '[3/3] 计划编排 Agent · 失败',
+                  detail: `${reason}；编排终止。`,
+                });
+              },
+            },
+          },
+        );
 
-        // ── [2/3] 题目筛选 Agent（本地） ──
-        const candidates = pickPlanCandidates({
-          weakConcepts: diagnosis.weakConcepts,
-          mistakes: st.mistakes,
-          alreadyAdded: st.problems,
-          bank: PROBLEM_BANK,
-          now,
-        });
-        get().recordAgentTrace({
-          kind: 'decide',
-          level: 'info',
-          title: `[2/3] 题目筛选 Agent (本地) · 输出`,
-          detail: `新题候选 ${candidates.newProblems.length} 道 · 复习候选 ${candidates.reviewMistakes.length} 道`,
-        });
-        if (
-          candidates.newProblems.length === 0 &&
-          candidates.reviewMistakes.length === 0
-        ) {
-          get().recordAgentTrace({
-            kind: 'feedback',
-            level: 'warn',
-            title: '[2/3] 题目筛选 Agent · 候选为空',
-            detail: '题库 + 错题本里没有匹配薄弱点的候选；规划终止。',
-          });
+        if (result.status === 'failed') {
           set({ dailyPlanGenerating: false });
           return;
         }
-
-        // ── [3/3] 计划编排 Agent ──
-        const planOut = await st.coach.generatePlanOrchestration({
-          diagnosis,
-          candidates,
-        });
-        if (!planOut) {
-          get().recordAgentTrace({
-            kind: 'feedback',
-            level: 'warn',
-            title: '[3/3] 计划编排 Agent · 失败',
-            detail: '云端模型未返回有效计划；编排终止。',
-          });
-          set({ dailyPlanGenerating: false });
-          return;
-        }
-        get().recordAgentTrace({
-          kind: 'feedback',
-          level: 'success',
-          title: `[3/3] 计划编排 Agent · 输出`,
-          detail: `${planOut.headline}\n共 ${planOut.steps.length} 步 / 估时 ${planOut.estimatedMinutes} 分钟`,
-        });
 
         const plan: DailyPlan = {
           id: nanoid(),
           date: dateStr,
           generatedAt: now,
-          diagnosis,
-          candidates,
-          plan: planOut,
+          diagnosis: result.diagnosis,
+          candidates: result.candidates,
+          plan: result.plan,
           status: 'pending',
           completedStepIndices: [],
         };

@@ -30,14 +30,14 @@ export function IntentSnifferCard() {
     const tick = () => {
       const st = useStore.getState();
       if (!st.intentSniffEnabled) return;
+      if (st.aiConfig.ollamaMode === 'disabled') return;
       const scope = st.activeProblemId;
       if (!scope || scope === DRAFT_SCOPE) return;
 
-      // AI 配置：fastLane 配好（or 主 client 可用）
       const usable =
-        st.aiConfig.provider === 'ollama'
-          ? !!st.aiConfig.baseUrl?.trim()
-          : !!st.aiConfig.apiKey?.trim();
+        !!st.aiConfig.fastLane?.enabled &&
+        !!st.aiConfig.fastLane.baseUrl?.trim() &&
+        !!st.aiConfig.fastLane.model?.trim();
       if (!usable) return;
 
       // 有正在跑的 ask / analyze → 让位

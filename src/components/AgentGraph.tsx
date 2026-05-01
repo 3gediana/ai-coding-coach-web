@@ -124,11 +124,13 @@ function computeAgentState(trace: AgentTraceEvent[]) {
 
 export function AgentGraph() {
   const trace = useStore((s) => s.agentTrace);
+  const ollamaEnabled = useStore((s) => s.aiConfig.ollamaMode !== 'disabled');
   const state = useMemo(() => computeAgentState(trace), [trace]);
+  const clusters = ollamaEnabled ? CLUSTERS : CLUSTERS.filter((cluster) => cluster.id !== 'proactive');
 
   return (
     <div className="flex-1 overflow-y-auto min-h-0 p-2 space-y-2 text-[10px]">
-      {CLUSTERS.map((cluster) => (
+      {clusters.map((cluster) => (
         <ClusterBlock key={cluster.id} cluster={cluster} state={state} />
       ))}
       <div className="px-1 pt-1 pb-2 text-[9px] text-ink-mute leading-relaxed">

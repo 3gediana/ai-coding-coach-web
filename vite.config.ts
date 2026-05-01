@@ -342,6 +342,8 @@ export default defineConfig({
         const ojCommands = new Map<string, OjCommand>();
         const ojResultQueue: OjResult[] = [];
         const ojResultClients = new Set<import('http').ServerResponse>();
+        let serverOllamaMode: 'enabled' | 'disabled' =
+          process.env.AICC_OLLAMA === '0' ? 'disabled' : 'enabled';
 
         const readJsonBody = <T,>(req: any): Promise<T> =>
           new Promise((resolve, reject) => {
@@ -371,6 +373,38 @@ export default defineConfig({
           res.setHeader('access-control-allow-methods', methods);
           res.setHeader('access-control-allow-headers', 'content-type');
         };
+
+        server.middlewares.use('/__aicc-ollama-mode', async (req, res) => {
+          setCors(res, 'GET, POST, OPTIONS');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method === 'GET') {
+            res.statusCode = 200;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ mode: serverOllamaMode }));
+            return;
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          try {
+            const payload = await readJsonBody<{ mode?: 'enabled' | 'disabled' }>(req);
+            serverOllamaMode = payload.mode === 'disabled' ? 'disabled' : 'enabled';
+            process.env.AICC_OLLAMA = serverOllamaMode === 'disabled' ? '0' : '1';
+            res.statusCode = 200;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: true, mode: serverOllamaMode }));
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: String(e?.message || e) }));
+          }
+        });
 
         server.middlewares.use('/__oj-submit-command', async (req, res) => {
           setCors(res, 'POST, OPTIONS');

@@ -20,17 +20,17 @@ const INTENT_PROFILES: Record<CoachIntent, IntentProfile> = {
   debug_runtime_error: {
     maxTokens: 800,
     instruction:
-      '学生有运行错误。任务：第 1 段先告诉他这次报错的根本原因（指出 stderr 的关键信息）；第 2 段给可疑行号和最小修改建议；不要重写整段代码。200 字以内。',
+      '学生有运行错误。任务：先提 1 个具体定位问题，引导他观察 stderr、输入和可疑行之间的关系；再给 1-2 条线索。只说“我目前怀疑…”，不要直接宣布最终答案，不要重写代码。200 字以内。',
   },
   review_code: {
     maxTokens: 800,
     instruction:
-      '学生在让你检查代码。任务：列 1-3 个最可能的问题，每条必须带行号，并给出最小改动建议。不要重写整段代码。150 字以内。',
+      '学生在让你检查代码。任务：先问 1 个能暴露 bug 的验证问题；再列 1-3 个最可能的问题，每条带行号和验证方式。少给结论，多让学生用最小样例/不变量自己确认。不要重写整段代码。180 字以内。',
   },
   explain_selection: {
     maxTokens: 600,
     instruction:
-      '学生选中了一段代码。任务：先一句话说这段在干什么，再指出 1 处潜在风险或可读性问题（如果有）。不要扩展讲整道题。120 字以内。',
+      '学生选中了一段代码。任务：先一句话说这段在干什么，再用 1 个具体反问引导他验证潜在风险。不要扩展讲整道题，不要直接给改法，不要说“应该改成/移到/加上”。120 字以内。',
   },
   stuck_hint: {
     maxTokens: 500,
@@ -40,7 +40,7 @@ const INTENT_PROFILES: Record<CoachIntent, IntentProfile> = {
   general_question: {
     maxTokens: 700,
     instruction:
-      '回答学生具体的问题。要简短、直接，可以给伪代码或思路片段，但不要给完整 AC 代码。200 字以内。',
+      '回答学生具体的问题。若和当前题目/代码有关，先问 1 个澄清或自检问题，再给短线索；若是纯概念问题，可以直接解释。不要给完整 AC 代码。200 字以内。',
   },
 };
 
@@ -60,6 +60,9 @@ export function buildCoachPrompt(args: {
 ${profile.instruction}
 通用规则：
 - 不要重复学生原话
+- 默认采用苏格拉底式：先让学生观察一个具体变量、条件、样例或行号，再给线索
+- 除非学生明确要求最终答案，否则不要直接给完整解法、完整代码或一次性修完所有问题
+- 结论要用“我目前怀疑 / 先验证”这种措辞，避免替学生完成思考
 - markdown 短列表 / 行号引用 / 行内 code 都可用
 - 不要写「希望对你有帮助」之类的客套结尾`;
   const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [

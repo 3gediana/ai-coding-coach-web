@@ -6,6 +6,7 @@ import { CodeEditor } from './components/CodeEditor';
 import { FeedbackPanel } from './components/FeedbackPanel';
 import { TaskTray } from './components/TaskTray';
 import { HackCaseCard } from './components/HackCaseCard';
+import { HackChainModal } from './components/HackChainModal';
 import { AcReviewCard } from './components/AcReviewCard';
 import { DailyReviewCard } from './components/DailyReviewCard';
 import { DailyPlanCard } from './components/DailyPlanCard';
@@ -22,6 +23,7 @@ import { QuickSetupCard } from './components/QuickSetupCard';
 import { ProblemOverviewCard } from './components/ProblemOverviewCard';
 import { RuntimePane } from './components/RuntimePane';
 import { OnboardingOverlay } from './components/OnboardingOverlay';
+import { OllamaIntroModal } from './components/OllamaIntroModal';
 import { useStore } from './lib/store';
 import { startImportReceiver, stopImportReceiver } from './lib/importReceiver';
 import { startOjBridgeReceiver, stopOjBridgeReceiver } from './lib/ojBridge';
@@ -34,6 +36,13 @@ export default function App() {
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const startOnboarding = useStore((s) => s.startOnboarding);
   const multiFileMode = useStore((s) => s.multiFileMode);
+  const dailyPlan = useStore((s) => s.dailyPlan);
+  const dailyPlanGenerating = useStore((s) => s.dailyPlanGenerating);
+  const pendingHackCase = useStore((s) => s.pendingHackCase);
+  const dailyPlanBlocksOverlay =
+    (dailyPlanGenerating && !dailyPlan) || dailyPlan?.status === 'pending';
+  const hackCaseBlocksOverlay =
+    !dailyPlanBlocksOverlay && !!pendingHackCase && aiConfig.ollamaMode !== 'disabled';
 
   // 启动后预热所有本地 ollama 工位（fastLane / intentRouter / algoViz.detect 等）。
   // 不阻塞首屏；并行 warm；失败静默。配置变更时也重新 warm（用户切换模型后立即生效）。
@@ -166,7 +175,8 @@ export default function App() {
         </main>
       </div>
       <TaskTray />
-      <HackCaseCard />
+      {!dailyPlanBlocksOverlay && <HackCaseCard />}
+      <HackChainModal />
       <AcReviewCard />
       <DailyReviewCard />
       <DailyPlanCard />
@@ -180,6 +190,7 @@ export default function App() {
       <StuckHintCard />
       <IntentSnifferCard />
       <OnboardingOverlay />
+      {!dailyPlanBlocksOverlay && !hackCaseBlocksOverlay && <OllamaIntroModal />}
     </div>
   );
 }
