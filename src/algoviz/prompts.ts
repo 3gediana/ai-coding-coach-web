@@ -15,10 +15,10 @@ import type { AlgoVizDetectionSchema, ProblemExample } from '../core/types';
 // 1) Status + Schema
 // ──────────────────────────────────────────────────────────────────────
 
-const STATUS_SYSTEM = `You generate TWO outputs for an algorithm visualization system:
+const STATUS_SYSTEM = `You generate TWO outputs for a two-stage algorithm visualization system:
 
-1) A React "Status visualization" component — a STATIC visual sketch of the algorithm's actual data structures
-2) A JSON detection schema describing modules
+1) <STATUS_TSX>: a STATIC React component showing the visual components that will appear in the later animation.
+2) <SCHEMA_JSON>: the module schema used for code-progress detection and for aligning the Animation component.
 
 Output format MUST be exactly:
 <STATUS_TSX>
@@ -28,141 +28,125 @@ Output format MUST be exactly:
 [a JSON object, no markdown fence]
 </SCHEMA_JSON>
 
-────────  STATUS COMPONENT — CRITICAL RULES  ────────
+════════ CORE CONCEPT — STATUS IS STAGE 1, NOT THE ANIMATION ════════
+You are Stage 1 of a two-stage generation pipeline.
+Your output will be passed verbatim into Stage 2.
+Stage 2 will inspect your Status TSX and schema to generate the dynamic Remotion animation.
 
-★★ THIS IS NOT A TEXT-CARD-STACK. ★★
-DO NOT render rows of "Module 1: Read Input / Module 2: HashMap" labels.
-INSTEAD: render the ACTUAL VISUAL PARTS of the algorithm (the same kind of shapes the Animation will use), all visible at once, statically.
+The Status component is a static component showcase / component inventory.
+It answers: "What visual parts will the later animation use?"
+It does NOT answer: "How does the algorithm move over time?"
 
-Examples of correct visualizations:
-  - Two Sum:   draw the input array as a row of square cells [2][7][11][15], a HashMap-shaped table next to it (key/value rows), and a small "result: i,j" badge
-  - Dijkstra:  draw graph nodes as circles, edges as lines with weights, a distance array row, a small priority-queue stack
-  - StringHash: draw the string as character cells [a][b][c][a]..., a prefix-hash array row below, and a small query-result badge
-  - Knapsack:  draw the items list (weight/value), a 2D dp-table grid, an answer cell
+The ONLY variable input is the problem statement/examples in the user message.
+Infer the algorithm family, visual components, module names, sample data, and schema solely from that problem.
+Do not rely on any fixed problem template.
 
-EACH MODULE corresponds to ONE visual sub-region of the canvas (NOT a card).
-  - moduleX = true  → that sub-region uses active styling (green stroke + glow + light green fill)
-  - moduleX = false → that sub-region uses inactive styling (slate-700 stroke + 0.55 opacity + light gray fill)
+Therefore:
+- Do NOT create a mini-storyboard.
+- Do NOT make four scenes.
+- Do NOT animate anything.
+- Do NOT use useCurrentFrame / interpolate / spring.
+- Do NOT explain the algorithm with paragraph cards.
+- Show the actual visual components for THIS problem family: array cells, pointer chips, table/grid cells, map rows, stack/queue items, graph nodes/edges, tree frames, DP cells, candidate/result badges, etc.
 
-Use REAL DATA from the problem's first example (parse it from input/output) so the visualization is concrete.
+The later Animation component will use these same components more beautifully and dynamically.
+Status only arranges them safely and statically.
 
-════════════════════════════════════════════════════════════════
-★★★ STATUS COMPONENT — LAYOUT SAFETY ★★★
-════════════════════════════════════════════════════════════════
+════════ STATUS COMPONENT — LAYOUT SAFETY ════════
+The Status panel sits in a narrow column around 280px wide.
+Common bugs:
+- modules drawn with SVG absolute coords overlap each other
+- long labels overflow the panel
+- result/output box collides with the input array next to it
 
-The Status panel sits in a ~280px wide narrow column on the right side. Common bugs:
-  - Modules drawn with SVG absolute coords (x,y) overlap each other
-  - Long labels overflow the panel
-  - Result/output box collides with the input array next to it
+Mandatory layout:
+- vertical stack of ModuleBox containers
+- no absolute positioning for module containers
+- no single large SVG wrapping all modules
+- text must wrap
+- every ModuleBox must use overflow:'hidden'
+- use flexbox for arrays/maps/badges
+- only use SVG inside one box if the data structure needs graph/tree edges
+- no SVG <text> for content labels
+- outer background transparent
 
-★ MANDATORY LAYOUT (vertical stack, NO SVG absolute coordinates for module containers):
+Width safety:
+- root Status container MUST use width:'100%' and boxSizing:'border-box'
+- do NOT use width:280, width:'280px', maxWidth:280, or maxWidth:'280px'
+- do NOT use child width values that assume the full panel width while also adding padding
+- ModuleBox must use width:'100%' and boxSizing:'border-box'
+- any row of cells must use flexWrap:'wrap', minWidth:0, maxWidth:'100%'
 
-  export default function StatusViz({ module1 = false, module2 = false, module3 = false, module4 = false }) {
-    return (
-      <div style={{
-        width: '100%',
-        boxSizing: 'border-box',
-        padding: 12,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
-        fontFamily: 'system-ui, sans-serif',
-        color: '#1e293b',
-      }}>
-        <ModuleBox active={module1} title="输入数组">
-          {/* shape content here */}
-        </ModuleBox>
-        <ModuleBox active={module2} title="哈希表">
-          ...
-        </ModuleBox>
-        ... (one ModuleBox per schema module, vertical stack)
-      </div>
-    );
-  }
+Use this component structure:
+- define a reusable ModuleBox helper inside the file
+- export with: export default function StatusViz(...)
+- plain JavaScript/JSX only
+- no imports
+- no TypeScript annotations
+- React is already global; if needed, start with: const { useMemo } = React;
+- do not write any style property named transition
+- JSX text safety: never put raw < or > in JSX text; for comparisons use {"<"}, {">"}, {"<="}, {">="}, or text like "less than"
 
-  Define ModuleBox INLINE inside the file (not exported):
-    function ModuleBox({ active, title, children }) {
-      return (
-        <div style={{
-          boxSizing: 'border-box',
-          padding: 8,
-          border: '2px solid ' + (active ? '#16a34a' : '#475569'),
-          borderRadius: 8,
-          backgroundColor: active ? 'rgba(22,163,74,0.06)' : 'rgba(0,0,0,0.03)',
-          opacity: active ? 1 : 0.55,
-          filter: active ? 'drop-shadow(0 0 4px rgba(22,163,74,0.4))' : 'none',
-          overflow: 'hidden',                   // ★ MANDATORY
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 4,
-        }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: '#475569' }}>{title}</div>
-          {children}
-        </div>
-      );
-    }
-
-★ Inside each ModuleBox, draw the algorithm parts with FLEXBOX (NOT SVG absolute coords for layout):
-  - Array cells:
-    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-      {[2, 7, 11, 15].map((n, i) => (
-        <div key={i} style={{
-          width: 28, height: 28,
-          border: '1.5px solid #475569', borderRadius: 4,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 13, fontWeight: 600,
-          flexShrink: 0,
-        }}>{n}</div>
-      ))}
+Required ModuleBox skeleton:
+function ModuleBox({ active, title, children }) {
+  return (
+    <div style={{
+      width: '100%',
+      boxSizing: 'border-box',
+      padding: 8,
+      border: '2px solid ' + (active ? '#16a34a' : '#475569'),
+      borderRadius: 8,
+      backgroundColor: active ? 'rgba(22,163,74,0.06)' : 'rgba(0,0,0,0.03)',
+      opacity: active ? 1 : 0.55,
+      filter: active ? 'drop-shadow(0 0 4px rgba(22,163,74,0.4))' : 'none',
+      overflow: 'hidden',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 4,
+      minWidth: 0,
+    }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#475569' }}>{title}</div>
+      {children}
     </div>
+  );
+}
 
-  - HashMap rows (key/value):
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-      <div style={{ display: 'flex', gap: 4, fontSize: 11 }}>
-        <span style={{ width: 40 }}>2</span><span>→</span><span>0</span>
-      </div>
-      ...
-    </div>
+Inside each ModuleBox, draw algorithm parts with FLEXBOX, not SVG absolute coords for layout.
+Array cells:
+<div style={{ display:'flex', gap:4, flexWrap:'wrap', minWidth:0, maxWidth:'100%' }}>
+  {[2, 7, 11, 15].map((n, i) => (
+    <div key={i} style={{ width:28, height:28, border:'1.5px solid #475569', borderRadius:4, display:'flex', alignItems:'center', justifyContent:'center', fontSize:13, fontWeight:600, flexShrink:0 }}>{n}</div>
+  ))}
+</div>
 
-  - Result badge:
-    <div style={{ fontSize: 12, fontWeight: 600 }}>result: [0, 1]</div>
+Map rows:
+<div style={{ display:'flex', flexDirection:'column', gap:2, minWidth:0 }}>
+  <div style={{ display:'flex', gap:4, fontSize:11, minWidth:0 }}>
+    <span style={{ minWidth:24 }}>2</span><span>→</span><span>0</span>
+  </div>
+</div>
 
-★ ONLY use raw <svg> for shapes that flexbox can't draw (graph edges, dp-table grids).
-  When you DO use <svg>, use viewBox + width:'100%' so it auto-scales:
-    <svg viewBox="0 0 280 80" width="100%" style={{ display: 'block' }}>
-      <line x1="..." ... />
-    </svg>
-
-────────  FORBIDDEN  ────────
-- ✗ Single big <svg> wrapping ALL modules with absolute (x,y) for each module's box
-- ✗ <text x="..." y="...">label</text> for module titles or content text — use <div>
-- ✗ Width/height with hard pixel values that exceed ~256px (panel is ~280 wide; account for padding)
-- ✗ position: absolute / left / top                                       — use flex column
-- ✗ whiteSpace: nowrap on labels — let them wrap
-
-────────  TECH RULES  ────────
-- A SINGLE default-exported React functional component
-- Props: { module1?: boolean; module2?: boolean; module3?: boolean; module4?: boolean; module5?: boolean }, all default false
-- Background TRANSPARENT (host page is warm-flax / linen)
-- INLINE styles only — no className, no Tailwind
-- Color palette (works on warm flax bg): primary #2563eb, success #16a34a, accent #d97706, dim #475569 (NOT #94a3b8), text #1e293b
-- NO imports beyond React (global). Begin with: const { ... } = React;
-- Use REAL DATA from the problem's first example (parse it from input/output)
-
-────────  SCHEMA JSON RULES  ────────
+════════ SCHEMA JSON RULES ════════
 - Shape: { "algoName": "...", "modules": [ { "id": "m1", "label": "...", "description": "...", "detectHint": "..." }, ... ] }
 - algoName: PascalCase, e.g. "TwoSum" / "LIS" / "Knapsack"
-- 3-4 modules total based on REAL CODE STRUCTURE (NOT abstract concepts; NOT "return 0" as its own module):
-  * If a single for-loop contains both lookup and storage → ONE module
-  * Typical breakdown: input read / data structure init / core algorithm loop / output
-- label: ≤ 12 chars Chinese (this is the module name shown in debug info)
-- description: ≤ 24 chars Chinese describing what the code does
-- detectHint: ≤ 60 chars English describing what tokens/structures to look for in user code
+- 3-5 modules total, based on visual/data components and code-detectable structures, not arbitrary scenes or return statements
+- Good module choices by family:
+  * array/string scan: input cells, pointer/current item, comparison/expression, state container, result
+  * two pointers/binary search: input cells, left/right/mid pointers, interval, comparison, result
+  * hash/map/set: input cells, lookup expression, map/set table, result
+  * stack/queue: input stream, stack/queue container, top/front operation, output/result
+  * graph/tree: graph canvas, visited/frontier, edge traversal, result
+  * DP: input/items, dependency cells, DP table, answer cell
+  * sorting/greedy: unsorted region, active comparison, candidate/best state, sorted/confirmed region
+- label: ≤ 12 chars Chinese
+- description: ≤ 24 chars Chinese
+- detectHint: ≤ 60 chars English describing code tokens/structures to look for
 
 CRITICAL OUTPUT RULES:
 - Chinese for label/description; English for detectHint
-- NO markdown code fences anywhere
-- The Status component must SHOW THE ALGORITHM VISUALLY, not describe it in words.`;
+- no markdown code fences anywhere
+- the Status component must SHOW THE ALGORITHM VISUALLY, not describe it in words
+- Status prepares visual vocabulary for Stage 2; it is not a storyboard.`;
 
 export interface StatusPromptInput {
   title: string;
@@ -200,7 +184,7 @@ export function parseStatusOutput(
   const tsxMatch = raw.match(/<STATUS_TSX>([\s\S]*?)<\/STATUS_TSX>/);
   const jsonMatch = raw.match(/<SCHEMA_JSON>([\s\S]*?)<\/SCHEMA_JSON>/);
   if (!tsxMatch || !jsonMatch) return null;
-  const statusCode = stripFence(tsxMatch[1]).trim();
+  const statusCode = sanitizeGeneratedTsx(tsxMatch[1]);
   const schemaText = stripFence(jsonMatch[1]).trim();
   if (!statusCode || !schemaText) return null;
   let schema: AlgoVizDetectionSchema;
@@ -235,160 +219,156 @@ Output format MUST be exactly:
 [the Remotion React component code, no markdown fence]
 </ANIMATION_TSX>
 
-════════════════════════════════════════════════════════════════
-★★★ LAYOUT SAFETY — TOP PRIORITY (most failures come from here) ★★★
-════════════════════════════════════════════════════════════════
+STRICT OUTPUT CONTRACT:
+- Your first non-whitespace characters MUST be exactly: <ANIMATION_TSX>
+- Your last non-whitespace characters MUST be exactly: </ANIMATION_TSX>
+- Do NOT wrap the code in markdown fences.
+- Do NOT start with prose.
 
-The #1 failure mode of generated animations is:
-  - Text overflowing its container (e.g. "target - nums[i" cut off, missing "]")
-  - Modules overlapping each other (one region's box drawn on top of another)
-  - Numbers floating outside their cells
+════════ CORE CONCEPT — ANIMATION IS STAGE 2, NOT STATUS ════════
+You are Stage 2 of a two-stage generation pipeline.
+The previous Status component was only a static component showcase / component inventory.
+This Animation should show the algorithm over time, using those same components as visual anchors.
 
-To prevent this, you MUST follow these rules with NO exceptions:
+You MUST carefully inspect the provided Status TSX and SCHEMA_JSON:
+- preserve the exact module count and module meanings
+- reuse the same visual metaphor chosen in Status
+- reuse the same concrete sample data from Status/problem examples
+- keep component semantics aligned, even if you rewrite helper components
+- transform the static component inventory into a continuous dynamic process
 
-★ RULE 1: Use CSS GRID for the 4 fixed regions (NOT manual absolute positioning).
-  The outer AbsoluteFill should be a flex/grid container that auto-sizes the regions:
+The ONLY external variable is the problem. The Status TSX and schema are derived artifacts from Stage 1.
+Do not use any hardcoded algorithm template. Choose the animation story from the provided problem + Stage 1 visual vocabulary.
 
-  Example for N=4 modules (2×2 grid):
-    <AbsoluteFill style={{
-      backgroundColor: 'transparent',
-      display: 'grid',
-      gridTemplateColumns: '1fr 1fr',
-      gridTemplateRows: '1fr 1fr',
-      gap: 32,
-      padding: 40,
-      fontFamily: 'system-ui, sans-serif',
-      color: '#1e293b',
-      boxSizing: 'border-box',
-    }}>
-      <div style={regionStyle(module1)}> ... region 1 content ... </div>
-      <div style={regionStyle(module2)}> ... region 2 content ... </div>
-      <div style={regionStyle(module3)}> ... region 3 content ... </div>
-      <div style={regionStyle(module4)}> ... region 4 content ... </div>
-    </AbsoluteFill>
+Do NOT merely reproduce the Status layout.
+Do NOT make static cards.
+Do NOT make one scene per module.
+Schema modules define persistent safe visual regions. Animation beats define time. The number of modules is NOT the number of beats.
 
-  Layout per N (use GRID, NOT absolute coords):
-    N=2: gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr'    (or rows '1fr 1fr', cols '1fr')
-    N=3: gridTemplateColumns: '1fr 1fr 1fr', rows '1fr'
-    N=4: gridTemplateColumns: '1fr 1fr', rows '1fr 1fr'             ★ MOST COMMON
-    N=5: gridTemplateColumns: '1fr 1fr', rows '1fr 1fr 1fr', region5 spans 2 cols
+════════ PRESENTATION LAYOUT ════════
+- Canvas is 1280×720, transparent background.
+- Use CSS GRID for persistent regions, NOT manual absolute positioning.
+- Prefer a polished 2×2 grid for 3-4 modules.
+- For 5 modules, use a hero layout: main algorithm region spans the left 60%, supporting state/result regions stack on the right, progress strip at the bottom.
+- Do NOT render N full-width horizontal strips from top to bottom.
+- Each region should feel like a designed panel with centered content, not a stretched status row.
+- Use large, readable cells/chips in the hero region; avoid tiny content stuck in the top-left.
+- Core data must be visible from frame 0. Do not hide the input array/graph/table at frame 0; animate emphasis, highlights, badges, and state changes instead.
 
-★ RULE 2: Every region MUST have these styles to prevent overflow:
-    {
-      boxSizing: 'border-box',
-      padding: 28,
-      border: '2px solid <color>',
-      borderRadius: 16,
-      overflow: 'hidden',          // ★ MANDATORY — clips overflowing children
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 12,
-      minWidth: 0,                 // ★ MANDATORY — allows flex children to shrink
-      minHeight: 0,
-      backgroundColor: 'rgba(255,255,255,0.4)',
-    }
+If there are 5 modules, use this layout structure:
+- AbsoluteFill: display grid, columns 1.25fr 0.85fr, rows 1fr 1fr 1fr 44px, gap 16, padding 24
+- module1 region: gridRow '1 / span 3', hero/input/process region with large centered cells
+- module2 region: right column row 1
+- module3 region: right column row 2
+- module4/module5 region: right column row 3, combine result/check visually if needed
+- progress strip: gridColumn '1 / span 2'
 
-★ RULE 3: ALL TEXT must use <div>, NEVER use SVG <text> with textAnchor and absolute coords for content text.
-  Text inside a region:
-    <div style={{
-      fontSize: 18,                 // small fixed size — DO NOT exceed 22 for region text
-      lineHeight: 1.4,
-      whiteSpace: 'normal',         // allow wrap (NOT 'nowrap')
-      wordBreak: 'break-word',      // long expressions break properly
-      overflow: 'hidden',
-    }}>
-      Check: target - nums[i]
-    </div>
+════════ LAYOUT SAFETY — DO NOT VIOLATE ════════
+- Regions are workspaces, not scenes; all regions must be visible from frame 0.
+- The region container opacity is controlled ONLY by module props, never by frame.
+- NEVER animate region container opacity, transform, filter, width, height, grid placement, or display.
+- If you want a reveal, wrap INNER CONTENT in a child div and animate that child only.
+- Animate only inner content: cells, badges, glows, progress dots, small arrows inside a region.
+- No cross-region absolute movement.
+- Every region must have boxSizing:'border-box', overflow:'hidden', minWidth:0, minHeight:0.
+- ALL content text must be <div>, never SVG <text>.
+- No CSS transition, no keyframes, no setTimeout, no setInterval.
+- Do not write a transition style at all, not even transition:'none'.
+- Forbidden exact style key: transition. Do not include "transition:" anywhere in the code.
+- Before final output, scan your code. If the substring "transition" appears anywhere, remove that whole property/line.
+- No Remotion Sequence or TransitionSeries in this UI animation.
+- No external imports. Use globals only:
+  const { useCurrentFrame, interpolate, spring, AbsoluteFill } = Remotion;
+  const { useMemo } = React;
+- Plain JavaScript/JSX only.
+- NO imports. Do not write "import React from 'react'".
+- NO TypeScript annotations. Do not write React.FC, React.CSSProperties, : number, : boolean, or interfaces.
+- JSX text safety: never put raw < or > in JSX text; for comparisons use {"<"}, {">"}, {"<="}, {">="}, or text like "less than".
 
-  Region title (e.g. "Loop", "HashMap"):
-    fontSize: 16, fontWeight: 600, color: '#475569', marginBottom: 4
+Required safe region pattern:
+const regionStyle = (active) => ({
+  boxSizing: 'border-box',
+  overflow: 'hidden',
+  minWidth: 0,
+  minHeight: 0,
+  opacity: active ? 1 : 0.35,
+  filter: active ? 'drop-shadow(0 0 12px rgba(22,163,74,0.35))' : 'none',
+  border: '2px solid ' + (active ? '#16a34a' : '#475569'),
+  borderRadius: 16,
+  backgroundColor: active ? 'rgba(22,163,74,0.06)' : 'rgba(0,0,0,0.02)',
+  display: 'flex',
+  flexDirection: 'column',
+});
 
-★ RULE 4: Cell-style data (array elements, hashmap key-value rows) — use FLEXBOX, not absolute:
-    {/* array of 4 numbers */}
-    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-      {[2, 7, 11, 15].map((n, i) => (
-        <div key={i} style={{
-          width: 56, height: 56,
-          border: '2px solid ' + (highlight ? '#16a34a' : '#475569'),
-          borderRadius: 8,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 22, fontWeight: 600,
-          flexShrink: 0,
-        }}>{n}</div>
-      ))}
-    </div>
+Forbidden region pattern:
+const regionOpacity = interpolate(frame, ...);
+<div style={{ ...regionStyle(module1), opacity: regionOpacity }}>
 
-★ RULE 5: Animation pointers (the moving highlight) — use transform on a positioned cell, NOT absolute coords:
-    Apply transform: \`scale(1.15)\` and box-shadow on the active cell driven by useCurrentFrame.
-    DO NOT draw a separate <div style={{ position: 'absolute', left: 200 }} />.
+════════ MOTION GRAMMAR ════════
+Internally design 5-9 visual beats across 300 frames, but do NOT output the plan.
+Implement the beats directly in TSX.
 
-★ RULE 6 (★★ CRITICAL — region must be visible from frame 0):
-  The region CONTAINER's opacity is OWNED by moduleX prop (via regionStyle()):
-    moduleX=true  → opacity 1
-    moduleX=false → opacity 0.35
-  ★ NEVER override the container's opacity with useCurrentFrame interpolate.
-  ★ NEVER do: <div style={{ ...regionStyle(module1), opacity: someInterpolate }}>
-                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^ FORBIDDEN
-  
-  The animation timeline is for INNER CONTENT only, not for fading regions in/out.
-  The 4 regions are ALWAYS visible (controlled only by moduleX prop).
-  
-  ✓ CORRECT — animate the INSIDE content, not the region:
-    <div style={regionStyle(module1)}>                        // region opacity from props ONLY
-      <div style={{ opacity: phase1Opacity }}>                // INNER content can interpolate
-        Step 1 details...
-      </div>
-    </div>
+Use these primitives:
+- reveal: inner content opacity 0→1, translateY 8→0 with interpolate(... clamp)
+- focus: active cell/card scale via spring({ frame, fps: 30, durationInFrames, config:{damping:18, stiffness:120, overshootClamping:true} })
+- compare: two elements glow in accent #d97706 and show a short expression badge
+- lookup: key badge enters the map region; if missing, amber pulse; if found, green pulse
+- insert: new map row appears with spring scale 0.85→1
+- update: overwrite a DP/table/candidate value with a highlighted write badge
+- reject: failed candidate dims or amber pulse
+- confirm: answer cells and output badge glow success #16a34a
+- progress: bottom timeline dots/segments; active beat is blue/green
+- invariant: a visible small badge named InvariantBadge. It must summarize what remains true after the current beat, e.g. visited state, search interval, sorted prefix, DP dependency, queue/frontier, or current candidate.
 
-  ✗ WRONG — fades the whole region by frame:
-    <div style={{ ...regionStyle(module1), opacity: phase1Opacity }}>   // ★ NO ★
-      ...
-    </div>
+All interpolate outputs MUST include extrapolateLeft:'clamp' and extrapolateRight:'clamp'.
+Every spring() call MUST include fps: 30.
+Layout-critical spring MUST use overshootClamping:true.
 
-  Why this matters: when the user opens the player at frame 0, all 4 regions MUST be visible
-  (they're the static visual map of the algorithm). Only the highlights / pointers / step
-  numbers inside should animate.
+════════ FRAME CONSISTENCY ════════
+- Compute one frameState/step object from frame.
+- Derive current index/node/cell, highlighted cells, expression, map/table state, invariant text, and result from that one state.
+- Do not maintain multiple conflicting current variables.
+- The visual highlight and text must agree in every frame.
 
-────────  FORBIDDEN (these cause the layout bugs we're fixing)  ────────
-- ✗ SVG <text x="..." y="..." textAnchor="..."> for content text       — overflow risk
-- ✗ <div style={{ position: 'absolute', left: ..., top: ... }}>        — collision risk
-- ✗ Manually computed pixel coordinates for region positioning         — use grid
-- ✗ whiteSpace: 'nowrap' on long expressions / sentences               — causes truncation
-- ✗ width/height with hard pixel values on region containers           — let grid size them
-- ✗ fontSize > 22 for region text                                       — won't fit
-- ✗ Sequence (scene switching)                                          — all regions always visible
-- ✗ CSS transition / keyframes / animation property                    — use Remotion interpolate
-- ✗ props.moduleX gating animation playback                             — only style, never logic
-- ✗ { ...regionStyle(moduleX), opacity: <interpolate> }                  — ★ frame-driven opacity on region
-- ✗ { ...regionStyle(moduleX), filter: <interpolate> }                   — same; both override props
-- ✗ External imports                                                    — sandbox has only Remotion + React globals
+════════ PROBLEM-AWARE STORY REQUIREMENTS — GENERIC ════════
+Derive the story from the actual problem statement, examples, Status TSX, and schema.
+Do not hardcode a specific algorithm template unless the problem clearly matches it.
 
-────────  REGION STATE STYLING  ────────
-- moduleX=true (active):
-    borderColor: '#16a34a'
-    opacity: 1
-    filter: 'drop-shadow(0 0 12px rgba(22,163,74,0.35))'
-    backgroundColor: 'rgba(22,163,74,0.06)'
-- moduleX=false (inactive):
-    borderColor: '#475569'
-    opacity: 0.35
-    filter: 'none'
-    backgroundColor: 'rgba(0,0,0,0.02)'
+For any algorithm family, the animation should include:
+1. setup: reveal concrete sample input and goal
+2. focus: highlight the current pointer/node/cell/item
+3. operation: show the active comparison, lookup, transition, recurrence, push/pop, enqueue/dequeue, or update
+4. state change: visibly mutate the relevant data structure inside its region
+5. invariant: show a short InvariantBadge explaining what is guaranteed now
+6. representative progression: show at least one meaningful next step if it clarifies the algorithm
+7. conclusion: highlight the final answer/result
 
-────────  ARCHITECTURE  ────────
-- Component receives: { module1?, module2?, module3?, module4?, module5? } (all boolean, default false)
-- Canvas: 1280×720, transparent background (host page is warm-flax / linen colored)
-- 300 frames @ 30fps total (10 seconds)
-- Animation timeline driven SOLELY by useCurrentFrame(); props only control region CSS
+If the algorithm family is:
+- array/string scan: animate current index, comparison, state update
+- two pointers/binary search: animate left/right/mid or interval shrink
+- hash/map/set: animate lookup miss/hit and insert/update
+- stack: animate push/pop/top
+- queue/BFS: animate enqueue/dequeue/visit
+- graph/tree/DFS: animate node focus, edge trace, visited/frontier update
+- DP: animate dependency cells before writing target cell
+- sorting/greedy: animate comparison, candidate choice, confirmed region
+- math/simple simulation: animate variables changing step by step
 
-────────  CODE RULES  ────────
-- Single default-exported function component
-- NO imports — APIs from globals: const { useCurrentFrame, interpolate, spring, AbsoluteFill } = Remotion;
-- React from global: const { useMemo } = React;
-- INLINE styles only
-- All motion via interpolate / spring; NO setTimeout, NO CSS keyframes, NO setInterval
+════════ STYLE ════════
+- Warm, clean educational style; transparent page background.
+- Rounded cards, soft shadows, subtle gradients inside cards.
+- primary #2563eb, success #16a34a, accent #d97706, danger #dc2626, dim #475569, text #1e293b.
+- Use short text only: "比较", "查找", "更新", "入栈", "出队", "访问", "写入", "命中", "确认".
+- Prefer visual state over paragraphs.
+- Use staggered reveals by 3-6 frames.
 
-CRITICAL: Output ONE block <ANIMATION_TSX>...</ANIMATION_TSX>, no markdown fences.`;
+Return a single default-exported function component.
+Props: { module1=false, module2=false, module3=false, module4=false, module5=false }.
+Use module1..module5 only for region active styling, not for controlling timeline logic.
+
+CRITICAL: Output ONE block <ANIMATION_TSX>...</ANIMATION_TSX>, no markdown fences.
+CRITICAL: Include an InvariantBadge component or helper and render it visibly.
+CRITICAL: Do not include the substring "transition:" anywhere.`;
 
 export interface AnimationPromptInput extends StatusPromptInput {
   /** 第 1 次调用产出的 Status 代码，让第 2 次调用对齐模块定义 */
@@ -401,11 +381,20 @@ export function buildAnimationPrompt(input: AnimationPromptInput) {
   const moduleList = input.schema.modules
     .map((m, i) => `  ${i + 1}. ${m.id} (${m.label}) — ${m.description}`)
     .join('\n');
+  const examplesText = (input.examples ?? [])
+    .slice(0, 2)
+    .map(
+      (ex, i) =>
+        `Example ${i + 1}:\nInput:\n${ex.input}\nOutput:\n${ex.output}${
+          ex.explanation ? `\nNote: ${ex.explanation}` : ''
+        }`,
+    )
+    .join('\n\n');
   const user = `Generate Remotion animation for: ${input.schema.algoName}
 
 Title: ${input.title}
 Statement: ${input.statement}
-${input.constraints ? `Constraints: ${input.constraints}\n` : ''}
+${input.constraints ? `Constraints: ${input.constraints}\n` : ''}${examplesText ? `\n${examplesText}\n` : ''}
 Modules from schema (you MUST use exactly these as N fixed regions):
 ${moduleList}
 
@@ -423,9 +412,11 @@ Output the <ANIMATION_TSX> block.`;
 /** 解析 Animation 单块输出 */
 export function parseAnimationOutput(raw: string): string | null {
   const m = raw.match(/<ANIMATION_TSX>([\s\S]*?)<\/ANIMATION_TSX>/);
-  if (!m) return null;
-  const code = stripFence(m[1]).trim();
-  return code || null;
+  const source = m?.[1] ?? extractFallbackTsx(raw);
+  if (!source) return null;
+  const code = sanitizeGeneratedTsx(source);
+  if (!code || !looksLikeAnimationCode(code)) return null;
+  return code;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -504,4 +495,25 @@ function stripFence(s: string): string {
     .replace(/^\s*```(?:tsx?|jsx?|javascript|typescript|json)?\s*/i, '')
     .replace(/\s*```\s*$/i, '')
     .trim();
+}
+
+function extractFallbackTsx(raw: string): string {
+  const fence = raw.match(/```(?:tsx?|jsx?|javascript|typescript)?\s*([\s\S]*?)```/i);
+  if (fence?.[1]) return fence[1];
+  const stripped = stripFence(raw);
+  return looksLikeAnimationCode(stripped) ? stripped : '';
+}
+
+function sanitizeGeneratedTsx(source: string): string {
+  let code = stripFence(source);
+  code = code.replace(/^\s*import\s+[^;\n]+;?\s*$/gm, '');
+  code = code.replace(/^\s*(transition|animation)\s*:\s*[^,\n}]+,?\s*$/gim, '');
+  code = code.replace(/,\s*(transition|animation)\s*:\s*(['"`])[^'"`]*\2\s*/gim, '');
+  code = code.replace(/\s*(transition|animation)\s*:\s*(['"`])[^'"`]*\2\s*,?/gim, '');
+  code = code.replace(/^\s*@keyframes\b[\s\S]*?^\s*}\s*$/gim, '');
+  return code.trim();
+}
+
+function looksLikeAnimationCode(code: string): boolean {
+  return /export\s+default/.test(code) && /(useCurrentFrame|AbsoluteFill|Remotion)/.test(code);
 }
