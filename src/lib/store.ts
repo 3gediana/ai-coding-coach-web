@@ -1317,7 +1317,7 @@ export const useStore = create<State>((set, get) => {
     },
 
     /**
-     * 算法可视化：完整入库流水线（Status → Animation 两阶段）。
+     * 算法可视化：完整入库流水线（Trace → Status/VisualPlan 并行 → Animation）。
      *
      * - 已 ready / 正在跑 → skip（除非 force）
      * - Status 完成立即推送（status='status-ready'），UI 即时显示模块卡片
@@ -1352,6 +1352,34 @@ export const useStore = create<State>((set, get) => {
         errorMessage: undefined,
       });
       await st.algoVizService.generate(problem, {
+        onTraceReady: async (trace) => {
+          await persistAlgoVizPatch(problem.id, {
+            trace,
+            traceGeneratedAt: Date.now(),
+          });
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'success',
+            title: '算法可视化 · Trace 完成：' + problem.title,
+            detail: trace.algoName + ' · ' + trace.family + ' · ' + trace.states.length + ' states',
+            problemId: problem.id,
+            agentName: 'AlgoViz',
+          });
+        },
+        onVisualPlanReady: async (visualPlan) => {
+          await persistAlgoVizPatch(problem.id, {
+            visualPlan,
+            visualPlanGeneratedAt: Date.now(),
+          });
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'success',
+            title: '算法可视化 · VisualPlan 完成：' + problem.title,
+            detail: visualPlan.layout + ' · ' + visualPlan.components.length + ' components · ' + visualPlan.beats.length + ' beats',
+            problemId: problem.id,
+            agentName: 'AlgoViz',
+          });
+        },
         onStatusReady: async (statusCode, schema) => {
           await persistAlgoVizPatch(problem.id, {
             status: 'generating-anim',

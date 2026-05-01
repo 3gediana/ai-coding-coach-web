@@ -9,14 +9,19 @@
  * 选取顺序：
  *   1. algoVizModels[role].enabled 且字段齐 → 用 override
  *   2. role === 'detect'：fastLane 启用 → 用 fastLane（本地）
- *   3. role === 'status' / 'animation'：fall back 主 cfg（云端）
- *   4. 主 cfg 也不可用 → 返回 null（上层兜底报错）
+ *   3. role === 'status' / 'animation'：fall back qualityModel（pro / 高质量模型）
+ *   4. qualityModel 也不可用 → 返回 null（上层兜底报错）
  *
  * 不引入 store，纯函数；caller 注入 cfg 即可。
  */
 import { AIClient } from '../core/ai/client';
 import type { AIConfig, AIProvider, AlgoVizAgentOverride } from '../core/types';
-import { resolvePrimaryModel, resolveFastLaneModel, resolveAlgoVizOverride } from '../lib/modelRegistry';
+import {
+  resolvePrimaryModel,
+  resolveQualityModel,
+  resolveFastLaneModel,
+  resolveAlgoVizOverride,
+} from '../lib/modelRegistry';
 
 export type AlgoVizRole = 'status' | 'animation' | 'detect';
 
@@ -94,7 +99,10 @@ function buildFastLaneClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null 
 }
 
 function buildMainClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null {
-  const primary = resolvePrimaryModel(cfg);
+  const primary =
+    role === 'status' || role === 'animation'
+      ? resolveQualityModel(cfg)
+      : resolvePrimaryModel(cfg);
   const usable = primary.provider === 'ollama' ? !!primary.baseUrl.trim() : !!primary.apiKey.trim();
   if (!usable) return null;
   const isHeavy = role === 'status' || role === 'animation';
@@ -147,6 +155,9 @@ export function describeRoute(cfg: AIConfig, role: AlgoVizRole): string {
     if (fl) return `fastLane · ${fl.model}`;
     return '不可用（需 fastLane 或 override）';
   }
-  const primary = resolvePrimaryModel(cfg);
-  return `主云端 · ${primary.model || '未配'}`;
+  const primary =
+    role === 'status' || role === 'animation'
+      ? resolveQualityModel(cfg)
+      : resolvePrimaryModel(cfg);
+  return `${role === 'status' || role === 'animation' ? '高质量模型' : '主云端'} · ${primary.model || '未配'}`;
 }

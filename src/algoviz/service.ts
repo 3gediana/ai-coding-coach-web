@@ -2,8 +2,9 @@
  * AlgoViz 入库流水线 + 实时检测。
  *
  * 入库流水线 generate(problem):
- *   阶段 1：调 status client → 解析 Status TSX + Schema → onStatusReady 回调
- *   阶段 2：调 animation client（携带阶段 1 的 statusCode 上下文）→ 解析 Anim TSX → onAnimationReady
+ *   阶段 0：Trace
+ *   阶段 1：Status 与 VisualPlan 并行生成；Status 完成即 onStatusReady 回调
+ *   阶段 2：等待 Status + VisualPlan 后调 animation client → 解析 Anim TSX → onAnimationReady
  *
  * 单题幂等：caller 应自己判断 problem.algoViz?.status 是否已 ready，避免重复跑。
  *
@@ -14,23 +15,29 @@
  *   一次调用，输出极短 0/1 序列，<8s 完成。
  */
 import type { AIClient } from '../core/ai/client';
-import type { AlgoVizDetectionSchema, Problem } from '../core/types';
+import type { AlgoVizDetectionSchema, AlgoVizTrace, AlgoVizVisualPlan, Problem } from '../core/types';
 import {
   buildAnimationPrompt,
   buildDetectPrompt,
   buildStatusPrompt,
+  buildTracePrompt,
+  buildVisualPlanPrompt,
   parseAnimationOutput,
   parseDetectOutput,
   parseStatusOutput,
+  parseTraceOutput,
+  parseVisualPlanOutput,
 } from './prompts';
 
 export interface AlgoVizGenerateCallbacks {
+  onTraceReady?: (trace: AlgoVizTrace) => void | Promise<void>;
+  onVisualPlanReady?: (visualPlan: AlgoVizVisualPlan) => void | Promise<void>;
   /** 阶段 1 完成（Status 入库），UI 应立即 refresh 让用户看到模块卡片 */
   onStatusReady?: (statusCode: string, schema: AlgoVizDetectionSchema) => void | Promise<void>;
   /** 阶段 2 完成（Animation 入库），UI 解锁播放按钮 */
   onAnimationReady?: (animationCode: string) => void | Promise<void>;
   /** 任一阶段失败 */
-  onError?: (stage: 'status' | 'animation', err: Error) => void;
+  onError?: (stage: 'trace' | 'visual-plan' | 'status' | 'animation', err: Error) => void;
 }
 
 export interface AlgoVizClients {
@@ -43,19 +50,17 @@ export class AlgoVizService {
   constructor(private readonly clients: AlgoVizClients) {}
 
   /**
-   * 完整流水线：先 Status，回调通知 → 再 Animation 后台续。
+   * 完整流水线：Trace 后并行生成 Status / VisualPlan；Status 先到先显示，再等 VisualPlan 生成 Animation。
    * 不阻塞 caller：caller 拿到 promise 但通常不 await。
    */
   async generate(problem: Problem, cb: AlgoVizGenerateCallbacks = {}): Promise<void> {
     if (!this.clients.status) {
-      cb.onError?.('status', new Error('未配置 Status 工位模型（主云端不可用且无 override）'));
+      cb.onError?.('status', new Error('未配置 Status 工位模型（高质量模型不可用且无 override）'));
       return;
     }
-    // 阶段 1：Status + Schema
-    let schema: AlgoVizDetectionSchema | null = null;
-    let statusCodeRef = '';
+    let trace: AlgoVizTrace | null = null;
     try {
-      const { system, user } = buildStatusPrompt({
+      const { system, user } = buildTracePrompt({
         title: problem.title,
         statement: problem.statement,
         constraints: problem.constraints,
@@ -66,26 +71,102 @@ export class AlgoVizService {
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
-        maxTokens: 8000,
-        temperature: 0.3,
+        maxTokens: 5000,
+        temperature: 0.2,
+        disableThinking: true,
       });
-      const parsed = parseStatusOutput(raw);
-      if (!parsed) {
-        throw new Error('Status 输出解析失败（双块格式不完整）');
+      trace = parseTraceOutput(raw);
+      if (!trace) {
+        throw new Error('Trace 输出解析失败');
       }
-      schema = parsed.schema;
-      statusCodeRef = parsed.statusCode;
-      await cb.onStatusReady?.(parsed.statusCode, parsed.schema);
+      await cb.onTraceReady?.(trace);
     } catch (e: any) {
-      cb.onError?.('status', e instanceof Error ? e : new Error(String(e)));
-      return; // 阶段 1 失败不进阶段 2
+      cb.onError?.('trace', e instanceof Error ? e : new Error(String(e)));
+      return;
     }
 
+    const visualPlanTask = (async (): Promise<{ visualPlan: AlgoVizVisualPlan } | { error: Error }> => {
+      try {
+        const { system, user } = buildVisualPlanPrompt({
+          title: problem.title,
+          statement: problem.statement,
+          constraints: problem.constraints,
+          examples: problem.examples,
+          trace,
+        });
+        const raw = await this.clients.status!.chat({
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          maxTokens: 6000,
+          temperature: 0.25,
+          disableThinking: true,
+        });
+        const visualPlan = parseVisualPlanOutput(raw);
+        if (!visualPlan) {
+          throw new Error('VisualPlan 输出解析失败');
+        }
+        await cb.onVisualPlanReady?.(visualPlan);
+        return { visualPlan };
+      } catch (e: any) {
+        return { error: e instanceof Error ? e : new Error(String(e)) };
+      }
+    })();
+
+    const statusTask = (async (): Promise<
+      | { statusCode: string; schema: AlgoVizDetectionSchema }
+      | { error: Error }
+    > => {
+      try {
+        const { system, user } = buildStatusPrompt({
+          title: problem.title,
+          statement: problem.statement,
+          constraints: problem.constraints,
+          examples: problem.examples,
+          trace,
+        });
+        const raw = await this.clients.status!.chat({
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          maxTokens: 8000,
+          temperature: 0.3,
+          disableThinking: true,
+        });
+        const parsed = parseStatusOutput(raw);
+        if (!parsed) {
+          throw new Error('Status 输出解析失败（双块格式不完整）');
+        }
+        await cb.onStatusReady?.(parsed.statusCode, parsed.schema);
+        return { statusCode: parsed.statusCode, schema: parsed.schema };
+      } catch (e: any) {
+        return { error: e instanceof Error ? e : new Error(String(e)) };
+      }
+    })();
+
+    const statusResult = await statusTask;
+    if ('error' in statusResult) {
+      cb.onError?.('status', statusResult.error);
+      await visualPlanTask;
+      return;
+    }
+
+    const visualPlanResult = await visualPlanTask;
+    if ('error' in visualPlanResult) {
+      cb.onError?.('visual-plan', visualPlanResult.error);
+      return;
+    }
+
+    const { schema, statusCode: statusCodeRef } = statusResult;
+    const { visualPlan } = visualPlanResult;
+
     // 阶段 2：Animation
-    if (!this.clients.animation || !schema) {
+    if (!this.clients.animation) {
       cb.onError?.(
         'animation',
-        new Error('未配置 Animation 工位模型（主云端不可用且无 override）'),
+        new Error('未配置 Animation 工位模型（高质量模型不可用且无 override）'),
       );
       return;
     }
@@ -97,6 +178,8 @@ export class AlgoVizService {
         examples: problem.examples,
         statusCode: statusCodeRef,
         schema,
+        trace,
+        visualPlan,
       });
       const raw = await this.clients.animation.chat({
         messages: [
@@ -105,6 +188,7 @@ export class AlgoVizService {
         ],
         maxTokens: 8000,
         temperature: 0.3,
+        disableThinking: true,
       });
       const animationCode = parseAnimationOutput(raw);
       if (!animationCode) {
@@ -139,6 +223,8 @@ export class AlgoVizService {
         examples: problem.examples,
         statusCode: statusCodeRef,
         schema,
+        trace: problem.algoViz?.trace ?? null,
+        visualPlan: problem.algoViz?.visualPlan ?? null,
       });
       const raw = await this.clients.animation.chat({
         messages: [
@@ -147,6 +233,7 @@ export class AlgoVizService {
         ],
         maxTokens: 8000,
         temperature: 0.3,
+        disableThinking: true,
       });
       const animationCode = parseAnimationOutput(raw);
       if (!animationCode) {

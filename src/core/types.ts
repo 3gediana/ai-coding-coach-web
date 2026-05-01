@@ -86,8 +86,12 @@ export interface Problem {
     animationCode: string | null;
     /** Status 调用同时输出的"模块清单 + 检测提示"，给小模型实时填空用 */
     detectionSchema: AlgoVizDetectionSchema | null;
+    trace?: AlgoVizTrace | null;
+    visualPlan?: AlgoVizVisualPlan | null;
     statusGeneratedAt?: number;
     animationGeneratedAt?: number;
+    traceGeneratedAt?: number;
+    visualPlanGeneratedAt?: number;
     errorMessage?: string;
   };
 }
@@ -106,6 +110,79 @@ export interface AlgoVizDetectionSchema {
     description: string;
     /** 给小模型判断"代码里这个模块完成没"的一句 prompt 提示 */
     detectHint: string;
+  }>;
+}
+
+export interface AlgoVizTrace {
+  algoName: string;
+  family: string;
+  sample: Record<string, unknown>;
+  states: AlgoVizTraceState[];
+}
+
+export interface AlgoVizTraceState {
+  id: string;
+  label: string;
+  operation: string;
+  focus?: string[];
+  data: Record<string, unknown>;
+  invariant?: string;
+  result?: unknown;
+  codeHint?: string;
+}
+
+export interface AlgoVizVisualPlan {
+  layout:
+    | 'hero_side_panels'
+    | 'grid_2x2'
+    | 'table_focus'
+    | 'graph_focus'
+    | 'linear_timeline'
+    | string;
+  durationFrames: number;
+  components: AlgoVizVisualComponent[];
+  regions: AlgoVizVisualRegion[];
+  beats: AlgoVizAnimationBeat[];
+  composition?: {
+    frame0Visible?: string[];
+    heroContent?: string[];
+    density?: 'cinematic' | 'balanced' | 'compact' | string;
+    heroRule?: string;
+    focusStrategy?: string;
+    antiEmptySpaceRule?: string;
+  };
+  style?: {
+    tone?: string;
+    primaryColor?: string;
+    accentColor?: string;
+  };
+}
+
+export interface AlgoVizVisualComponent {
+  id: string;
+  type: string;
+  role: 'input' | 'state' | 'operation' | 'result' | 'invariant' | string;
+  dataRef?: string;
+  label?: string;
+}
+
+export interface AlgoVizVisualRegion {
+  id: string;
+  title: string;
+  role: 'hero' | 'side' | 'bottom' | 'table' | 'graph' | string;
+  componentIds: string[];
+}
+
+export interface AlgoVizAnimationBeat {
+  id: string;
+  stateId: string;
+  start: number;
+  end: number;
+  actions: Array<{
+    type: string;
+    target: string;
+    label?: string;
+    payload?: Record<string, unknown>;
   }>;
 }
 

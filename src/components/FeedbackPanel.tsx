@@ -89,11 +89,12 @@ export function FeedbackPanel() {
   const algoVizActiveCount = moduleStatus
     ? Object.values(moduleStatus).filter(Boolean).length
     : 0;
-  const algoVizTotalCount = problem?.algoViz?.detectionSchema?.modules?.length ?? 0;
+  const algoVizStatusReady = !!problem?.algoViz?.statusCode && !!problem.algoViz.detectionSchema;
+  const algoVizTotalCount = algoVizStatusReady ? problem.algoViz!.detectionSchema!.modules.length : 0;
   const algoVizDetecting = useStore((s) =>
     activeProblemId ? !!s.algoVizDetectingByProblem[activeProblemId] : false,
   );
-  const showAlgoVizProgress = ollamaMode !== 'disabled';
+  const showAlgoVizProgress = ollamaMode !== 'disabled' && algoVizStatusReady;
 
   return (
     <>

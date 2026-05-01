@@ -34,6 +34,8 @@ export interface ChatRequest {
    * chatJson / chatJsonStream 会默认设为 'json'，调用方一般不用关心。
    */
   responseFormat?: 'json' | 'text';
+  /** 禁用支持该参数的模型的推理/思考模式。 */
+  disableThinking?: boolean;
   /**
    * chatJson / chatJsonStream 的总 attempt 次数（含首次）。默认 3。
    * 当上层有 fallback 链（比如云端→fastLane）时，建议传 1：
@@ -305,13 +307,22 @@ export class AIClient {
       return body;
     }
 
-    return {
+    const body: Record<string, unknown> = {
       model: req.model ?? cfg.model,
       messages,
       max_tokens: req.maxTokens ?? cfg.maxTokens ?? 4096,
       temperature: req.temperature ?? cfg.temperature ?? DEFAULT_TEMPERATURE,
       stream,
     };
+    if (req.disableThinking) {
+      if (cfg.provider === 'deepseek') {
+        body.thinking = { type: 'disabled' };
+      }
+      if (cfg.provider === 'qwen') {
+        body.enable_thinking = false;
+      }
+    }
+    return body;
   }
 
   private async fetchWithRetry(body: Record<string, unknown>, req: ChatRequest): Promise<Response> {
