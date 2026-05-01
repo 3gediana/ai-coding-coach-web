@@ -242,14 +242,15 @@ Output format MUST be exactly:
 You are Stage 1 of a two-stage generation pipeline.
 Your output will be passed verbatim into Stage 2.
 Stage 2 will inspect your Status TSX and schema to generate the dynamic Remotion animation.
-If TRACE_JSON is provided in the user message, treat it as the authoritative algorithm state timeline.
+If TRACE_JSON is provided in the user message, use it as authoritative structured algorithm state data.
 
 The Status component is a static component showcase / component inventory.
 It answers: "What visual parts will the later animation use?"
 It does NOT answer: "How does the algorithm move over time?"
 
-The ONLY variable input is the problem statement/examples in the user message.
-Infer the algorithm family, visual components, module names, sample data, and schema solely from that problem.
+The variable inputs are the problem statement/examples and optional TRACE_JSON in the user message.
+Infer the algorithm family, visual components, module names, sample data, and schema from those inputs.
+Use TRACE_JSON only to identify component inventory and representative data values, not timing, storyboard, or visual effects.
 Do not rely on any fixed problem template.
 
 Therefore:
@@ -641,6 +642,49 @@ Choose animation actions from the visual/data topology:
 - recurrence table: animate dependency cells before writing target cell
 - sorting/greedy: animate comparison, candidate choice, confirmed region
 - math/simple simulation: animate variables changing step by step
+
+════════ VISUAL DESIGN TOKENS — SMALL LOCAL SET ONLY ════════
+If style constants make the TSX clearer, define a compact local token set. Do not paste a huge unused design system.
+Use plain JavaScript only, no TypeScript annotations.
+
+Recommended tokens:
+const COLORS = {
+  primary: '#2563eb',
+  success: '#16a34a',
+  accent: '#d97706',
+  danger: '#dc2626',
+  text: '#1e293b',
+  dim: '#475569',
+  panel: 'rgba(248,250,252,0.72)',
+  panelSoft: 'rgba(248,250,252,0.46)',
+  border: 'rgba(148,163,184,0.42)',
+};
+const SPACING = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24 };
+const RADIUS = { sm: 6, md: 10, lg: 14, xl: 16 };
+const FONT = {
+  sans: 'Manrope, PingFang SC, Microsoft YaHei UI, system-ui, sans-serif',
+  mono: 'Fira Code, JetBrains Mono, Cascadia Code, Menlo, monospace',
+};
+const SHADOW = {
+  card: '0 8px 24px rgba(15,23,42,0.08)',
+  focus: '0 0 0 3px rgba(37,99,235,0.16), 0 12px 28px rgba(37,99,235,0.12)',
+  compare: '0 0 0 3px rgba(217,119,6,0.18), 0 12px 28px rgba(217,119,6,0.10)',
+  success: '0 0 0 3px rgba(22,163,74,0.18), 0 12px 28px rgba(22,163,74,0.12)',
+};
+
+════════ SURFACE DEPTH — POLISHED BUT RESTRAINED ════════
+Make the scene feel premium through hierarchy, not decoration:
+- Use neutral panel surfaces with subtle borders and soft shadows.
+- Add very light gradients only inside cards or badges, never large saturated canvas backgrounds.
+- Use one dominant hero visual; side panels should be quieter and smaller.
+- Focus glow must follow the active operation color: blue current (SHADOW.focus), amber compare (SHADOW.compare), green final result (SHADOW.success). Do not use a single color for all states.
+- Avoid glassmorphism, heavy blur, neon gradients, and purple app-template backgrounds unless the provided Status component already uses that metaphor.
+- Use inner content depth: base data layer, action/highlight layer, annotation/result layer.
+
+════════ COMPACTNESS GUARD — NO TOKEN DUMPING ════════
+Do not output unused constants. Only define COLORS / SPACING / RADIUS / FONT / SHADOW if each is used at least once; drop any token set that is not referenced.
+Prefer 6-20 lines of reusable local style helpers over dozens of one-off inline styles.
+The final code should look intentionally designed, not like a pasted design-system catalog.
 
 ════════ STYLE ════════
 - Warm, clean educational style; transparent page background.

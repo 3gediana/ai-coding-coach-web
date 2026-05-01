@@ -29,12 +29,19 @@ import {
   Image,
   Activity,
   ScanLine,
+  Palette,
+  FileText,
+  FolderTree,
+  Plane,
+  WifiOff,
 } from 'lucide-react';
 import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
 import { DEFAULT_ROUTER_HINTS } from '../core/ai/router';
 import { ModelRegistrySection, ModelPicker } from './ModelRegistry';
 import { resolvePrimaryModel } from '../lib/modelRegistry';
+import { applyTheme, getStoredTheme, THEMES, type Theme } from '../lib/theme';
+import { setForcedOffline, useOnlineStatus } from '../lib/offlineMode';
 
 export function SettingsModal() {
   const open = useStore((s) => s.settingsOpen);
@@ -49,11 +56,15 @@ export function SettingsModal() {
   const setConstraintSanityEnabled = useStore((s) => s.setConstraintSanityEnabled);
   const intentSniffEnabled = useStore((s) => s.intentSniffEnabled);
   const setIntentSniffEnabled = useStore((s) => s.setIntentSniffEnabled);
+  const multiFileMode = useStore((s) => s.multiFileMode);
+  const setMultiFileMode = useStore((s) => s.setMultiFileMode);
+  const onlineStatus = useOnlineStatus();
 
   const [draft, setDraft] = useState<AIConfig>(cfg);
   const [showKey, setShowKey] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [currentTheme, setCurrentTheme] = useState<Theme>(getStoredTheme());
 
   /** fastLane 是否就绪：enabled + 本地 baseUrl + model + Ollama 模式打开 */
   const fastLaneReady = !!(
@@ -64,6 +75,46 @@ export function SettingsModal() {
     isLocalOllamaUrl(draft.fastLane.baseUrl)
   );
   const ollamaEnabled = draft.ollamaMode !== 'disabled';
+  const offlineFastUsable =
+    ollamaEnabled &&
+    !!draft.fastLane?.enabled &&
+    !!draft.fastLane?.baseUrl &&
+    !!draft.fastLane?.model;
+  const forcedOffline = onlineStatus === 'forced-offline';
+
+  const onPickTheme = (theme: Theme) => {
+    applyTheme(theme);
+    setCurrentTheme(theme);
+  };
+
+  const onToggleMultiFileMode = (next: boolean) => {
+    setMultiFileMode(next);
+    toast.message(next ? '已切到多文件模式 · 文件树已显示' : '已切到单文件模式 · 文件树已隐藏', {
+      description: next
+        ? 'AI 分析会考虑多文件耦合（头文件 / include / 跨文件引用）'
+        : '只编辑当前一个文件，界面更专注',
+    });
+  };
+
+  const onToggleForcedOffline = () => {
+    if (forcedOffline) {
+      setForcedOffline(false);
+      toast.success('已退出飞行模式');
+      return;
+    }
+    if (!ollamaEnabled) {
+      toast.warning('当前为「无 Ollama 模式」', {
+        description: '飞行模式需要本地 Ollama；可在设置顶部打开 Ollama 模式',
+      });
+      return;
+    }
+    if (!offlineFastUsable) {
+      toast.warning('飞行模式需要先配本地 FastLane (Ollama)');
+      return;
+    }
+    setForcedOffline(true);
+    toast.success('已进入飞行模式 · AI 全部走本地');
+  };
 
   /**
    * 智能识别 apiKey 前缀，提示用户是否要切到对应 provider。
@@ -86,6 +137,7 @@ export function SettingsModal() {
     if (open) {
       setDraft(cfg);
       setTestResult(null);
+      setCurrentTheme(getStoredTheme());
     }
   }, [open, cfg]);
 
@@ -215,13 +267,104 @@ export function SettingsModal() {
           >
             <div className="px-6 py-4 border-b border-line flex items-center gap-3">
               <Sparkles size={18} className="text-accent" />
-              <h2 className="text-lg font-semibold">AI 服务配置</h2>
+              <h2 className="text-lg font-semibold">设置</h2>
               <button onClick={() => setOpen(false)} className="btn-ghost ml-auto p-1.5">
                 <X size={16} />
               </button>
             </div>
 
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+              <div className="rounded-lg border border-line bg-bg-elev2/40 p-4 space-y-4">
+                <div>
+                  <h3 className="text-sm font-semibold flex items-center gap-1.5">
+                    <Settings2 size={14} className="text-accent" />
+                    界面与演示
+                  </h3>
+                  <p className="text-[11px] text-ink-mute mt-1">
+                    低频入口已从顶栏收进这里，顶栏只保留运行、问教练、题目和设置。
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="text-[11px] text-ink-mute font-semibold flex items-center gap-1.5">
+                    <Palette size={12} />
+                    主题
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {THEMES.map((theme) => (
+                      <button
+                        key={theme.id}
+                        type="button"
+                        onClick={() => onPickTheme(theme.id)}
+                        className={cn(
+                          'rounded-lg border px-3 py-2 text-left transition hover:border-accent/50 hover:bg-accent/5',
+                          currentTheme === theme.id
+                            ? 'border-accent/60 bg-accent/10 text-accent'
+                            : 'border-line bg-bg text-ink',
+                        )}
+                      >
+                        <div className="flex items-center gap-1.5 text-[12px] font-semibold">
+                          <span className="truncate">{theme.label}</span>
+                          {currentTheme === theme.id && <Check size={11} className="shrink-0" />}
+                        </div>
+                        <div className="text-[10px] text-ink-mute mt-0.5 leading-snug">{theme.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => onToggleMultiFileMode(!multiFileMode)}
+                    className={cn(
+                      'rounded-lg border px-3 py-2 text-left transition hover:border-cyan/50 hover:bg-cyan/5',
+                      multiFileMode
+                        ? 'border-cyan/60 bg-cyan/10 text-cyan'
+                        : 'border-line bg-bg text-ink',
+                    )}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      {multiFileMode ? <FolderTree size={14} /> : <FileText size={14} />}
+                      {multiFileMode ? '多文件模式' : '单文件模式'}
+                      <span className="ml-auto chip text-[9px] px-1.5 py-0">
+                        {multiFileMode ? '已开启' : '已关闭'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-ink-mute mt-1 leading-relaxed">
+                      {multiFileMode
+                        ? '文件树显示，AI 会考虑跨文件引用。'
+                        : '文件树隐藏，只编辑当前文件，界面更专注。'}
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onToggleForcedOffline}
+                    className={cn(
+                      'rounded-lg border px-3 py-2 text-left transition hover:border-warn/50 hover:bg-warn/5',
+                      forcedOffline
+                        ? 'border-warn/60 bg-warn/10 text-warn'
+                        : 'border-line bg-bg text-ink',
+                    )}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      {forcedOffline ? <Plane size={14} /> : onlineStatus === 'offline' ? <WifiOff size={14} /> : <Plane size={14} />}
+                      飞行模式
+                      <span className="ml-auto chip text-[9px] px-1.5 py-0">
+                        {forcedOffline ? '已开启' : onlineStatus === 'offline' ? '真离线' : '已关闭'}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-ink-mute mt-1 leading-relaxed">
+                      手动模拟拔网线。需要本地 FastLane 可用，开启后 AI 强制走本地。
+                    </p>
+                    {offlineFastUsable && (
+                      <div className="text-[10px] text-ok mt-1">⚡ Local FastLane 已就绪</div>
+                    )}
+                  </button>
+                </div>
+              </div>
+
               <OllamaModeSwitch
                 mode={draft.ollamaMode ?? 'enabled'}
                 onChange={(m) => setDraft({ ...draft, ollamaMode: m })}
@@ -1147,7 +1290,7 @@ function AlgoVizRoleConfig({
               {role === 'detect' && cur?.baseUrl && !isLocalUrl(cur.baseUrl) && (
                 <div className="rounded border border-warn/50 bg-warn/10 px-2 py-1.5 text-[10.5px] text-warn leading-relaxed">
                   ⚠️ <strong>不建议云端 detect</strong>：每 15 秒触发一次，长期使用会持续消耗云端 token。
-                  建议改用本地 Ollama 小模型（如 <code className="font-mono">http://localhost:11434/v1/chat/completions</code> + <code className="font-mono">qwen3:4b</code>）。
+                  建议改用本地 Ollama 模型（如 <code className="font-mono">http://localhost:11434/v1/chat/completions</code> + <code className="font-mono">qwen3.5:4b</code>）。
                 </div>
               )}
               <Field label="Base URL" hint={role === 'detect' ? '建议本地 Ollama；云端会持续消耗 token' : 'OpenAI 兼容 chat-completions endpoint'}>
@@ -1167,10 +1310,10 @@ function AlgoVizRoleConfig({
                   onChange={(e) => update({ apiKey: e.target.value })}
                 />
               </Field>
-              <Field label="Model" hint={role === 'detect' ? '推荐本地小模型（如 qwen3:4b）' : '推荐 deepseek-v4-pro 或同等大模型'}>
+              <Field label="Model" hint={role === 'detect' ? '推荐本地 qwen3.5:4b' : '推荐 deepseek-v4-pro 或同等大模型'}>
                 <input
                   className="input font-mono text-xs"
-                  placeholder={role === 'detect' ? 'qwen3:4b' : 'deepseek-v4-pro'}
+                  placeholder={role === 'detect' ? 'qwen3.5:4b' : 'deepseek-v4-pro'}
                   value={cur?.model ?? ''}
                   onChange={(e) => update({ model: e.target.value })}
                 />
@@ -1482,7 +1625,7 @@ const OLLAMA_IMPACTS: OllamaImpact[] = [
   { icon: Zap, title: 'FastLane 实时批注', desc: '前台流式批注 / 卡住引导 / 粘贴解释走本地' },
   { icon: Lightbulb, title: '意图路由器', desc: '小模型识别问题类型，路由到合适工位' },
   { icon: ScanLine, title: 'AC 后 Hack Case', desc: '样例通过后本地生成极端测试挑战代码' },
-  { icon: Image, title: '题目图片识别 (OCR)', desc: 'TM 推送的题目截图自动转文字（minicpm-v）' },
+  { icon: Image, title: '题目图片识别 (OCR)', desc: 'TM 推送的题目截图自动转文字（qwen3.5）' },
 ];
 
 function OllamaModeSwitch({

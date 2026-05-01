@@ -5,34 +5,13 @@ import {
   Sparkles,
   Plus,
   CheckCircle2,
-  PlayCircle,
   Library,
   MessageCircleQuestion,
   Brain,
-  WifiOff,
-  Plane,
   ChevronDown,
-  FileText,
-  FolderTree,
 } from 'lucide-react';
-import { useOnlineStatus, setForcedOffline } from '../lib/offlineMode';
-import { toast } from 'sonner';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
-import { isRuntimeSupported } from '../lib/runtime';
-import { ThemeSwitcher } from './ThemeSwitcher';
-
-/** 展开终端 + 触发 RuntimePane 内的运行按钮 */
-function triggerRun(setOpen: (v: boolean) => void) {
-  setOpen(true);
-  // RuntimePane 动画 280ms，等它挂载
-  setTimeout(() => {
-    const btn = document.querySelector(
-      '[data-runtime-pane-run]',
-    ) as HTMLButtonElement | null;
-    btn?.click();
-  }, 350);
-}
 
 export function TopBar() {
   const aiConfig = useStore((s) => s.aiConfig);
@@ -41,7 +20,6 @@ export function TopBar() {
   const setProblemBrowserOpen = useStore((s) => s.setProblemBrowserOpen);
   const setCmdPaletteOpen = useStore((s) => s.setCmdPaletteOpen);
   const setSubmitModalOpen = useStore((s) => s.setSubmitModalOpen);
-  const setRuntimePaneOpen = useStore((s) => s.setRuntimePaneOpen);
   const setAskPrefill = useStore((s) => s.setAskPrefill);
   const setCoachDraft = useStore((s) => s.setCoachDraft);
   const setFeedbackTab = useStore((s) => s.setFeedbackTab);
@@ -52,7 +30,6 @@ export function TopBar() {
   const filesByScope = useStore((s) => s.filesByScope);
   const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
   const multiFileMode = useStore((s) => s.multiFileMode);
-  const setMultiFileMode = useStore((s) => s.setMultiFileMode);
   const tasksRunning = useStore((s) =>
     s.tasks.filter((t) => t.status === 'running' || t.status === 'queued').length,
   );
@@ -70,7 +47,6 @@ export function TopBar() {
     apiOk &&
     activeFile &&
     (activeFile.language === 'cpp' || activeFile.language === 'c' || activeFile.language === 'python');
-  const canRun = activeFile && isRuntimeSupported(activeFile.language);
   const openCoach = () => {
     setFeedbackTab('ask');
     setCoachDraft({ source: 'topbar' });
@@ -84,18 +60,6 @@ export function TopBar() {
       document.querySelector<HTMLTextAreaElement>('[data-coach-input]')?.focus();
     });
   };
-
-  // Ctrl+Enter 全局：展开终端 + 触发运行
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && canRun) {
-        e.preventDefault();
-        triggerRun(setRuntimePaneOpen);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [canRun, setRuntimePaneOpen]);
 
   return (
     <header className="glass border-b border-line h-14 flex items-center px-4 gap-3 z-30">
@@ -141,37 +105,6 @@ export function TopBar() {
         )}
       </div>
 
-      {/* Offline / Airplane chip */}
-      <OfflineChip />
-
-      {/* 单文件 / 多文件 模式切换：默认单文件不显示 FileTree；切到多文件时 FileTree 出现，AI 也会感知多文件耦合 */}
-      <button
-        type="button"
-        onClick={() => {
-          const next = !multiFileMode;
-          setMultiFileMode(next);
-          toast.message(next ? '已切到多文件模式 · 文件树已显示' : '已切到单文件模式 · 文件树已隐藏', {
-            description: next
-              ? 'AI 分析会考虑多文件耦合（头文件 / include / 跨文件引用）'
-              : '只编辑当前一个文件，界面更专注',
-          });
-        }}
-        className={cn(
-          'hidden md:flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-medium transition',
-          multiFileMode
-            ? 'bg-cyan/10 border-cyan/40 text-cyan'
-            : 'bg-bg-elev2 border-line text-ink-mute hover:text-ink',
-        )}
-        title={
-          multiFileMode
-            ? '当前：多文件模式（文件树已展开，AI 会感知文件间耦合）· 点击切回单文件'
-            : '当前：单文件模式（文件树已隐藏）· 多文件场景请点击切换'
-        }
-      >
-        {multiFileMode ? <FolderTree size={11} /> : <FileText size={11} />}
-        <span>{multiFileMode ? '多文件' : '单文件'}</span>
-      </button>
-
       {/* Active file badge：仅多文件模式显示（单文件时跟 toggle 信息冗余） */}
       {activeFile && multiFileMode && (
         <div className="hidden md:flex items-center gap-1.5 px-2 py-1 rounded-lg bg-bg-elev2 border border-line">
@@ -179,16 +112,6 @@ export function TopBar() {
           <span className="text-xs font-mono text-ink truncate max-w-[140px]">{activeFile.name}</span>
         </div>
       )}
-
-      {/* 运行：次高频 */}
-      <button
-        onClick={() => triggerRun(setRuntimePaneOpen)}
-        className="btn-ghost"
-        disabled={!canRun}
-        title={canRun ? '运行 (Ctrl+Enter)' : '当前文件不支持运行'}
-      >
-        <PlayCircle size={15} />
-      </button>
 
       <button
         data-onboarding="analyze"
@@ -224,8 +147,6 @@ export function TopBar() {
 
       <div className="w-px h-5 bg-line/60" />
 
-      <ThemeSwitcher />
-
       <button
         onClick={() => setSettingsOpen(true)}
         className={cn(
@@ -243,109 +164,6 @@ export function TopBar() {
         )}
       </button>
     </header>
-  );
-}
-
-/**
- * 在线状态 chip：常态 hidden、离线/飞行模式 时浮现，
- * 点击切换"飞行模式"（手动模拟拔网线）。
- *
- * 演示价值：评委录像时点这个 chip → 立刻看见 AI 路由切到本地，1B 模型完整可用。
- */
-function OfflineChip() {
-  const status = useOnlineStatus();
-  const aiConfig = useStore((s) => s.aiConfig);
-  const ollamaOff = aiConfig.ollamaMode === 'disabled';
-  const fastUsable =
-    !ollamaOff &&
-    !!aiConfig.fastLane?.enabled &&
-    !!aiConfig.fastLane?.baseUrl &&
-    !!aiConfig.fastLane?.model;
-
-  if (status === 'online') {
-    if (ollamaOff) return null;
-    // 在线时：fastLane 启用 → 显一个明显的 ⚡ Local chip；未启用 → 只挂隐藏的「飞行模式」入口
-    return (
-      <div className="hidden md:flex items-center gap-1">
-        {fastUsable && (
-          <span
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-ok/10 border border-ok/30 text-[10px] font-medium text-ok"
-            title="本地 FastLane (Ollama) 已启用·实时类任务零成本走本地"
-          >
-            ⚡ Local
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={() => {
-            if (ollamaOff) {
-              toast.warning('当前为「无 Ollama 模式」', {
-                description: '飞行模式需要本地 Ollama；可在「设置」顶部切换 Ollama 模式',
-              });
-              return;
-            }
-            if (!fastUsable) {
-              toast.warning('飞行模式需要先配本地 FastLane (Ollama)');
-              return;
-            }
-            setForcedOffline(true);
-            toast.success('已进入飞行模式 · AI 全部走本地');
-          }}
-          className="flex items-center text-[10px] text-ink-mute hover:text-warn transition px-1.5 py-0.5 rounded opacity-40 hover:opacity-100"
-          title="模拟拔网线 / 飞行模式 — AI 强制走本地"
-        >
-          <Plane size={11} />
-        </button>
-      </div>
-    );
-  }
-
-  const isForced = status === 'forced-offline';
-  return (
-    <motion.button
-      type="button"
-      initial={{ scale: 0.8, opacity: 0 }}
-      animate={{ scale: 1, opacity: 1 }}
-      onClick={() => {
-        if (isForced) {
-          setForcedOffline(false);
-          toast.success('已退出飞行模式');
-        } else {
-          toast.message(
-            ollamaOff ? '网络已断开 · 当前无本地 AI 兜底' : '网络已断开 · AI 自动切到本地 FastLane',
-            {
-              description: fastUsable
-                ? '本地 FastLane 在线，可继续批注 / 总结 / 问答'
-                : ollamaOff
-                  ? '⚠ 当前是无 Ollama 模式，离线后云端任务会失败'
-                  : '⚠ 没配 FastLane，云端任务会失败',
-            },
-          );
-        }
-      }}
-      className={cn(
-        'flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] font-semibold transition',
-        isForced
-          ? 'border-warn/60 bg-warn/15 text-warn'
-          : 'border-bad/60 bg-bad/15 text-bad',
-        !fastUsable && 'animate-pulse',
-      )}
-      title={
-        isForced
-          ? '飞行模式中 · 点击退出'
-          : fastUsable
-            ? '检测到无网络 · 已切到本地 FastLane'
-            : ollamaOff
-              ? '检测到无网络 · 无 Ollama 本地兜底'
-              : '检测到无网络 · 无本地 FastLane 可用'
-      }
-    >
-      {isForced ? <Plane size={11} /> : <WifiOff size={11} />}
-      <span className="hidden sm:inline">
-        {isForced ? '飞行模式' : '离线'}
-      </span>
-      {fastUsable && <span className="text-[9px] opacity-80">⚡ 本地</span>}
-    </motion.button>
   );
 }
 

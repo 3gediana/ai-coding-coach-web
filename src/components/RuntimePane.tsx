@@ -235,18 +235,68 @@ export function RuntimePane() {
 
   const supported = file ? isRuntimeSupported(file.language) : false;
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && supported && file?.content?.trim()) {
+        e.preventDefault();
+        setOpen(true);
+        void onRun();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supported, file?.content, stdin]);
+
   if (!open) {
     // 折叠状态：底部窄条
     return (
-      <button
-        onClick={() => setOpen(true)}
-        className="h-7 border-t border-line bg-bg-elev hover:bg-bg-elev2 flex items-center gap-2 px-4 text-xs text-ink-dim w-full"
-        title="展开终端"
-      >
-        <TerminalIcon size={12} />
-        <span>终端</span>
-        <ChevronUp size={12} className="ml-auto" />
-      </button>
+      <div className="h-7 border-t border-line bg-bg-elev flex items-center text-xs text-ink-dim w-full">
+        <button
+          onClick={() => setOpen(true)}
+          className="h-full flex-1 hover:bg-bg-elev2 flex items-center gap-2 px-4 text-left"
+          title="展开终端"
+        >
+          <TerminalIcon size={12} />
+          <span>终端</span>
+          {file && (
+            <span className="hidden sm:inline text-[11px] text-ink-mute font-mono">
+              {file.name}
+            </span>
+          )}
+          <ChevronUp size={12} className="ml-auto" />
+        </button>
+        {!running ? (
+          <button
+            data-runtime-pane-run
+            onClick={() => {
+              setOpen(true);
+              void onRun();
+            }}
+            className="h-full px-3 border-l border-line hover:bg-bg-elev2 text-accent flex items-center gap-1 font-semibold disabled:text-ink-mute disabled:cursor-not-allowed"
+            disabled={!supported || !file?.content?.trim()}
+            title={
+              !file
+                ? '没有活跃文件'
+                : !supported
+                  ? `${file.language} 文件不能运行`
+                  : '运行此文件（Ctrl+Enter）'
+            }
+          >
+            <Play size={12} />
+            <span className="hidden sm:inline">运行</span>
+          </button>
+        ) : (
+          <button
+            className="h-full px-3 border-l border-line text-bad flex items-center gap-1 font-semibold"
+            disabled
+            title="运行中"
+          >
+            <Loader2 size={12} className="animate-spin" />
+            <span className="hidden sm:inline">{progress || '运行中'}</span>
+          </button>
+        )}
+      </div>
     );
   }
 
