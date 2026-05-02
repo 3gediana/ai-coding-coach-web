@@ -9,7 +9,7 @@
  * 由 store.runHackChain 驱动；用户点 RuntimePane 上的「Hack Chain」按钮触发。
  */
 import { motion, AnimatePresence } from 'framer-motion';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Swords,
   PlayCircle,
@@ -71,6 +71,18 @@ const STEP_META: Record<
 export function HackChainModal() {
   const state = useStore((s) => s.hackChainState);
   const dismiss = useStore((s) => s.dismissHackChain);
+  const running = !!state?.steps.some((s) => s.status === 'running' || s.status === 'idle');
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (state) setNow(Date.now());
+  }, [state?.startedAt]);
+
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [running]);
 
   return (
     <AnimatePresence>
@@ -79,19 +91,18 @@ export function HackChainModal() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 modal-overlay flex items-center justify-center p-6"
-          onClick={dismiss}
+          className="fixed right-4 bottom-4 z-50 w-[min(42rem,calc(100vw-2rem))] max-h-[70vh]"
         >
           <motion.div
             initial={{ scale: 0.96, opacity: 0, y: 8 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.96, opacity: 0 }}
             onClick={(e) => e.stopPropagation()}
-            className="glass-card w-full max-w-3xl max-h-[88vh] flex flex-col overflow-hidden"
+            className="glass-card w-full max-h-[70vh] flex flex-col overflow-hidden shadow-2xl"
           >
-            <Header onClose={dismiss} steps={state.steps} startedAt={state.startedAt} />
+            <Header onClose={dismiss} steps={state.steps} startedAt={state.startedAt} now={now} />
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-              <Timeline steps={state.steps} />
+              <Timeline steps={state.steps} now={now} />
               <Outputs />
             </div>
           </motion.div>
@@ -105,35 +116,44 @@ function Header({
   onClose,
   steps,
   startedAt,
+  now,
 }: {
   onClose: () => void;
   steps: HackChainStepState[];
   startedAt: number;
+  now: number;
 }) {
   const allDone = steps.every((s) => s.status !== 'running' && s.status !== 'idle');
   const successCount = steps.filter((s) => s.status === 'success').length;
-  const elapsedMs = (steps[steps.length - 1]?.endedAt ?? Date.now()) - startedAt;
+  const lastEndedAt = Math.max(0, ...steps.map((s) => s.endedAt ?? 0));
+  const elapsedMs = (allDone && lastEndedAt ? lastEndedAt : now) - startedAt;
+  const runningStep = steps.find((s) => s.status === 'running');
   return (
     <div className="px-6 py-4 border-b border-line flex items-center gap-3">
       <Swords size={18} className="text-warn" />
-      <h2 className="text-lg font-semibold">Hack Chain · 4-Agent 链式编排</h2>
-      <span className="text-[10px] text-ink-mute font-mono ml-2">
-        {successCount}/4 步 · {(elapsedMs / 1000).toFixed(1)}s
+      <div className="min-w-0">
+        <h2 className="text-lg font-semibold leading-tight">Hack Chain · 4-Agent 链式编排</h2>
+        <div className="text-[10px] text-ink-mute">
+          {runningStep ? `${STEP_META[runningStep.step].title} 正在运行` : allDone ? '链条已结束' : '等待下一步'}
+        </div>
+      </div>
+      <span className="text-[10px] text-ink-mute font-mono ml-auto">
+        {successCount}/4 步 · {(elapsedMs / 1000).toFixed(1)} 秒
         {!allDone && <Loader2 size={10} className="inline animate-spin ml-1" />}
       </span>
-      <button onClick={onClose} className="btn-ghost ml-auto p-1.5" title="关闭">
+      <button onClick={onClose} className="btn-ghost p-1.5" title="关闭">
         <X size={16} />
       </button>
     </div>
   );
 }
 
-function Timeline({ steps }: { steps: HackChainStepState[] }) {
+function Timeline({ steps, now }: { steps: HackChainStepState[]; now: number }) {
   return (
     <div className="grid grid-cols-4 gap-2">
       {steps.map((s, i) => (
         <div key={s.step} className="flex items-center">
-          <StepCard state={s} />
+          <StepCard state={s} now={now} />
           {i < steps.length - 1 && (
             <ArrowRight size={14} className="text-ink-mute shrink-0 -mx-0.5" />
           )}
@@ -143,11 +163,11 @@ function Timeline({ steps }: { steps: HackChainStepState[] }) {
   );
 }
 
-function StepCard({ state }: { state: HackChainStepState }) {
+function StepCard({ state, now }: { state: HackChainStepState; now: number }) {
   const meta = STEP_META[state.step];
   const Icon = meta.icon;
   const elapsed =
-    state.startedAt && state.endedAt ? state.endedAt - state.startedAt : null;
+    state.startedAt ? (state.endedAt ?? now) - state.startedAt : null;
   const statusColor: Record<HackChainStepState['status'], string> = {
     idle: 'border-line/40 text-ink-mute',
     running: 'border-cyan/60 bg-cyan/5 text-cyan animate-pulse',
@@ -157,7 +177,12 @@ function StepCard({ state }: { state: HackChainStepState }) {
   };
   const statusLabel: Record<HackChainStepState['status'], React.ReactNode> = {
     idle: '待开始',
-    running: <Loader2 size={10} className="animate-spin inline" />,
+    running: (
+      <span className="inline-flex items-center gap-1">
+        <Loader2 size={10} className="animate-spin inline" />
+        运行中
+      </span>
+    ),
     success: <Check size={10} className="inline" />,
     failed: <AlertTriangle size={10} className="inline" />,
     skipped: '跳过',
@@ -174,7 +199,7 @@ function StepCard({ state }: { state: HackChainStepState }) {
       <p className="text-[9.5px] leading-tight opacity-80">{meta.subtitle}</p>
       <div className="flex items-center gap-1 mt-1 text-[9px] opacity-70">
         <span className="chip text-[9px] px-1 py-0">{meta.route}</span>
-        {elapsed !== null && <span className="font-mono">{elapsed}ms</span>}
+        {elapsed !== null && <span className="font-mono">{(elapsed / 1000).toFixed(1)}s</span>}
       </div>
       {state.error && (
         <p className="text-[9.5px] text-bad mt-1 truncate" title={state.error}>

@@ -26,7 +26,7 @@ import {
   Send,
   UploadCloud,
 } from 'lucide-react';
-import { useStore } from '../lib/store';
+import { getHackChainBlockReason, useStore } from '../lib/store';
 import { runPython, runCpp, isRuntimeSupported } from '../lib/runtime';
 import { cn } from '../lib/cn';
 import { toast } from 'sonner';
@@ -135,6 +135,7 @@ export function RuntimePane() {
   const enqueueHackCase = useStore((s) => s.enqueueHackCase);
   const runHackChain = useStore((s) => s.runHackChain);
   const enqueueOjSubmit = useStore((s) => s.enqueueOjSubmit);
+  const lastRunByScope = useStore((s) => s.lastRunByScope);
   const hackChainRunning = useStore(
     (s) => !!s.hackChainState && !s.hackChainState.result,
   );
@@ -232,6 +233,7 @@ export function RuntimePane() {
         fileId: file.id,
         fileName: file.name,
         language: file.language,
+        fileContent: file.content,
         exitCode: result.exitCode,
         stdin: stdinForRun,
         stdout: result.stdout || '',
@@ -341,6 +343,12 @@ export function RuntimePane() {
   };
 
   const supported = file ? isRuntimeSupported(file.language) : false;
+  const hackChainBlockReason = getHackChainBlockReason(
+    activeProblem,
+    file,
+    lastRunByScope[scope],
+  );
+  const canRunHackChain = !hackChainRunning && !hackChainBlockReason;
   const canOjSubmit = !!activeProblem?.source && /^https?:\/\//.test(activeProblem.source);
   const showCoachAction = !!(
     exitCode !== null &&
@@ -515,14 +523,18 @@ export function RuntimePane() {
           {/* Hack Chain：4-agent 编排链；与 Ollama 模式无关（LLM 走主云端，Executor 用本地沙箱） */}
           <button
             onClick={() => void runHackChain()}
-            disabled={hackChainRunning || !supported || !file?.content?.trim()}
+            disabled={!canRunHackChain}
             className={cn(
               'py-1 px-2 text-[11px] rounded border transition flex items-center gap-1 font-semibold',
-              !supported || !file?.content?.trim()
+              hackChainBlockReason
                 ? 'border-line/40 text-ink-mute cursor-not-allowed'
                 : 'border-warn/50 bg-warn/10 text-warn hover:bg-warn/20 hover:border-warn/70',
             )}
-            title="4-agent 编排链：Attacker → Executor → Explainer → FixSuggestor"
+            title={
+              hackChainRunning
+                ? 'Hack Chain 正在跑'
+                : hackChainBlockReason ?? '样例 AC 后启动：Attacker → Executor → Explainer → FixSuggestor'
+            }
           >
             {hackChainRunning ? (
               <Loader2 size={11} className="animate-spin" />

@@ -459,12 +459,40 @@ export interface RunSnapshot {
   fileId: string;
   fileName: string;
   language: string;
+  fileContent?: string;
   exitCode: number;
   stdin: string;
   stdout: string;
   stderr: string;
   durationMs: number;
   timestamp: number;
+}
+
+export function getHackChainBlockReason(
+  problem: Problem | null | undefined,
+  file: CodeFile | null | undefined,
+  snap: RunSnapshot | undefined,
+): string | null {
+  if (!problem) return '请先激活一道题目';
+  if (!file || (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python')) {
+    return '当前活跃文件不是可执行代码';
+  }
+  if (!file.content.trim()) return '请先写代码，并运行题目样例到 AC';
+  if (!snap || snap.fileId !== file.id) return '请先运行当前代码，并通过题目样例';
+  if (snap.fileContent === undefined || snap.fileContent !== file.content) {
+    return '代码已修改，请重新运行当前代码并通过样例';
+  }
+  if (Date.now() - snap.timestamp > 30 * 60 * 1000) {
+    return '样例 AC 记录已过期，请重新运行当前代码';
+  }
+  if (snap.exitCode !== 0) return '最近一次运行还没 AC，请先修到样例通过';
+  const passedSample = (problem.examples ?? []).some(
+    (ex) =>
+      ex.input.trim() &&
+      normalizeRunIO(snap.stdin) === normalizeRunIO(ex.input) &&
+      normalizeRunIO(snap.stdout) === normalizeRunIO(ex.output),
+  );
+  return passedSample ? null : '请先用题目样例运行到 AC，再启动 Hack Chain';
 }
 
 const handlersById = new Map<string, TaskHandler>();
@@ -3013,11 +3041,6 @@ export const useStore = create<State>((set, get) => {
         toast.error('请先激活一道题目');
         return;
       }
-      if (!hasUsableAIConfig(st.aiConfig)) {
-        toast.error('请先配置 AI 服务');
-        set({ settingsOpen: true });
-        return;
-      }
       const problem = st.problems.find((p) => p.id === st.activeProblemId);
       if (!problem) return;
       const scopeKey = problem.id;
@@ -3025,6 +3048,16 @@ export const useStore = create<State>((set, get) => {
       const file = (st.filesByScope[scopeKey] ?? []).find((f) => f.id === fileId);
       if (!file || (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python')) {
         toast.error('当前活跃文件不是可执行代码');
+        return;
+      }
+      const blockReason = getHackChainBlockReason(problem, file, st.lastRunByScope[scopeKey]);
+      if (blockReason) {
+        toast.error(blockReason);
+        return;
+      }
+      if (!hasUsableAIConfig(st.aiConfig)) {
+        toast.error('请先配置 AI 服务');
+        set({ settingsOpen: true });
         return;
       }
       // 防重：已有 chain 在跑则不再启动
