@@ -625,18 +625,18 @@ export function CodeEditor() {
       </div>
 
       <style>{`
-        .aicc-line-error { background: rgba(248,113,113,0.06); }
-        .aicc-line-warning { background: rgba(251,191,36,0.05); }
-        .aicc-line-info { background: rgba(34,211,238,0.04); }
-        .aicc-after { margin-left: 10px; padding: 1px 7px; border-radius: 999px; font-size: 12px; font-weight: 650; font-style: normal; box-shadow: 0 1px 3px rgba(0,0,0,0.12); cursor: pointer; white-space: nowrap; }
-        .aicc-after-error { color: #991b1b !important; background: rgba(248,113,113,0.16); border: 1px solid rgba(248,113,113,0.42); }
-        .aicc-after-warning { color: #92400e !important; background: rgba(251,191,36,0.16); border: 1px solid rgba(251,191,36,0.42); }
-        .aicc-after-info { color: #0e7490 !important; background: rgba(34,211,238,0.14); border: 1px solid rgba(34,211,238,0.38); }
-        .aicc-after-hint { color: #475569 !important; background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.32); }
-        .aicc-glyph-error { background: #f87171; width: 3px !important; margin-left: 3px; border-radius: 2px; }
-        .aicc-glyph-warning { background: #fbbf24; width: 3px !important; margin-left: 3px; border-radius: 2px; }
-        .aicc-glyph-info { background: #22d3ee; width: 3px !important; margin-left: 3px; border-radius: 2px; }
-        .aicc-glyph-hint { background: #9aa3b8; width: 3px !important; margin-left: 3px; border-radius: 2px; }
+        .aicc-line-error { background: rgb(var(--c-bad) / 0.07); }
+        .aicc-line-warning { background: rgb(var(--c-warn) / 0.07); }
+        .aicc-line-info { background: rgb(var(--c-cyan) / 0.05); }
+        .aicc-after { margin-left: 10px; padding: 1px 7px; border-radius: 999px; font-size: 12px; font-weight: 650; font-style: normal; box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); cursor: pointer; white-space: nowrap; }
+        .aicc-after-error { color: rgb(var(--c-bad)) !important; background: rgb(var(--c-bad) / 0.14); border: 1px solid rgb(var(--c-bad) / 0.38); }
+        .aicc-after-warning { color: rgb(var(--c-warn)) !important; background: rgb(var(--c-warn) / 0.14); border: 1px solid rgb(var(--c-warn) / 0.38); }
+        .aicc-after-info { color: rgb(var(--c-cyan)) !important; background: rgb(var(--c-cyan) / 0.12); border: 1px solid rgb(var(--c-cyan) / 0.34); }
+        .aicc-after-hint { color: rgb(var(--c-ink-dim)) !important; background: rgb(var(--c-bg-elev2) / 0.65); border: 1px solid rgb(var(--c-line) / 0.8); }
+        .aicc-glyph-error { background: rgb(var(--c-bad)); width: 3px !important; margin-left: 3px; border-radius: 2px; }
+        .aicc-glyph-warning { background: rgb(var(--c-warn)); width: 3px !important; margin-left: 3px; border-radius: 2px; }
+        .aicc-glyph-info { background: rgb(var(--c-cyan)); width: 3px !important; margin-left: 3px; border-radius: 2px; }
+        .aicc-glyph-hint { background: rgb(var(--c-ink-mute)); width: 3px !important; margin-left: 3px; border-radius: 2px; }
       `}</style>
     </div>
   );

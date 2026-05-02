@@ -65,7 +65,7 @@ export function TopBar() {
     <header className="glass border-b border-line h-14 flex items-center px-4 gap-3 z-30">
       {/* Logo */}
       <div className="flex items-center gap-2 mr-2">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-cyan flex items-center justify-center shadow-glow">
+        <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-cyan flex items-center justify-center shadow-soft">
           <Sparkles size={18} className="text-bg" strokeWidth={2.5} />
         </div>
         <div className="hidden sm:block">
@@ -266,7 +266,7 @@ function ProblemMenu({
             exit={{ opacity: 0, y: -4, scale: 0.97 }}
             transition={{ duration: 0.12 }}
             role="menu"
-            className="absolute right-0 mt-1 w-64 z-50 rounded-xl border border-line bg-bg-elev shadow-2xl overflow-hidden"
+            className="absolute right-0 mt-1 w-64 z-50 rounded-md border border-line bg-bg-elev shadow-soft overflow-hidden"
           >
             {items.map((it) => {
               const Icon = it.icon;
@@ -299,7 +299,7 @@ function ProblemMenu({
                     size={15}
                     className={cn(
                       'shrink-0 mt-0.5',
-                      it.accent ? 'text-purple-400' : 'text-ink-dim',
+                      it.accent ? 'text-accent' : 'text-ink-dim',
                     )}
                   />
                   <div className="min-w-0 flex-1">

@@ -156,7 +156,7 @@ function ClusterBlock({
       className={cn(
         'rounded border p-1.5 transition',
         cluster.accent,
-        anyActive && 'shadow-[0_0_0_1px_rgba(74,222,128,0.4)]',
+        anyActive && 'shadow-[0_0_0_1px_rgb(var(--c-ok)_/_0.45)]',
       )}
     >
       <div className="flex items-baseline gap-2 px-1 mb-1">

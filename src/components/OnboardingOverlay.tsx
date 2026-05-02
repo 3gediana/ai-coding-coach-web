@@ -133,7 +133,7 @@ export function OnboardingOverlay() {
               top: analyzeRect.top - 6,
               width: analyzeRect.width + 12,
               height: analyzeRect.height + 12,
-              boxShadow: '0 0 0 3px rgb(var(--accent) / 0.6), 0 0 18px 4px rgb(var(--accent) / 0.4)',
+              boxShadow: '0 0 0 3px rgb(var(--c-accent) / 0.6), 0 0 18px 4px rgb(var(--c-accent) / 0.4)',
               animation: 'pulseGlow 1.6s ease-in-out infinite',
             }}
           />

@@ -1691,7 +1691,7 @@ function OllamaModeSwitch({
         >
           <span
             className={cn(
-              'absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-md transition-transform',
+              'absolute top-0.5 w-5 h-5 rounded-full bg-bg-card border border-line shadow-md transition-transform',
               enabled ? 'translate-x-6' : 'translate-x-0.5',
             )}
           />

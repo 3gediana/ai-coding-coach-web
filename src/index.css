@@ -358,6 +358,18 @@
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
+.aicc-toast {
+  background: rgb(var(--c-bg-card)) !important;
+  color: rgb(var(--c-ink)) !important;
+  border: 1px solid rgb(var(--c-line)) !important;
+  box-shadow: 0 6px 22px -8px rgb(0 0 0 / 0.45) !important;
+}
+.aicc-toast [data-title] {
+  color: rgb(var(--c-ink)) !important;
+}
+.aicc-toast [data-description] {
+  color: rgb(var(--c-ink-dim)) !important;
+}
 .md-body p {
   @apply my-1.5;
 }

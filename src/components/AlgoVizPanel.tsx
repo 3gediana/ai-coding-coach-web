@@ -14,7 +14,20 @@
 import * as React from 'react';
 import { useMemo, useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Loader2, Play, RefreshCw, AlertTriangle, Sparkles, X } from 'lucide-react';
+import {
+  Loader2,
+  Play,
+  RefreshCw,
+  AlertTriangle,
+  Sparkles,
+  X,
+  CheckCircle2,
+  Circle,
+  Film,
+  Layers3,
+  Radio,
+  Wand2,
+} from 'lucide-react';
 import { Player } from '@remotion/player';
 import * as Remotion from 'remotion';
 import { useStore } from '../lib/store';
@@ -34,6 +47,8 @@ const REMOTION_GLOBALS = {
 
 const STATUS_GLOBALS = { React };
 
+type AlgoVizSchema = NonNullable<NonNullable<Problem['algoViz']>['detectionSchema']>;
+
 export function AlgoVizPanel(): React.ReactElement {
   const activeProblemId = useStore((s) => s.activeProblemId);
   const problem = useStore((s) =>
@@ -51,10 +66,21 @@ export function AlgoVizPanel(): React.ReactElement {
 
   if (!problem) {
     return (
-      <div className="flex-1 flex items-center justify-center text-[11px] text-ink-mute px-4 text-center">
-        激活一道题后，这里会出现：
-        <br />
-        {showRealtimeStatus ? '左侧实时模块进度 + AC 后可播放的算法动画。' : 'AC 后可播放的算法动画。'}
+      <div className="flex-1 p-3 flex items-center justify-center">
+        <div className="w-full rounded-md border border-line bg-bg-card px-4 py-6 text-center shadow-soft">
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-2xl border border-accent/30 bg-accent/10 text-accent">
+            <Wand2 size={18} />
+          </div>
+          <div className="text-sm font-semibold text-ink">算法可视化</div>
+          <div className="mt-1 text-[11px] leading-relaxed text-ink-mute">
+            激活一道题后，这里会展示代码进度脚手架、模块亮灯和 AI 生成的算法动画。
+          </div>
+          <div className="mt-4 flex flex-wrap justify-center gap-1.5">
+            <span className="chip-accent">14 套模板</span>
+            <span className="chip">实时检测</span>
+            <span className="chip">Remotion 动画</span>
+          </div>
+        </div>
       </div>
     );
   }
@@ -127,6 +153,7 @@ export function AlgoVizPanel(): React.ReactElement {
             animationCode={animationCode}
             schema={schema}
             moduleStatus={moduleStatus}
+            detecting={showRealtimeStatus && detecting}
             isAnimGenerating={
               status === 'status-ready' || status === 'generating-anim' || status === 'generating-status'
             }
@@ -243,6 +270,24 @@ function IdleOrFailedView({
           请先在右上角齿轮里配置 AI 服务（或在「算法可视化模型」里单独配 DeepSeek）
         </div>
       )}
+      <div className="rounded-md border border-line bg-bg-card px-3 py-3 shadow-soft">
+        <div className="flex items-start gap-3">
+          <div className="h-9 w-9 rounded-xl border border-accent/30 bg-accent/10 flex items-center justify-center text-accent">
+            <Film size={17} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-semibold text-ink">一键生成可讲解动画</div>
+            <div className="mt-1 text-[10.5px] leading-relaxed text-ink-mute">
+              先抽取算法轨迹，再生成实时模块脚手架，最后合成可播放的 Remotion 动画。
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <span className="chip-accent">14 套模板路由</span>
+              <span className="chip">模块亮灯</span>
+              <span className="chip">后台生成</span>
+            </div>
+          </div>
+        </div>
+      </div>
       <div className="space-y-2">
         <button
           onClick={onGenerateFull}
@@ -288,10 +333,163 @@ function GeneratingView({
   subtitle?: string;
 }): React.ReactElement {
   return (
-    <div className="flex flex-col items-center justify-center py-12 px-4 gap-3 text-[11px] text-ink-mute">
-      <Loader2 size={20} className="animate-spin text-accent" />
-      <div className="text-ink font-medium">{title}</div>
-      {subtitle && <div>{subtitle}</div>}
+    <div className="px-4 py-8">
+      <div className="rounded-md border border-line bg-bg-card p-4 text-center shadow-soft">
+        <div className="relative mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl border border-accent/35 bg-accent/10 text-accent">
+          <Loader2 size={20} className="animate-spin" />
+        </div>
+        <div className="relative text-sm font-semibold text-ink">{title}</div>
+        {subtitle && <div className="relative mt-1 text-[11px] text-ink-mute">{subtitle}</div>}
+        <div className="relative mt-4 grid grid-cols-3 gap-1.5 text-[10px]">
+          <div className="rounded-lg border border-accent/35 bg-accent/10 px-2 py-1.5 text-accent">
+            Trace
+          </div>
+          <div className="rounded-lg border border-cyan/35 bg-cyan/10 px-2 py-1.5 text-cyan">
+            Status
+          </div>
+          <div className="rounded-lg border border-line bg-bg-elev/60 px-2 py-1.5 text-ink-dim">
+            Animation
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AlgoVizSummaryCard({
+  problemTitle,
+  algoName,
+  completedCount,
+  totalCount,
+  progressPercent,
+  detecting,
+  isAnimGenerating,
+  hasAnimation,
+  showRealtimeStatus,
+}: {
+  problemTitle: string;
+  algoName?: string;
+  completedCount: number;
+  totalCount: number;
+  progressPercent: number;
+  detecting: boolean;
+  isAnimGenerating: boolean;
+  hasAnimation: boolean;
+  showRealtimeStatus: boolean;
+}): React.ReactElement {
+  const statusLabel = hasAnimation
+    ? '动画就绪'
+    : isAnimGenerating
+      ? '制作动画中'
+      : showRealtimeStatus
+        ? '脚手架同步中'
+        : '动画模式';
+  return (
+    <div className="rounded-md border border-line bg-bg-card shadow-soft">
+      <div className="relative p-3">
+        <div className="flex items-start gap-3">
+          <div className="h-10 w-10 rounded-2xl border border-accent/35 bg-accent/10 flex items-center justify-center text-accent shadow-soft">
+            <Wand2 size={18} />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-ink-mute">
+              <Sparkles size={10} className="text-accent" />
+              算法可视化
+            </div>
+            <div className="mt-0.5 truncate text-sm font-semibold text-ink" title={problemTitle}>
+              {problemTitle}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5">
+              {algoName && <span className="chip-accent font-mono">{algoName}</span>}
+              <span className={hasAnimation ? 'chip-ok' : isAnimGenerating ? 'chip-warn' : 'chip'}>
+                <Film size={10} />
+                {statusLabel}
+              </span>
+              {showRealtimeStatus && (
+                <span className={detecting ? 'chip-accent' : 'chip'}>
+                  <Radio size={10} className={detecting ? 'animate-pulse' : ''} />
+                  {detecting ? '检测中' : '实时检测'}
+                </span>
+              )}
+            </div>
+          </div>
+          {showRealtimeStatus && totalCount > 0 && (
+            <div className="text-right shrink-0">
+              <div className="font-mono text-lg font-semibold text-accent">{progressPercent}%</div>
+              <div className="text-[10px] text-ink-mute">
+                {completedCount}/{totalCount} 模块
+              </div>
+            </div>
+          )}
+        </div>
+        {showRealtimeStatus && totalCount > 0 && (
+          <div className="mt-3 h-1.5 rounded-full bg-bg-elev2/70 overflow-hidden border border-line/40">
+            <div
+              className="h-full rounded-full bg-accent transition-all duration-500"
+              style={{ width: `${progressPercent}%` }}
+            />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ModuleProgressRail({
+  schema,
+  moduleStatus,
+  detecting,
+}: {
+  schema: AlgoVizSchema;
+  moduleStatus: Record<string, boolean> | undefined;
+  detecting: boolean;
+}): React.ReactElement {
+  return (
+    <div className="rounded-xl border border-line/60 bg-bg-card/80 shadow-soft overflow-hidden">
+      <div className="px-3 py-1.5 flex items-center gap-2 border-b border-line/50 bg-bg-elev/35 text-[11px]">
+        <Layers3 size={12} className="text-accent" />
+        <span className="font-medium text-ink">代码进度脚手架</span>
+        <span className="text-ink-mute">按你写代码的模块顺序点亮</span>
+        <div className="flex-1" />
+        {detecting && <Loader2 size={11} className="animate-spin text-accent" />}
+      </div>
+      <div className="p-2 grid gap-1.5">
+        {schema.modules.map((m, i) => {
+          const done = !!moduleStatus?.[m.id];
+          return (
+            <div
+              key={m.id}
+              className={[
+                'relative overflow-hidden rounded-lg border px-2.5 py-2 transition',
+                done
+                  ? 'border-ok/45 bg-ok/10 text-ink'
+                  : 'border-line/70 bg-bg-elev/35 text-ink-dim',
+              ].join(' ')}
+            >
+              <div className="flex items-start gap-2">
+                <div
+                  className={[
+                    'mt-0.5 h-5 w-5 rounded-full border flex items-center justify-center shrink-0',
+                    done ? 'border-ok bg-ok/15 text-ok' : 'border-line-strong/60 text-ink-mute',
+                  ].join(' ')}
+                >
+                  {done ? <CheckCircle2 size={13} /> : <Circle size={12} />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-mono text-[10px] text-ink-mute">M{i + 1}</span>
+                    <span className={done ? 'text-ok' : 'text-ink'}>{m.label}</span>
+                  </div>
+                  <div className="mt-0.5 text-[10px] text-ink-mute truncate" title={m.description}>
+                    {m.description}
+                  </div>
+                </div>
+                <span className={done ? 'chip-ok' : 'chip'}>{done ? '已点亮' : '待出现'}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -302,6 +500,7 @@ function ReadyView({
   animationCode,
   schema,
   moduleStatus,
+  detecting,
   isAnimGenerating,
   onRegenerateAnim,
   showRealtimeStatus,
@@ -311,6 +510,7 @@ function ReadyView({
   animationCode: string | null;
   schema: NonNullable<Problem['algoViz']>['detectionSchema'];
   moduleStatus: Record<string, boolean> | undefined;
+  detecting: boolean;
   isAnimGenerating: boolean;
   onRegenerateAnim: () => void;
   showRealtimeStatus: boolean;
@@ -325,26 +525,56 @@ function ReadyView({
     });
     return out;
   }, [schema, moduleStatus]);
+  const modules = schema?.modules ?? [];
+  const completedCount = modules.filter((m) => !!moduleStatus?.[m.id]).length;
+  const progressPercent = modules.length > 0 ? Math.round((completedCount / modules.length) * 100) : 0;
 
   return (
     <div className="px-2 py-2 space-y-3">
-      {/* Status 实时区：DeepSeek 生成的"算法视觉骨架"（数组/表/节点等真实部件，不是文字卡片）。
-          不加任何容器边框/背景，让组件自带的 transparent / 米黄配色与主面板融合。 */}
-      {showRealtimeStatus && statusCode ? (
-        <LLMComponentRenderer
-          code={statusCode}
-          globals={STATUS_GLOBALS}
-          componentProps={componentProps}
+      <AlgoVizSummaryCard
+        problemTitle={problem.title}
+        algoName={schema?.algoName}
+        completedCount={completedCount}
+        totalCount={modules.length}
+        progressPercent={progressPercent}
+        detecting={detecting}
+        isAnimGenerating={isAnimGenerating}
+        hasAnimation={!!animationCode}
+        showRealtimeStatus={showRealtimeStatus}
+      />
+
+      {showRealtimeStatus && schema && (
+        <ModuleProgressRail
+          schema={schema}
+          moduleStatus={moduleStatus}
+          detecting={detecting}
         />
+      )}
+
+      {showRealtimeStatus && statusCode ? (
+        <div className="relative overflow-hidden rounded-md border border-line/60 bg-bg-card shadow-soft">
+          <div className="relative px-3 py-1.5 flex items-center gap-2 border-b border-line/50 bg-bg-elev/35 text-[11px]">
+            <Layers3 size={12} className="text-accent" />
+            <span className="font-medium text-ink">实时算法脚手架</span>
+            <span className="text-ink-mute">代码模块点亮后，下方视觉骨架会同步变化</span>
+          </div>
+          <div className="relative p-2">
+            <LLMComponentRenderer
+              code={statusCode}
+              globals={STATUS_GLOBALS}
+              componentProps={componentProps}
+            />
+          </div>
+        </div>
       ) : showRealtimeStatus ? (
         <div className="text-[11px] text-ink-mute px-2">（老题模式，没有实时 Status；可直接播放动画）</div>
       ) : null}
 
-      {/* Animation 区：保留一个轻边框分隔，因为 Player 视觉本身就是一个独立动画画布 */}
-      <div className="border border-line/60 rounded-lg overflow-hidden">
-        <div className="px-3 py-1.5 bg-bg-elev/40 flex items-center gap-2 text-[11px]">
-          <Play size={11} className="text-accent" />
+      <div className="border border-line/60 rounded-md overflow-hidden bg-bg-card shadow-soft">
+        <div className="px-3 py-2 flex items-center gap-2 text-[11px] bg-bg-elev/40">
+          <Film size={12} className="text-accent" />
           <span className="text-ink font-medium">算法动画</span>
+          <span className="chip-accent">1280×720</span>
           <div className="flex-1" />
           <button
             onClick={onRegenerateAnim}
@@ -435,36 +665,46 @@ function AnimationPlayer({
   return (
     <>
       {/* panel 内：仅一个播放按钮（不再内嵌 Player，避免占据 panel 空间） */}
-      <div className="flex flex-col items-center justify-center py-6 gap-2">
+      <div className="flex flex-col items-center justify-center py-8 gap-3 bg-bg-card">
+        <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl border border-accent/35 bg-accent/10 text-accent shadow-soft">
+          <Play size={24} />
+        </div>
         <button
           onClick={() => setIsOpen(true)}
-          className="btn-primary"
+          className="btn-primary relative"
           title="点击展开播放器（弹出大窗口）"
         >
           <Play size={13} />
-          ▶ 播放动画
+          播放动画
         </button>
-        <div className="text-[10px] text-ink-mute">点击在大窗中播放 · 1280×720 · 10 秒</div>
+        <div className="relative flex flex-wrap justify-center gap-1.5 text-[10px] text-ink-mute">
+          <span className="chip">Remotion Player</span>
+          <span className="chip">自动循环</span>
+          <span className="chip">10 秒讲解动画</span>
+        </div>
       </div>
 
       {/* 模态框：fixed 居中 + 米黄半透明遮罩 + ~75% 屏幕 + 透明 Player 背景 */}
       {isOpen &&
         createPortal(
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-md"
-            style={{ background: 'rgba(244, 234, 205, 0.85)' }}
+            className="fixed inset-0 z-50 flex items-center justify-center modal-overlay"
             onClick={(e) => {
               if (e.target === e.currentTarget) setIsOpen(false);
             }}
           >
             <div
-              className="relative shadow-2xl rounded-lg overflow-hidden border border-line/40"
+              className="relative shadow-soft rounded-lg overflow-hidden border border-line bg-bg-card"
               style={{
                 width: 'min(75vw, calc(75vh * 16/9))',
                 aspectRatio: '16/9',
-                background: 'transparent',
               }}
             >
+              <div className="absolute inset-x-0 top-0 z-10 h-9 px-3 flex items-center gap-2 text-[11px] text-ink bg-bg-card/95 border-b border-line/40">
+                <Film size={12} className="text-accent" />
+                <span className="font-medium">算法动画</span>
+                <span className="text-ink-mute">1280×720 · loop</span>
+              </div>
               <button
                 onClick={() => setIsOpen(false)}
                 className="absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full bg-bg shadow-md border border-line text-ink-mute hover:text-ink hover:border-ink-mute transition flex items-center justify-center"

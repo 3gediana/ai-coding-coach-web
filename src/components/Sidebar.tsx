@@ -105,7 +105,7 @@ export function Sidebar() {
               className={cn(
                 'w-12 py-1.5 rounded-lg flex flex-col items-center justify-center gap-0.5 relative transition-all',
                 active
-                  ? 'bg-accent/20 text-accent-glow shadow-glow'
+                  ? 'bg-accent/15 text-accent border border-accent/35 shadow-soft'
                   : 'text-ink-dim hover:text-ink hover:bg-bg-elev2',
               )}
               title={it.label}
