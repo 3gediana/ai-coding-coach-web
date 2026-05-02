@@ -2,6 +2,7 @@
  * 主题管理：把 data-theme 挂到 <html> 上，CSS 变量自动生效。
  * 持久化到 localStorage。
  */
+import { safeGetItem, safeSetItem } from './safeLocalStorage';
 
 export type Theme = 'parchment' | 'vscode-dark' | 'aicc-classic';
 
@@ -14,14 +15,14 @@ export const THEMES: Array<{ id: Theme; label: string; desc: string }> = [
 const KEY = 'aicc.theme.v1';
 
 export function getStoredTheme(): Theme {
-  const t = localStorage.getItem(KEY);
+  const t = safeGetItem(KEY);
   if (t === 'parchment' || t === 'vscode-dark' || t === 'aicc-classic') return t;
   return 'parchment';
 }
 
 export function applyTheme(t: Theme) {
   document.documentElement.setAttribute('data-theme', t);
-  localStorage.setItem(KEY, t);
+  safeSetItem(KEY, t);
 }
 
 /** 启动时调用，把存的主题应用到 <html> */

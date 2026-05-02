@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { cn } from '../lib/cn';
 
 /**
@@ -24,6 +24,9 @@ export function ResizeHandle({
 }) {
   const dragRef = useRef<{ startX: number; startW: number } | null>(null);
   const isDraggingRef = useRef(false);
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => () => cleanupRef.current?.(), []);
 
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -46,12 +49,14 @@ export function ResizeHandle({
       document.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      cleanupRef.current = null;
     };
 
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
+    cleanupRef.current = onUp;
   };
 
   return (

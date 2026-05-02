@@ -3,15 +3,19 @@ import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, C
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { getArea } from '../core/taxonomy';
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, startTransition, useMemo, useState } from 'react';
 import { ResizeHandle } from './ResizeHandle';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
+import { ErrorBoundary } from './ErrorBoundary';
 
 const Dashboard = lazy(() => import('./Dashboard').then((m) => ({ default: m.Dashboard })));
 
 type MistakeSort = 'recent' | 'review-due' | 'unreviewed';
 
 const REVIEW_DAYS_THRESHOLD = 3;
+const PROBLEM_RENDER_LIMIT = 250;
+const MISTAKE_RENDER_LIMIT = 150;
+const SESSION_RENDER_LIMIT = 30;
 
 export function Sidebar() {
   const tab = useStore((s) => s.sidebarTab);
@@ -31,6 +35,9 @@ export function Sidebar() {
   const [mistakeSort, setMistakeSort] = useState<MistakeSort>('recent');
   const [showArchived, setShowArchived] = useState(false);
   const [panelWidth, setPanelWidth] = usePersistedWidth('aicc.layout.sidebarWidth', 320, 240, 700);
+  const setSidebarTab = (next: typeof tab) => {
+    startTransition(() => setTab(next));
+  };
 
   // 题目分两组：未归档 / 已归档；归档列表按 archivedAt 倒序（最近归档在最前）
   const { activeProblems, archivedProblems } = useMemo(() => {
@@ -84,6 +91,12 @@ export function Sidebar() {
     }
     return arr;
   }, [mistakes, mistakeSort]);
+  const visibleProblems = displayedProblems.slice(0, PROBLEM_RENDER_LIMIT);
+  const hiddenProblemCount = Math.max(0, displayedProblems.length - visibleProblems.length);
+  const visibleMistakes = sortedMistakes.slice(0, MISTAKE_RENDER_LIMIT);
+  const hiddenMistakeCount = Math.max(0, sortedMistakes.length - visibleMistakes.length);
+  const visibleSessions = sessions.slice(0, SESSION_RENDER_LIMIT);
+  const hiddenSessionCount = Math.max(0, sessions.length - visibleSessions.length);
 
   const items = [
     { id: 'problems' as const, icon: Library, label: '题目库', shortLabel: '题库', count: activeProblems.length },
@@ -101,7 +114,7 @@ export function Sidebar() {
           return (
             <button
               key={it.id}
-              onClick={() => setTab(active ? null : it.id)}
+              onClick={() => setSidebarTab(active ? null : it.id)}
               className={cn(
                 'w-12 py-1.5 rounded-lg flex flex-col items-center justify-center gap-0.5 relative transition-all',
                 active
@@ -145,7 +158,7 @@ export function Sidebar() {
                 <span className="font-semibold text-sm">
                   {items.find((i) => i.id === tab)?.label}
                 </span>
-                <button onClick={() => setTab(null)} className="btn-ghost p-1">
+                <button onClick={() => setSidebarTab(null)} className="btn-ghost p-1">
                   <ChevronLeft size={16} />
                 </button>
               </div>
@@ -216,7 +229,7 @@ export function Sidebar() {
                         </span>
                       </li>
                     )}
-                    {displayedProblems.map((p) => {
+                    {visibleProblems.map((p) => {
                       const isArchived = !!p.archivedAt;
                       return (
                         <li
@@ -293,6 +306,11 @@ export function Sidebar() {
                         </li>
                       );
                     })}
+                    {hiddenProblemCount > 0 && (
+                      <li className="px-3 py-2 text-[11px] text-ink-mute text-center">
+                        已显示前 {visibleProblems.length} 条，剩余 {hiddenProblemCount} 条请用归档/题库搜索定位
+                      </li>
+                    )}
                   </ul>
                 )}
 
@@ -365,7 +383,7 @@ export function Sidebar() {
                         </li>
                       </>
                     )}
-                    {sortedMistakes.map((m) => (
+                    {visibleMistakes.map((m) => (
                       <li
                         key={m.id}
                         className="glass-card p-3 group"
@@ -474,13 +492,18 @@ export function Sidebar() {
                         </div>
                       </li>
                     ))}
+                    {hiddenMistakeCount > 0 && (
+                      <li className="px-3 py-2 text-[11px] text-ink-mute text-center">
+                        已显示前 {visibleMistakes.length} 条错题，剩余 {hiddenMistakeCount} 条请调整排序后查看
+                      </li>
+                    )}
                   </ul>
                 )}
 
                 {tab === 'sessions' && (
                   <ul className="space-y-1">
                     {sessions.length === 0 && <Empty text="尚未记录会话" />}
-                    {sessions.slice(0, 30).map((s) => {
+                    {visibleSessions.map((s) => {
                       const minutes = Math.round(s.effectiveMs / 60_000);
                       const outcomeMeta =
                         s.outcome === 'pass'
@@ -513,10 +536,21 @@ export function Sidebar() {
                         </li>
                       );
                     })}
+                    {hiddenSessionCount > 0 && (
+                      <li className="px-3 py-2 text-[11px] text-ink-mute text-center">
+                        已显示最近 {visibleSessions.length} 条记录，剩余 {hiddenSessionCount} 条暂不渲染以保持流畅
+                      </li>
+                    )}
                   </ul>
                 )}
 
-                {tab === 'dashboard' && <Dashboard />}
+                {tab === 'dashboard' && (
+                  <ErrorBoundary title="学习空间面板异常" compact>
+                    <Suspense fallback={<div className="p-3 text-xs text-ink-mute">加载学习空间…</div>}>
+                      <Dashboard />
+                    </Suspense>
+                  </ErrorBoundary>
+                )}
               </div>
             </div>
           </motion.div>

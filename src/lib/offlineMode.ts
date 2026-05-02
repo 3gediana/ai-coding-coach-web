@@ -11,6 +11,7 @@
  *   - 'online'          正常
  */
 import { useEffect, useSyncExternalStore } from 'react';
+import { safeGetItem, safeRemoveItem, safeSetItem } from './safeLocalStorage';
 
 export type OnlineStatus = 'online' | 'offline' | 'forced-offline';
 
@@ -22,7 +23,7 @@ let state: OnlineStatus = computeInitial();
 
 function computeInitial(): OnlineStatus {
   if (typeof navigator === 'undefined') return 'online';
-  if (typeof localStorage !== 'undefined' && localStorage.getItem(FORCED_OFFLINE_KEY) === 'on') {
+  if (safeGetItem(FORCED_OFFLINE_KEY) === 'on') {
     return 'forced-offline';
   }
   return navigator.onLine ? 'online' : 'offline';
@@ -54,13 +55,13 @@ export function setForcedOffline(forced: boolean) {
   if (forced) {
     state = 'forced-offline';
     try {
-      localStorage.setItem(FORCED_OFFLINE_KEY, 'on');
+      safeSetItem(FORCED_OFFLINE_KEY, 'on');
     } catch {
       /* ignore */
     }
   } else {
     try {
-      localStorage.removeItem(FORCED_OFFLINE_KEY);
+      safeRemoveItem(FORCED_OFFLINE_KEY);
     } catch {
       /* ignore */
     }

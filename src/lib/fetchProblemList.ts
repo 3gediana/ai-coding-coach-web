@@ -12,6 +12,7 @@
  *
  * 客户端调 fetch('/problem-fetch?url=...') 走 vite dev middleware 代理（绕 CORS）
  */
+import { safeGetItem, safeRemoveItem, safeSetItem } from './safeLocalStorage';
 
 export type ListItem = {
   pid: string;
@@ -219,7 +220,7 @@ const CACHE_KEY = (site: ListSite) => `aicc.problemList.${site}.v1`;
 
 export function loadListCache(site: ListSite): CacheEntry | null {
   try {
-    const raw = localStorage.getItem(CACHE_KEY(site));
+    const raw = safeGetItem(CACHE_KEY(site));
     if (!raw) return null;
     return JSON.parse(raw);
   } catch {
@@ -229,7 +230,7 @@ export function loadListCache(site: ListSite): CacheEntry | null {
 
 export function saveListCache(site: ListSite, entry: CacheEntry): void {
   try {
-    localStorage.setItem(CACHE_KEY(site), JSON.stringify(entry));
+    safeSetItem(CACHE_KEY(site), JSON.stringify(entry));
   } catch (e) {
     console.warn('list cache save failed', e);
   }
@@ -257,7 +258,7 @@ export function mergeListPage(site: ListSite, page: ListPage): CacheEntry {
 }
 
 export function clearListCache(site: ListSite): void {
-  localStorage.removeItem(CACHE_KEY(site));
+  safeRemoveItem(CACHE_KEY(site));
 }
 
 /** 缓存里的全部题目按 pid 排序输出 */

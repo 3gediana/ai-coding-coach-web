@@ -13,6 +13,7 @@
  *   - 全部数据本地，不依赖网络，不依赖油猴
  */
 import { storage } from './storage';
+import { safeSetItem } from './safeLocalStorage';
 import type {
   CodeFile,
   Mistake,
@@ -412,5 +413,5 @@ export async function loadDemoSeed(): Promise<void> {
     await storage.appendEvent(e);
   }
   // 标记 onboarding 已完成，避免覆盖 demo 数据
-  localStorage.setItem('aicc.onboarding.v1', 'done');
+  safeSetItem('aicc.onboarding.v1', 'done');
 }

@@ -5,6 +5,8 @@
  * 之后会缓存在浏览器，第二次秒级。
  */
 
+import { safeGetItem, safeRemoveItem, safeSetItem } from './safeLocalStorage';
+
 const PYODIDE_VERSION = '0.26.4';
 const PYODIDE_CDN = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
@@ -122,9 +124,11 @@ export async function runPython(
  * 用户可在设置里切换 endpoint（私有 sandbox），或完全禁用。
  */
 
-/** 用户可配置的 C++ 远端编译 endpoint，默认 wandbox */
-const DEFAULT_CPP_ENDPOINT =
-  localStorage.getItem('aicc.cppEndpoint.v1') || 'https://wandbox.org/api/compile.json';
+const DEFAULT_CPP_ENDPOINT = 'https://wandbox.org/api/compile.json';
+
+function resolveCppEndpoint(): string {
+  return safeGetItem('aicc.cppEndpoint.v1') || DEFAULT_CPP_ENDPOINT;
+}
 
 interface WandboxResponse {
   status?: string;
@@ -159,7 +163,7 @@ export async function runCpp(
   opts?.onProgress?.('compiling');
 
   try {
-    const resp = await fetch(DEFAULT_CPP_ENDPOINT, {
+    const resp = await fetch(resolveCppEndpoint(), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -220,13 +224,13 @@ export function isRuntimeSupported(language: string): boolean {
 }
 
 export function getCppEndpoint(): string {
-  return DEFAULT_CPP_ENDPOINT;
+  return resolveCppEndpoint();
 }
 
 export function setCppEndpoint(url: string) {
   if (url.trim()) {
-    localStorage.setItem('aicc.cppEndpoint.v1', url.trim());
+    safeSetItem('aicc.cppEndpoint.v1', url.trim());
   } else {
-    localStorage.removeItem('aicc.cppEndpoint.v1');
+    safeRemoveItem('aicc.cppEndpoint.v1');
   }
 }

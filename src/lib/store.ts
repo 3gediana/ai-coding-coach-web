@@ -79,6 +79,7 @@ import {
   resolveQualityModel,
 } from './modelRegistry';
 import bankData from '../data/problemBank.json';
+import { safeGetItem, safeJsonParse, safeRemoveItem, safeSetItem } from './safeLocalStorage';
 
 const PROBLEM_BANK = bankData as BankProblem[];
 
@@ -1008,7 +1009,7 @@ function hasDeepSeekEnv(cfg: Partial<AIConfig>): boolean {
 const initialAIConfig: AIConfig = (() => {
   const envCfg = readEnvAIConfig();
   try {
-    const raw = localStorage.getItem(LS_AI_CFG);
+    const raw = safeGetItem(LS_AI_CFG);
     if (raw) {
       const parsed = JSON.parse(raw);
       const forceDeepSeek = hasDeepSeekEnv(envCfg);
@@ -1038,7 +1039,7 @@ const initialAIConfig: AIConfig = (() => {
   const merged: AIConfig = withDefaultCloudModels({ ...DEFAULT_AI_CONFIG, ...envCfg });
   try {
     if (envCfg.apiKey) {
-      localStorage.setItem(LS_AI_CFG, JSON.stringify(merged));
+      safeSetItem(LS_AI_CFG, JSON.stringify(merged));
     }
   } catch {
     /* ignore */
@@ -1047,13 +1048,15 @@ const initialAIConfig: AIConfig = (() => {
 })();
 
 const initialDefaultLang: Lang = ((): Lang => {
-  const v = localStorage.getItem(LS_DEFAULT_LANG) as Lang | null;
+  const v = safeGetItem(LS_DEFAULT_LANG) as Lang | null;
   if (v === 'cpp' || v === 'c' || v === 'python') return v;
   return 'cpp';
 })();
 
 const sessionId = nanoid();
 const problemStartedAtById = new Map<string, number>();
+const fileSaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const FILE_SAVE_DEBOUNCE_MS = 600;
 
 // ============== 默认模板 ==============
 
@@ -1352,9 +1355,9 @@ export const useStore = create<State>((set, get) => {
     clearAgentTrace: () => set({ agentTrace: [] }),
 
     sidebarTab: null,
-    multiFileMode: localStorage.getItem('aicc.multiFile.v1') === 'on',
+    multiFileMode: safeGetItem('aicc.multiFile.v1') === 'on',
     setMultiFileMode: (v: boolean) => {
-      localStorage.setItem('aicc.multiFile.v1', v ? 'on' : 'off');
+      safeSetItem('aicc.multiFile.v1', v ? 'on' : 'off');
       set({ multiFileMode: v });
     },
     settingsOpen: false,
@@ -1365,31 +1368,31 @@ export const useStore = create<State>((set, get) => {
     problemBrowserOpen: false,
     cmdPaletteOpen: false,
     submitModalOpen: false,
-    runtimePaneOpen: localStorage.getItem('aicc.runtimePane.v1') === 'on',
+    runtimePaneOpen: safeGetItem('aicc.runtimePane.v1') === 'on',
 
     lastEditAt: Date.now(),
     lastHintAt: 0,
     currentHint: null,
     // 卡住引导默认 OFF（学生想认真思考时不被打扰；用 TopBar 的「求助」按钮主动召唤）
-    stuckHintEnabled: localStorage.getItem('aicc.stuckHint.v1') === 'on',
+    stuckHintEnabled: safeGetItem('aicc.stuckHint.v1') === 'on',
     askPrefill: null,
     coachDraft: null,
     feedbackTab: 'analyze',
     // Onboarding：localStorage 已标记完成 → idle；否则 wait-analyze 状态会在 App 启动时由触发器决定是否进 inject
-    onboardingStep: localStorage.getItem('aicc.onboarding.v1') === 'done' ? 'idle' : 'idle',
+    onboardingStep: safeGetItem('aicc.onboarding.v1') === 'done' ? 'idle' : 'idle',
     learningOverview: null,
     learningCards: [],
-    learningCardDismissedDate: localStorage.getItem('aicc.learning.dismissed.v1'),
+    learningCardDismissedDate: safeGetItem('aicc.learning.dismissed.v1'),
     diffSelection: [],
     lastRunByScope: {},
     overviewDismissedProblemIds: [],
     pendingAcReview: null,
     failureStatsByProblem: {},
-    dailyReviewDismissedDate: localStorage.getItem('aicc.dailyReview.dismissed.v1'),
+    dailyReviewDismissedDate: safeGetItem('aicc.dailyReview.dismissed.v1'),
     dailyPlan: ((): DailyPlan | null => {
       // 启动时从 localStorage 恢复今日 plan（只恢复同日的，跨天作废）
       try {
-        const raw = localStorage.getItem('aicc.dailyPlan.v1');
+        const raw = safeGetItem('aicc.dailyPlan.v1');
         if (!raw) return null;
         const parsed = JSON.parse(raw) as DailyPlan;
         if (parsed?.date !== today()) return null;
@@ -1402,14 +1405,14 @@ export const useStore = create<State>((set, get) => {
 
     // Coach 主动嗅探：A 默认 ON / C 默认 ON / B 默认 OFF（最慎重）
     coachHintsByScope: {},
-    diagnoseOnFailEnabled: localStorage.getItem('aicc.coach.diagnoseOnFail.v1') !== 'off',
-    constraintSanityEnabled: localStorage.getItem('aicc.coach.constraintSanity.v1') !== 'off',
-    intentSniffEnabled: localStorage.getItem('aicc.coach.intentSniff.v1') === 'on',
+    diagnoseOnFailEnabled: safeGetItem('aicc.coach.diagnoseOnFail.v1') !== 'off',
+    constraintSanityEnabled: safeGetItem('aicc.coach.constraintSanity.v1') !== 'off',
+    intentSniffEnabled: safeGetItem('aicc.coach.intentSniff.v1') === 'on',
 
     setAIConfig: (cfg) => {
       cfg = withDefaultCloudModels(cfg);
       try {
-        localStorage.setItem(LS_AI_CFG, JSON.stringify(cfg));
+        safeSetItem(LS_AI_CFG, JSON.stringify(cfg));
       } catch {
         /* ignore */
       }
@@ -1715,7 +1718,7 @@ export const useStore = create<State>((set, get) => {
     },
 
     setDefaultLang: (l) => {
-      localStorage.setItem(LS_DEFAULT_LANG, l);
+      safeSetItem(LS_DEFAULT_LANG, l);
       set({ defaultLang: l });
     },
 
@@ -1883,8 +1886,22 @@ export const useStore = create<State>((set, get) => {
       const file = (st.filesByScope[scopeKey] ?? []).find((f) => f.id === fileId);
       if (!file) return;
       const updated = { ...file, content, updatedAt: Date.now() };
-      // 同步到 IDB（节流由调用者管理；这里直接写）
-      void storage.saveFile(updated);
+      const previousSaveTimer = fileSaveTimers.get(fileId);
+      if (previousSaveTimer) clearTimeout(previousSaveTimer);
+      fileSaveTimers.set(
+        fileId,
+        setTimeout(() => {
+          fileSaveTimers.delete(fileId);
+          const latest = get();
+          const latestScope = findScopeOfFile(latest, fileId);
+          const latestFile = latestScope
+            ? (latest.filesByScope[latestScope] ?? []).find((f) => f.id === fileId)
+            : null;
+          if (latestFile) {
+            void storage.saveFile(latestFile);
+          }
+        }, FILE_SAVE_DEBOUNCE_MS),
+      );
       set((s) => ({
         filesByScope: {
           ...s.filesByScope,
@@ -2190,15 +2207,15 @@ export const useStore = create<State>((set, get) => {
       }),
 
     setDiagnoseOnFailEnabled: (v) => {
-      localStorage.setItem('aicc.coach.diagnoseOnFail.v1', v ? 'on' : 'off');
+      safeSetItem('aicc.coach.diagnoseOnFail.v1', v ? 'on' : 'off');
       set({ diagnoseOnFailEnabled: v });
     },
     setConstraintSanityEnabled: (v) => {
-      localStorage.setItem('aicc.coach.constraintSanity.v1', v ? 'on' : 'off');
+      safeSetItem('aicc.coach.constraintSanity.v1', v ? 'on' : 'off');
       set({ constraintSanityEnabled: v });
     },
     setIntentSniffEnabled: (v) => {
-      localStorage.setItem('aicc.coach.intentSniff.v1', v ? 'on' : 'off');
+      safeSetItem('aicc.coach.intentSniff.v1', v ? 'on' : 'off');
       set({ intentSniffEnabled: v });
     },
 
@@ -3642,14 +3659,14 @@ export const useStore = create<State>((set, get) => {
     setCmdPaletteOpen: (v) => set({ cmdPaletteOpen: v }),
     setSubmitModalOpen: (v) => set({ submitModalOpen: v }),
     setRuntimePaneOpen: (v) => {
-      localStorage.setItem('aicc.runtimePane.v1', v ? 'on' : 'off');
+      safeSetItem('aicc.runtimePane.v1', v ? 'on' : 'off');
       set({ runtimePaneOpen: v });
     },
 
     // ───── 卡住检测 ─────
     markEdit: () => set({ lastEditAt: Date.now() }),
     setStuckHintEnabled: (v) => {
-      localStorage.setItem('aicc.stuckHint.v1', v ? 'on' : 'off');
+      safeSetItem('aicc.stuckHint.v1', v ? 'on' : 'off');
       set({ stuckHintEnabled: v });
     },
     dismissHint: () => set({ currentHint: null }),
@@ -3751,7 +3768,7 @@ int main() {
     advanceOnboarding: (to) => set({ onboardingStep: to }),
 
     finishOnboarding: () => {
-      localStorage.setItem('aicc.onboarding.v1', 'done');
+      safeSetItem('aicc.onboarding.v1', 'done');
       set({ onboardingStep: 'idle' });
     },
 
@@ -3769,13 +3786,13 @@ int main() {
 
     dismissLearningCard: () => {
       const t = today();
-      localStorage.setItem('aicc.learning.dismissed.v1', t);
+      safeSetItem('aicc.learning.dismissed.v1', t);
       set({ learningCardDismissedDate: t });
     },
 
     dismissDailyReview: () => {
       const t = today();
-      localStorage.setItem('aicc.dailyReview.dismissed.v1', t);
+      safeSetItem('aicc.dailyReview.dismissed.v1', t);
       set({ dailyReviewDismissedDate: t });
     },
 
@@ -3945,7 +3962,7 @@ int main() {
           completedStepIndices: [],
         };
         try {
-          localStorage.setItem('aicc.dailyPlan.v1', JSON.stringify(plan));
+          safeSetItem('aicc.dailyPlan.v1', JSON.stringify(plan));
         } catch {
           /* ignore quota */
         }
@@ -3976,7 +3993,7 @@ int main() {
           acceptedAt: Date.now(),
         };
         try {
-          localStorage.setItem('aicc.dailyPlan.v1', JSON.stringify(next));
+          safeSetItem('aicc.dailyPlan.v1', JSON.stringify(next));
         } catch {
           /* ignore */
         }
@@ -3988,7 +4005,7 @@ int main() {
         if (!s.dailyPlan) return s;
         const next: DailyPlan = { ...s.dailyPlan, status: 'declined' };
         try {
-          localStorage.setItem('aicc.dailyPlan.v1', JSON.stringify(next));
+          safeSetItem('aicc.dailyPlan.v1', JSON.stringify(next));
         } catch {
           /* ignore */
         }
@@ -4006,7 +4023,7 @@ int main() {
           completedStepIndices: nextIdx,
         };
         try {
-          localStorage.setItem('aicc.dailyPlan.v1', JSON.stringify(next));
+          safeSetItem('aicc.dailyPlan.v1', JSON.stringify(next));
         } catch {
           /* ignore */
         }
@@ -4336,7 +4353,7 @@ function smartDupName(orig: string, existing: string[]): string {
 
 /** 把旧 codeByProblem (LS_OLD_CODE) 迁移成 files store */
 async function migrateLegacyCode(get: () => State) {
-  const raw = localStorage.getItem(LS_OLD_CODE);
+  const raw = safeGetItem(LS_OLD_CODE);
   if (!raw) return;
   try {
     const old = JSON.parse(raw) as Record<string, string>;
@@ -4359,7 +4376,7 @@ async function migrateLegacyCode(get: () => State) {
     if (migrated > 0) {
       console.log(`[migrate] 已从旧 codeByProblem 迁移 ${migrated} 个文件`);
     }
-    localStorage.removeItem(LS_OLD_CODE);
+    safeRemoveItem(LS_OLD_CODE);
   } catch (e) {
     console.warn('[migrate] 旧数据解析失败', e);
   }

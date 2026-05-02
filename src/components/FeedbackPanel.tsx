@@ -27,7 +27,9 @@ import { QAPanel } from './QAPanel';
 import { ResizeHandle } from './ResizeHandle';
 import { AgentTracePanel } from './AgentTracePanel';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
-import { lazy, Suspense, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { ErrorBoundary } from './ErrorBoundary';
+import { safeGetItem, safeSetItem } from '../lib/safeLocalStorage';
 
 import { codeHash } from '../core/utils';
 
@@ -43,11 +45,11 @@ export function FeedbackPanel() {
     640,
   );
   const [traceCollapsed, setTraceCollapsed] = useState(() =>
-    localStorage.getItem(TRACE_COLLAPSED_KEY) !== '0',
+    safeGetItem(TRACE_COLLAPSED_KEY) !== '0',
   );
   const toggleTraceCollapsed = () => {
     setTraceCollapsed((v) => {
-      localStorage.setItem(TRACE_COLLAPSED_KEY, v ? '0' : '1');
+      safeSetItem(TRACE_COLLAPSED_KEY, v ? '0' : '1');
       return !v;
     });
   };
@@ -155,9 +157,11 @@ export function FeedbackPanel() {
           ) : tab === 'ask' ? (
             <QAPanel />
           ) : (
-            <Suspense fallback={<div className="p-3 text-xs text-ink-mute">加载可视化面板…</div>}>
-            <AlgoVizPanel />
-          </Suspense>
+            <ErrorBoundary title="算法可视化面板异常" compact>
+              <Suspense fallback={<div className="p-3 text-xs text-ink-mute">加载可视化面板…</div>}>
+                <AlgoVizPanel />
+              </Suspense>
+            </ErrorBoundary>
           )}
         </div>
 
@@ -504,6 +508,9 @@ function RowResizeHandle({
   max: number;
 }) {
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+  const cleanupRef = useRef<(() => void) | null>(null);
+
+  useEffect(() => () => cleanupRef.current?.(), []);
 
   const onMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -522,11 +529,13 @@ function RowResizeHandle({
       document.removeEventListener('mouseup', onUp);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
+      cleanupRef.current = null;
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
+    cleanupRef.current = onUp;
   };
 
   return (

@@ -604,6 +604,9 @@ function ReadyView({
             代码模块检测状态（{schema.modules.length} 模块）
           </summary>
           <div className="mt-1 font-mono px-2 py-1 bg-bg-elev/50 rounded border border-line/50">
+            <div className="mb-1 text-[10px] text-ink-mute font-sans">
+              实时检测结果会随当前代码重新计算，刷新页面后会重新检测。
+            </div>
             {schema.modules.map((m, i) => (
               <div key={m.id}>
                 <span className="text-accent">module{i + 1}</span> [{m.id}] {m.label} —{' '}

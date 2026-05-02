@@ -20,6 +20,7 @@ import {
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { toast } from 'sonner';
+import { safeGetItem, safeSetItem } from '../lib/safeLocalStorage';
 
 const LS_KEY = 'aicc:ollama-intro-seen';
 
@@ -47,8 +48,7 @@ export function OllamaIntroModal() {
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
-    const seen =
-      typeof window !== 'undefined' && window.localStorage.getItem(LS_KEY) === '1';
+    const seen = safeGetItem(LS_KEY) === '1';
     if (seen) return;
     const timer = setTimeout(() => {
       if (settingsOpen) return;
@@ -60,7 +60,7 @@ export function OllamaIntroModal() {
 
   function markSeen() {
     try {
-      window.localStorage.setItem(LS_KEY, '1');
+      safeSetItem(LS_KEY, '1');
     } catch {
       /* ignore */
     }

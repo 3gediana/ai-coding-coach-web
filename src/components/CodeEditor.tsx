@@ -78,6 +78,7 @@ export function CodeEditor() {
   const contentWidgetsRef = useRef<any[]>([]);
   const activeIssuesRef = useRef<CodeIssue[]>([]);
   const fileMetaRef = useRef<{ id: string; language: FileLang } | null>(null);
+  const markerTimerRef = useRef<number | null>(null);
   fileMetaRef.current = file ? { id: file.id, language: file.language } : null;
 
   const issueSeverityToMarker = (monaco: Monaco, severity: CodeIssue['severity']) => {
@@ -133,6 +134,16 @@ export function CodeEditor() {
       };
     });
     monaco.editor.setModelMarkers(model, 'aicc', [...localMarkers, ...aiMarkers]);
+  };
+
+  const scheduleMarkerUpdate = () => {
+    if (markerTimerRef.current) {
+      window.clearTimeout(markerTimerRef.current);
+    }
+    markerTimerRef.current = window.setTimeout(() => {
+      markerTimerRef.current = null;
+      updateMarkers();
+    }, 180);
   };
 
   const renderDecorations = () => {
@@ -319,7 +330,7 @@ export function CodeEditor() {
         activeIssuesRef.current = remaining;
         renderDecorations();
       }
-      updateMarkers();
+      scheduleMarkerUpdate();
     });
 
     // 框选「问 AI」：选区非空 → 浮按钮
@@ -420,6 +431,14 @@ export function CodeEditor() {
     updateMarkers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, file?.content, result, resultFresh]);
+
+  useEffect(() => {
+    return () => {
+      if (markerTimerRef.current) {
+        window.clearTimeout(markerTimerRef.current);
+      }
+    };
+  }, []);
 
   if (!file) {
     return (

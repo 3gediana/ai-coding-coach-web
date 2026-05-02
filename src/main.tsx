@@ -6,6 +6,7 @@ import './index.css';
 import 'katex/dist/katex.min.css';
 import { initTheme } from './lib/theme';
 import { useStore } from './lib/store';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // 启动时应用主题（必须在 render 前，避免闪烁）
 initTheme();
@@ -36,7 +37,9 @@ if (import.meta.env.DEV) {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <ErrorBoundary title="AI Coding Coach 前端异常">
+      <App />
+    </ErrorBoundary>
     <Toaster
       position="bottom-right"
       richColors

@@ -30,6 +30,7 @@ import { startOjBridgeReceiver, stopOjBridgeReceiver } from './lib/ojBridge';
 import { loadDemoSeed } from './lib/demoSeed';
 import { warmupLocalModels } from './core/ai/warmup';
 import { toast } from 'sonner';
+import { safeGetItem } from './lib/safeLocalStorage';
 
 export default function App() {
   const aiConfig = useStore((s) => s.aiConfig);
@@ -122,7 +123,7 @@ export default function App() {
         ? !!aiConfig.baseUrl?.trim()
         : !!aiConfig.apiKey?.trim();
     if (!usable) return;
-    if (localStorage.getItem('aicc.onboarding.v1') !== 'done') {
+    if (safeGetItem('aicc.onboarding.v1') !== 'done') {
       const t = setTimeout(() => {
         void startOnboarding();
       }, 1500);

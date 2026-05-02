@@ -18,10 +18,11 @@ import {
   BarChart3,
   Minimize2,
 } from 'lucide-react';
-import { lazy, Suspense, useState } from 'react';
+import { lazy, Suspense, startTransition, useState } from 'react';
 import { useStore } from '../lib/store';
 import type { AgentTraceEvent, AgentTraceKind, AgentTraceLevel } from '../lib/store';
 import { cn } from '../lib/cn';
+import { ErrorBoundary } from './ErrorBoundary';
 
 const AgentGraph = lazy(() => import('./AgentGraph').then((m) => ({ default: m.AgentGraph })));
 const AgentDashboard = lazy(() => import('./AgentDashboard').then((m) => ({ default: m.AgentDashboard })));
@@ -72,9 +73,9 @@ export function AgentTracePanel({
         <span className="text-[10px] text-ink-mute">{trace.length}</span>
         {/* 视图切换 */}
         <div className="ml-auto flex items-center bg-bg-elev2 rounded border border-line/60 p-0.5">
-          <ViewBtn icon={List} active={view === 'list'} onClick={() => setView('list')} title="时间线" />
-          <ViewBtn icon={Network} active={view === 'graph'} onClick={() => setView('graph')} title="协作拓扑" />
-          <ViewBtn icon={BarChart3} active={view === 'stats'} onClick={() => setView('stats')} title="仪表板" />
+          <ViewBtn icon={List} active={view === 'list'} onClick={() => startTransition(() => setView('list'))} title="时间线" />
+          <ViewBtn icon={Network} active={view === 'graph'} onClick={() => startTransition(() => setView('graph'))} title="协作拓扑" />
+          <ViewBtn icon={BarChart3} active={view === 'stats'} onClick={() => startTransition(() => setView('stats'))} title="仪表板" />
         </div>
         {onToggleCollapsed && (
           <button
@@ -121,14 +122,18 @@ export function AgentTracePanel({
         </div>
       )}
       {view === 'graph' && (
-        <Suspense fallback={<div className="p-2 text-[10px] text-ink-mute">加载拓扑…</div>}>
-          <AgentGraph />
-        </Suspense>
+        <ErrorBoundary title="Agent 拓扑异常" compact>
+          <Suspense fallback={<div className="p-2 text-[10px] text-ink-mute">加载拓扑…</div>}>
+            <AgentGraph />
+          </Suspense>
+        </ErrorBoundary>
       )}
       {view === 'stats' && (
-        <Suspense fallback={<div className="p-2 text-[10px] text-ink-mute">加载统计…</div>}>
-          <AgentDashboard />
-        </Suspense>
+        <ErrorBoundary title="Agent 统计异常" compact>
+          <Suspense fallback={<div className="p-2 text-[10px] text-ink-mute">加载统计…</div>}>
+            <AgentDashboard />
+          </Suspense>
+        </ErrorBoundary>
       )}
     </div>
   );

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { safeGetItem, safeSetItem } from './safeLocalStorage';
 
 /**
  * 把宽度（或任意 number）持久化到 localStorage 的 hook。
@@ -15,7 +16,7 @@ export function usePersistedWidth(
   const [value, setValueRaw] = useState<number>(() => {
     if (typeof window === 'undefined') return defaultValue;
     try {
-      const raw = localStorage.getItem(key);
+      const raw = safeGetItem(key);
       if (raw == null) return defaultValue;
       const n = Number(raw);
       if (!Number.isFinite(n)) return defaultValue;
@@ -29,7 +30,7 @@ export function usePersistedWidth(
   useEffect(() => {
     const id = setTimeout(() => {
       try {
-        localStorage.setItem(key, String(value));
+        safeSetItem(key, String(value));
       } catch {
         /* quota / disabled */
       }
