@@ -18,15 +18,15 @@ export interface AIPreset {
 }
 
 /**
- * 模型预设（更新于 2026.04）：
- *   - DeepSeek V4 / R1（默认，价格屠夫）
- *   - MiniMax M2.7（2026.04 开源，OpenRouter 调用量第一）
- *   - OpenAI GPT-5.2 / GPT-5
- *   - 通义 Qwen 3.6 Plus
- *   - 智谱 GLM-5.1
- *   - Kimi K2.6
- *   - Anthropic Claude 4.6 Sonnet
- *   - Google Gemini 3.1 Pro
+ * 模型预设（更新于 2026.05）：
+ *   - DeepSeek 官方 list models: deepseek-v4-flash / deepseek-v4-pro
+ *   - MiniMax 官方 M2.7 / M2.7-highspeed
+ *   - OpenAI 官方 Models: GPT-5.5 / GPT-5.4-mini / GPT-5.4-nano / GPT-5.1 Codex
+ *   - DashScope OpenAI-compatible: qwen3.5-plus / qwen3.5-flash / qwen-plus-latest
+ *   - 智谱 Z.AI release notes: GLM-5.1 / GLM-5 / GLM-4.7-Flash
+ *   - Kimi 官方 Model List: kimi-k2.6（旧 K2 系列 2026-05-25 停止维护）
+ *   - Anthropic Claude Models: Opus 4.7 / Opus 4.6 / Sonnet 4.6 / Haiku 4.5
+ *   - Gemini API Models: Gemini 3.1 Pro / 3.1 Flash / 3.1 Flash-Lite
  *
  * 顺序就是 SettingsModal 里 chip 的展示顺序；DeepSeek 排首位是因为对中文用户最友好、最便宜。
  */
@@ -48,73 +48,73 @@ export const PRESETS: AIPreset[] = [
   {
     id: 'minimax',
     label: 'MiniMax (海螺)',
-    hint: 'M2.7 自我进化推理模型，长上下文 + 强 Agent，OpenRouter 调用量 #1',
+    hint: 'M2.7 / M2.7-highspeed；长上下文 + 强 Agent，适合代码工具',
     baseUrl: 'https://api.minimaxi.com/v1/text/chatcompletion_v2',
     defaultModel: 'MiniMax-M2.7',
-    modelExamples: ['MiniMax-M2.7', 'MiniMax-M2.5', 'MiniMax-M2'],
+    modelExamples: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'MiniMax-M2'],
     apiKeyPage: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
   },
   {
     id: 'openai',
     label: 'OpenAI',
-    hint: 'GPT-5.2 / GPT-5 旗舰；需要外网访问',
+    hint: 'GPT-5.5 旗舰；GPT-5.4 mini/nano 适合低延迟低成本；Codex 适合代码任务',
     baseUrl: 'https://api.openai.com/v1/chat/completions',
-    defaultModel: 'gpt-5.2',
-    modelExamples: ['gpt-5.2', 'gpt-5', 'gpt-5-mini', 'gpt-5-ultra'],
+    defaultModel: 'gpt-5.5',
+    modelExamples: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.1-codex'],
     apiKeyPage: 'https://platform.openai.com/api-keys',
   },
   {
     id: 'qwen',
     label: '通义千问 (DashScope)',
-    hint: 'Qwen 3.6 Plus；阿里云；coder 系列代码强',
+    hint: 'Qwen 3.5 Plus/Flash；阿里云 OpenAI 兼容接口；coder 系列代码强',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
-    defaultModel: 'qwen-3.6-plus',
-    modelExamples: ['qwen-3.6-plus', 'qwen-3.6-max', 'qwen3-coder-32b-instruct'],
+    defaultModel: 'qwen3.5-plus',
+    modelExamples: ['qwen3.5-plus', 'qwen3.5-flash', 'qwen-plus-latest', 'qwen-flash', 'qwen3-coder-32b-instruct'],
     apiKeyPage: 'https://dashscope.console.aliyun.com/apiKey',
   },
   {
     id: 'zhipu',
     label: '智谱 GLM',
-    hint: 'GLM-5.1 旗舰；学习曲线友好',
+    hint: 'GLM-5.1 旗舰；GLM-4.7-Flash 适合低成本快速任务',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4/chat/completions',
     defaultModel: 'glm-5.1',
-    modelExamples: ['glm-5.1', 'glm-5', 'glm-5-flash', 'glm-5-air'],
+    modelExamples: ['glm-5.1', 'glm-5', 'glm-5-flash', 'glm-4.7-flash', 'glm-4.5-flash'],
     apiKeyPage: 'https://bigmodel.cn/usercenter/apikeys',
   },
   {
     id: 'moonshot',
     label: 'Kimi (Moonshot)',
-    hint: 'K2.6 长上下文 + 强工具调用',
+    hint: 'K2.6 长上下文 + 代码 Agent；旧 K2 系列即将停止维护',
     baseUrl: 'https://api.moonshot.cn/v1/chat/completions',
     defaultModel: 'kimi-k2.6',
-    modelExamples: ['kimi-k2.6', 'kimi-k2.5', 'moonshot-v1-128k'],
+    modelExamples: ['kimi-k2.6', 'moonshot-v1-128k', 'moonshot-v1-32k', 'moonshot-v1-8k'],
     apiKeyPage: 'https://platform.moonshot.cn/console/api-keys',
   },
   {
     id: 'anthropic',
     label: 'Anthropic Claude',
-    hint: 'Claude 4.6 Sonnet；长推理 + 代码',
+    hint: 'Opus 4.7 / Sonnet 4.6 / Haiku 4.5；长推理 + 代码',
     baseUrl: 'https://api.anthropic.com/v1/messages',
-    defaultModel: 'claude-4.6-sonnet',
-    modelExamples: ['claude-4.6-sonnet', 'claude-4.6-opus', 'claude-4-haiku'],
+    defaultModel: 'claude-sonnet-4.6',
+    modelExamples: ['claude-opus-4.7', 'claude-opus-4.6', 'claude-sonnet-4.6', 'claude-haiku-4.5'],
     apiKeyPage: 'https://console.anthropic.com/settings/keys',
   },
   {
     id: 'google',
     label: 'Google Gemini',
-    hint: 'Gemini 3.1 Pro / 3 Deep Think；多模态 + 无限上下文',
+    hint: 'Gemini 3.1 Pro / Flash / Flash-Lite；多模态 + 长上下文',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
     defaultModel: 'gemini-3.1-pro',
-    modelExamples: ['gemini-3.1-pro', 'gemini-3-deep-think', 'gemini-3-flash'],
+    modelExamples: ['gemini-3.1-pro', 'gemini-3.1-flash', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview-customtools'],
     apiKeyPage: 'https://aistudio.google.com/apikey',
   },
   {
     id: 'ollama',
     label: 'Ollama (本地)',
-    hint: '本地模型；零成本但靠机器性能',
+    hint: '本地模型；注册时优先自动读取本机 ollama list，下面只是未探测到时的备选',
     baseUrl: 'http://localhost:11434/v1/chat/completions',
-    defaultModel: 'qwen3-coder:7b',
-    modelExamples: ['qwen3-coder:7b', 'deepseek-v4-coder:6.7b', 'llama4:8b'],
+    defaultModel: 'qwen3.5:4b',
+    modelExamples: ['qwen3.5:4b', 'qwen3-coder:7b', 'qwen2.5-coder:7b', 'deepseek-r1:7b', 'deepseek-coder:6.7b', 'llama3.2:3b', 'gemma3:4b'],
   },
   {
     id: 'custom',
@@ -203,10 +203,15 @@ export const RECOMMENDED_OLLAMA_MODELS: Array<{
   desc: string;
 }> = [
   { name: 'qwen3.5:4b', size: '~2.6 GB', vramHint: '4 GB+', desc: '默认推荐：速度/质量平衡，TTFT < 500ms' },
+  { name: 'qwen3-coder:7b', size: '~4.5 GB', vramHint: '6 GB+', desc: '代码任务优先；适合解释/批注/小型改错' },
+  { name: 'qwen2.5-coder:7b', size: '~4.7 GB', vramHint: '6 GB+', desc: '成熟稳定的本地代码模型；Ollama library 常用' },
+  { name: 'deepseek-r1:7b', size: '~4.7 GB', vramHint: '6 GB+', desc: '本地推理模型；适合复杂逻辑但延迟更高' },
   { name: 'qwen3:8b', size: '~5.2 GB', vramHint: '6 GB+', desc: '更强推理；适合复杂题分析' },
   { name: 'qwen2.5:7b', size: '~4.7 GB', vramHint: '6 GB+', desc: '稳定老牌，对中文友好' },
   { name: 'deepseek-coder:6.7b', size: '~3.8 GB', vramHint: '5 GB+', desc: '代码任务专长；批注更精准' },
   { name: 'qwen3:1.7b', size: '~1.1 GB', vramHint: '2 GB+', desc: '极低显存可用；质量略弱' },
+  { name: 'llama3.2:3b', size: '~2.0 GB', vramHint: '3 GB+', desc: '轻量通用模型；英文任务稳定' },
+  { name: 'gemma3:4b', size: '~3.0 GB', vramHint: '4 GB+', desc: '轻量通用备选；适合低显存机器' },
 ];
 
 /**
