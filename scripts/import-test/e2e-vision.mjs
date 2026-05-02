@@ -1,6 +1,6 @@
 /**
  * 端到端（新架构）：
- *   POST → vite 落盘 raw → 调 importProcessor (Node 端 sam 识图)
+ *   POST → vite 落盘 raw → 调 importProcessor (Node 端 qwen3.5 识图)
  *        → 落盘 processed → SSE 推 processed payload → 前端入库
  *
  * 验证：
@@ -8,7 +8,7 @@
  *   2. raw 文件落盘
  *   3. processed 文件落盘（含 imageRecognitions）
  *   4. 前端 problems 多一道（statement 含识别结果）
- *   5. ollama /api/ps 已无 sam（finally 卸载生效）
+ *   5. ollama /api/ps 已无 qwen3.5（finally 卸载生效）
  */
 import { chromium } from 'playwright';
 import { readFileSync, existsSync } from 'node:fs';
@@ -49,7 +49,7 @@ await page.evaluate(() => {
 await page.reload({ waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(1500);
 
-console.log('━━━━ 新架构 e2e（后端 sam 处理）━━━━\n');
+console.log('━━━━ 新架构 e2e（后端 qwen3.5 处理）━━━━\n');
 
 await page.evaluate(() => window.__aiccStore.setState({ problems: [], activeProblemId: null, filesByScope: {}, activeFileIdByScope: {} }));
 const beforePS = await getOllamaPS();
@@ -114,17 +114,17 @@ for (let i = 0; i < 30; i++) {
 if (!problemFromStore) console.log('   ❌ 30s 内前端未收到入库');
 
 // 5. ollama 卸载验证
-console.log('\n4. 验证 sam 已卸载...');
+console.log('\n4. 验证 qwen3.5 已卸载...');
 const finalPS = await getOllamaPS();
-const samStillThere = finalPS.some((m) => m.name.startsWith('sam'));
+const qwen35StillThere = finalPS.some((m) => m.name.startsWith('qwen3.5'));
 console.log(`   ollama 当前模型: ${finalPS.length === 0 ? '空' : finalPS.map((m) => m.name).join(',')}`);
-console.log(`   sam 已卸载: ${samStillThere ? '❌ 仍在显存' : '✅'}`);
+console.log(`   qwen3.5 已卸载: ${qwen35StillThere ? '❌ 仍在显存' : '✅'}`);
 
 console.log('\n━━━━ 总结 ━━━━');
 console.log(`POST → raw 落盘     ${existsSync(rawPath) ? '✅' : '❌'}`);
 console.log(`后端 processor       ${processedTime ? '✅ ' + ((processedTime - t0) / 1000).toFixed(1) + 's' : '❌'}`);
 console.log(`SSE → 前端入库       ${problemFromStore ? '✅' : '❌'}`);
 console.log(`statement 含识别     ${problemFromStore?.statement?.includes('图 1 识别') ? '✅' : '❌'}`);
-console.log(`sam 卸载             ${!samStillThere ? '✅' : '❌'}`);
+console.log(`qwen3.5 卸载             ${!qwen35StillThere ? '✅' : '❌'}`);
 
 await browser.close();

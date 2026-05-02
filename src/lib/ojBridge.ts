@@ -15,7 +15,7 @@ export interface OjSubmitResult {
   id: string;
   source: string;
   url: string;
-  status: 'done' | 'failed' | 'timeout';
+  status: 'filled' | 'done' | 'failed' | 'timeout';
   verdict?: SubmissionVerdict;
   rawText?: string;
   message?: string;

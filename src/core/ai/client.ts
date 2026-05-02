@@ -253,10 +253,14 @@ export class AIClient {
    * 计算实际请求的 endpoint URL：
    * - ollama: 把 baseUrl 中 OpenAI 兼容路径 `/v1/chat/completions` 自动改写为 `/api/chat`
    *   这样用户在设置里仍可填 `http://localhost:11434/v1/chat/completions`（或 `/api/chat`），都正常
-   * - 其它：原样返回
+   * - 其它 OpenAI 兼容接口：容忍用户填到 `/v1`，自动补 `/chat/completions`
    */
   private effectiveBaseUrl(): string {
-    if (!this.isOllamaNative()) return this.cfg.baseUrl;
+    if (!this.isOllamaNative()) {
+      let u = this.cfg.baseUrl.trim().replace(/\/+$/, '');
+      if (/\/v1$/i.test(u)) u += '/chat/completions';
+      return u;
+    }
     let u = this.cfg.baseUrl.trim();
     u = u.replace(/\/v1\/chat\/completions\/?$/, '/api/chat');
     if (!/\/api\/chat\/?$/.test(u)) {

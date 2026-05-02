@@ -22,7 +22,7 @@ const CFG = {
   apiKey: env.AI_COACH_KEY,
   model: env.AI_COACH_MODEL || 'MiniMax-M2',
   maxTokens: 8000, temperature: 0.3, timeoutMs: 180_000, maxRetries: 2,
-  fastLane: { enabled: true, baseUrl: 'http://127.0.0.1:11434', model: 'sam:latest', numCtx: 8192 },
+  fastLane: { enabled: true, baseUrl: 'http://127.0.0.1:11434', model: 'qwen3.5:4b', numCtx: 8192 },
 };
 
 const browser = await chromium.launch({

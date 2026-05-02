@@ -1,9 +1,9 @@
 /**
- * sam:latest 质量极限测试 —— 不同难度下的 bug 识别准确率
+ * qwen3.5:4b 质量极限测试 —— 不同难度下的 bug 识别准确率
  *
  * 设计：
  *   每个 case 有"已知 bug 列表"（ground truth），
- *   跑 sam，看命中率。
+ *   跑 qwen3.5，看命中率。
  *   命中率 < ROUTE_THRESHOLD → 建议路由到云端。
  *
  * 难度档：
@@ -19,7 +19,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import { spawn } from 'node:child_process';
 import * as net from 'node:net';
 
-const MODEL    = process.env.MODEL    || 'sam:latest';
+const MODEL    = process.env.MODEL    || 'qwen3.5:4b';
 const ENDPOINT = process.env.ENDPOINT || 'http://localhost:11434/api/chat';
 const NUM_CTX  = parseInt(process.env.NUM_CTX  || '24576', 10);
 const TIMEOUT  = parseInt(process.env.TIMEOUT  || '90000', 10);
@@ -67,7 +67,7 @@ async function ensureOllama() {
 process.on('exit', () => { if (managed && !managed.killed) { try { managed.kill(); } catch {} } });
 
 // ===== Test cases =====
-// ground_truth: 应该命中的关键词（从 sam 的 issues 里 message 找）
+// ground_truth: 应该命中的关键词（从 qwen3.5 的 issues 里 message 找）
 // 只要 issues 里有任意一条 message 包含任一关键词 → 该条命中
 const CASES = [
   // ─────── D1 简单 ───────
@@ -111,7 +111,7 @@ int main(){
     ground_truth: [
       { desc: '全局 cnt 默认 0（实际无 bug，考验误报率）', keywords: [] }, // 空 keywords = 期望无 issue
     ],
-    expectClean: true, // 期望 sam 不报错（或只报 minor hint）
+    expectClean: true, // 期望 qwen3.5 不报错（或只报 minor hint）
   },
 
   // ─────── D2 中等 ───────
@@ -358,7 +358,7 @@ function score(c, parsed) {
 // ===== Main =====
 if (!(await ensureOllama())) { console.error('ollama 未就绪'); process.exit(1); }
 
-console.log(`\n=== sam 质量极限测试 ===`);
+console.log(`\n=== qwen3.5 质量极限测试 ===`);
 console.log(`Model=${MODEL} | num_ctx=${NUM_CTX}\n`);
 
 const results = [];
@@ -388,7 +388,7 @@ for (const r of results) {
   byLevel[r.level].total += r.total ?? 1;
 }
 
-let md = `# sam:latest 质量极限报告\n\n`;
+let md = `# qwen3.5:4b 质量极限报告\n\n`;
 md += `- Model: \`${MODEL}\`\n- num_ctx: ${NUM_CTX}\n\n`;
 md += `## 各档命中率\n\n`;
 md += `| 难度 | 命中率 | 路由建议 |\n|---|---|---|\n`;
@@ -407,7 +407,7 @@ for (const r of results) {
 md += `\n## 自动路由建议\n\n`;
 const needRoute = Object.entries(byLevel).filter(([,s]) => s.hits/s.total < ROUTE_THRESHOLD).map(([l]) => l);
 if (needRoute.length === 0) {
-  md += `sam 在所有难度档命中率 ≥ 60%，**无需路由**，直接用本地即可。\n`;
+  md += `qwen3.5 在所有难度档命中率 ≥ 60%，**无需路由**，直接用本地即可。\n`;
 } else {
   md += `以下难度档建议路由到云端（命中率 < 60%）：**${needRoute.join(', ')}**\n\n`;
   md += `实现方式：在 \`enqueueAnalyze\` 里判断 problem.difficulty，${needRoute.join('/')} 难度题跳过 fastLane，直接用主 cfg（云端）。\n`;

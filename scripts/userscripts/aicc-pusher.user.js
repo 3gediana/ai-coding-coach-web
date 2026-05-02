@@ -1,13 +1,12 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.3.0
-// @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach，并支持 Coach 推回代码、清空编辑器、自动提交、回传 verdict。
+// @version      0.3.9
+// @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach，并支持 Coach 回填代码；自动提交需显式触发。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
 // @match        https://www.educoder.net/*
 // @grant        GM_xmlhttpRequest
-// @grant        GM_setClipboard
 // @connect      127.0.0.1
 // @connect      localhost
 // @run-at       document-idle
@@ -389,7 +388,7 @@
       rawText: markdown,
       images,
       initialCode,
-      language: detectEducoderLang(initialCode, fullText),
+      language: detectEducoderLang(initialCode, `${title}\n${fullText}`),
       meta: {
         domain: location.hostname,
         taskId,
@@ -531,21 +530,58 @@
     return gmRequestJson('/__oj-result', { method: 'POST', data: result, timeout: 15_000 });
   }
 
+  function postDebugLog(event, extra = {}) {
+    const payload = {
+      event,
+      site: detectSite(),
+      href: location.href,
+      visible: document.visibilityState,
+      focused: document.hasFocus?.() ?? null,
+      title: document.title,
+      ...extra,
+    };
+    gmRequestJson('/__oj-debug-log', { method: 'POST', data: payload, timeout: 5_000 }).catch(() => {});
+    console.log('[aicc-pusher-debug]', payload);
+  }
+
   // ─────────── OJ 回填 / 提交 ───────────
 
   async function executeOjCommand(command) {
-    showToast(`收到 AI Coach 提交命令：${command.problemTitle || command.fileName}`, 'info');
+    const code = sanitizeCodePayload(command.code);
+    postDebugLog('command-received', {
+      commandId: command.id,
+      source: command.source,
+      autoSubmit: command.autoSubmit,
+      codeLength: code.length,
+      rawCodeLength: command.code?.length ?? 0,
+    });
+    showToast(`收到 AI Coach ${command.autoSubmit ? '提交' : '回填'}命令：${command.problemTitle || command.fileName}`, 'info');
     try {
       if (command.source === 'educoder') {
-        await setEducoderCode(command.code);
+        await setEducoderCode(code);
       } else if (command.source === 'school-oj') {
-        await setSchoolOjCode(command.code);
+        await setSchoolOjCode(code);
       } else {
         throw new Error(`不支持的 OJ：${command.source}`);
       }
+      postDebugLog('code-filled', { commandId: command.id, source: command.source });
+      if (!command.autoSubmit) {
+        await postOjResult({
+          id: command.id,
+          source: command.source,
+          url: location.href,
+          status: 'filled',
+          rawText: '',
+          message: '已清空编辑器并写入 AI Coach 代码，未自动提交',
+          finishedAt: Date.now(),
+        });
+        showToast('已写入 AI Coach 代码，未自动提交', 'ok');
+        return;
+      }
       showToast('已清空编辑器并写入 AI Coach 代码，准备提交…', 'ok');
-      if (command.autoSubmit) await clickSubmitButton(command.source);
-      const verdict = await waitForVerdict(command.source, 5 * 60_000);
+      const beforeSubmitText = collectVerdictText(command.source);
+      await clickSubmitButton(command.source);
+      const verdict = await waitForVerdict(command.source, 5 * 60_000, beforeSubmitText);
       await postOjResult({
         id: command.id,
         source: command.source,
@@ -558,6 +594,12 @@
       });
       showToast(`OJ 判题完成：${verdict.verdict}`, verdict.verdict === 'AC' ? 'ok' : 'err');
     } catch (err) {
+      postDebugLog('command-error', {
+        commandId: command.id,
+        source: command.source,
+        message: err.message || String(err),
+        stack: err.stack || null,
+      });
       await postOjResult({
         id: command.id,
         source: command.source,
@@ -573,6 +615,11 @@
   }
 
   async function setEducoderCode(code) {
+    postDebugLog('educoder-fill-start', {
+      codeLength: code.length,
+      monacoTextareaCount: document.querySelectorAll('#task-right-panel .monaco-editor textarea.inputarea, #task-right-panel [class*="my-monaco-editor"] textarea.inputarea, .monaco-editor textarea.inputarea, [class*="my-monaco-editor"] textarea').length,
+      taskRightPanel: !!document.querySelector('#task-right-panel'),
+    });
     const editors = window.monaco?.editor?.getEditors?.() || [];
     for (const ed of editors) {
       if (ed?.setValue && ed?.getDomNode?.()) {
@@ -592,13 +639,19 @@
       return;
     }
 
-    const ta = document.querySelector('[class*="my-monaco-editor"] textarea, .monaco-editor textarea');
+    const ta = findEducoderMonacoTextarea();
     if (!ta) throw new Error('未找到头歌 Monaco 编辑器 textarea');
-    ta.focus();
-    await clearAndPasteIntoFocused(code);
+    postDebugLog('educoder-textarea-found', { textareaClass: ta.className, textareaValueLength: ta.value?.length ?? 0 });
+    const ok = await writeIntoMonacoTextarea(ta, code);
+    if (!ok) postDebugLog('educoder-fill-unverified', { renderedPreview: monacoRenderedPreview(ta.closest('.monaco-editor') || ta.closest('[class*="my-monaco-editor"]') || ta) });
   }
 
   async function setSchoolOjCode(code) {
+    postDebugLog('school-fill-start', {
+      codeLength: code.length,
+      codeMirrorCount: document.querySelectorAll('.CodeMirror').length,
+      textareaCount: document.querySelectorAll('.vue-codemirror-wrap textarea, textarea').length,
+    });
     const cmEls = document.querySelectorAll('.CodeMirror');
     for (const cm of cmEls) {
       if (cm.CodeMirror?.setValue) {
@@ -606,29 +659,127 @@
         await sleep(50);
         cm.CodeMirror.setValue(code);
         cm.CodeMirror.focus?.();
+        const value = cm.CodeMirror.getValue?.() ?? '';
+        postDebugLog('school-codemirror-filled', { valueLength: value.length, exact: normalizeCode(value) === normalizeCode(code) });
         return;
       }
     }
     const ta = document.querySelector('.vue-codemirror-wrap textarea, textarea');
     if (!ta) throw new Error('未找到校内 OJ 代码编辑器');
     ta.focus();
-    await clearAndPasteIntoFocused(code);
+    await replaceFocusedEditorContent(ta, code);
+  }
+
+  function findEducoderMonacoTextarea() {
+    const candidates = [...document.querySelectorAll(
+      '#task-right-panel .monaco-editor textarea.inputarea, #task-right-panel [class*="my-monaco-editor"] textarea.inputarea, .monaco-editor textarea.inputarea, [class*="my-monaco-editor"] textarea',
+    )];
+    return candidates.find((ta) => {
+      const editor = ta.closest('.monaco-editor') || ta.closest('[class*="my-monaco-editor"]');
+      if (!editor) return false;
+      const r = editor.getBoundingClientRect();
+      const cs = getComputedStyle(editor);
+      return r.width > 100 && r.height > 100 && cs.display !== 'none' && cs.visibility !== 'hidden';
+    }) || candidates[0] || null;
+  }
+
+  async function writeIntoMonacoTextarea(ta, code) {
+    const editor = ta.closest('.monaco-editor') || ta.closest('[class*="my-monaco-editor"]') || ta;
+    editor.scrollIntoView?.({ block: 'center', inline: 'nearest' });
+    editor.click?.();
+    ta.focus();
+    await sleep(80);
+    await replaceFocusedEditorContent(ta, code);
+    await sleep(600);
+    if (monacoEditorMatches(editor, code)) {
+      postDebugLog('monaco-verified-after-replace', { renderedPreview: monacoRenderedPreview(editor) });
+      return true;
+    }
+    postDebugLog('monaco-verify-failed-after-single-replace', { renderedPreview: monacoRenderedPreview(editor) });
+    return false;
+  }
+
+  async function replaceFocusedEditorContent(target, code) {
+    target.focus();
+    await sleep(40);
+    dispatchEditorKey(target, 'a', { ctrlKey: true, metaKey: navigator.platform.includes('Mac'), code: 'KeyA', keyCode: 65 });
+    await sleep(80);
+    document.execCommand('selectAll');
+    dispatchEditorKey(target, 'Delete', { code: 'Delete', keyCode: 46 });
+    document.execCommand('delete');
+    await sleep(120);
+    if (document.execCommand('insertText', false, code)) return;
+    if (dispatchSyntheticPaste(target, code)) return;
+    target.value = code;
+    target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: code }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+
+  function dispatchSyntheticPaste(target, code) {
+    try {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', code);
+      const ev = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt });
+      return target.dispatchEvent(ev);
+    } catch {
+      return false;
+    }
+  }
+
+  function dispatchEditorKey(target, key, init = {}) {
+    const eventInit = {
+      key,
+      code: init.code || key,
+      keyCode: init.keyCode || 0,
+      which: init.keyCode || 0,
+      ctrlKey: !!init.ctrlKey,
+      metaKey: !!init.metaKey,
+      shiftKey: !!init.shiftKey,
+      altKey: !!init.altKey,
+      bubbles: true,
+      cancelable: true,
+    };
+    target.dispatchEvent(new KeyboardEvent('keydown', eventInit));
+    target.dispatchEvent(new KeyboardEvent('keyup', eventInit));
+  }
+
+  function monacoEditorMatches(editor, code) {
+    const candidates = [];
+    const textareaValue = editor.querySelector('textarea')?.value;
+    if (textareaValue) candidates.push(textareaValue);
+    const rendered = monacoRenderedPreview(editor);
+    if (rendered) candidates.push(rendered);
+    const expected = normalizeCode(code);
+    return candidates.some((value) => {
+      const actual = normalizeCode(value);
+      return actual === expected || (actual.length > 0 && expected.startsWith(actual));
+    });
+  }
+
+  function monacoRenderedPreview(editor) {
+    return [...editor.querySelectorAll('.view-line')]
+      .map((line) => (line.innerText || '').replace(/\u00A0/g, ' ').trim())
+      .join('\n')
+      .slice(0, 500);
+  }
+
+  function normalizeCode(code) {
+    return String(code || '').replace(/\r\n/g, '\n').replace(/\s+$/gm, '').trim();
+  }
+
+  function sanitizeCodePayload(code) {
+    let text = String(code ?? '').replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
+    const trimmed = text.trim();
+    const fenced = trimmed.match(/^```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)\n```$/);
+    if (fenced) return fenced[1].replace(/\r\n/g, '\n');
+    if (trimmed.length >= 2 && trimmed.startsWith('`') && trimmed.endsWith('`') && !trimmed.startsWith('```')) {
+      return trimmed.slice(1, -1).replace(/\r\n/g, '\n');
+    }
+    return text;
   }
 
   async function clearAndPasteIntoFocused(code) {
-    try {
-      GM_setClipboard(code);
-    } catch {
-      /* ignore */
-    }
-    document.execCommand('selectAll');
-    document.execCommand('delete');
-    await sleep(50);
-    if (!document.execCommand('insertText', false, code)) {
-      document.activeElement.value = code;
-      document.activeElement.dispatchEvent(new Event('input', { bubbles: true }));
-      document.activeElement.dispatchEvent(new Event('change', { bubbles: true }));
-    }
+    await replaceFocusedEditorContent(document.activeElement, code);
   }
 
   async function clickSubmitButton(site) {
@@ -651,13 +802,15 @@
     });
   }
 
-  async function waitForVerdict(site, timeoutMs) {
+  async function waitForVerdict(site, timeoutMs, previousText = '') {
     const start = Date.now();
     let lastText = '';
     while (Date.now() - start < timeoutMs) {
       await sleep(1500);
       const rawText = collectVerdictText(site);
       lastText = rawText || lastText;
+      if (previousText && normalizeText(rawText) === normalizeText(previousText)) continue;
+      if (/代码执行中|评测中|运行中|judging|running|pending/i.test(rawText)) continue;
       const verdict = parseVerdict(rawText);
       if (verdict) return { verdict, rawText, message: rawText.slice(0, 300) };
     }
@@ -687,7 +840,13 @@
     if (/内存超限|Memory Limit|\bMLE\b/i.test(text)) return 'MLE';
     if (/答案错误|Wrong Answer|\bWA\b|测试未通过|未通过|不通过|结果错误/i.test(text)) return 'WA';
     if (/评测通过|通过评测|恭喜.*通过|Accepted|\bAC\b|Congratulations|全部通过|测试通过/i.test(text)) return 'AC';
+    const ratio = text.match(/(\d+)\s*\/\s*(\d+)/);
+    if (ratio && Number(ratio[1]) === Number(ratio[2]) && Number(ratio[2]) > 0) return 'AC';
     return null;
+  }
+
+  function normalizeText(text) {
+    return String(text || '').replace(/\s+/g, ' ').trim();
   }
 
   function sleep(ms) {
@@ -699,8 +858,13 @@
     if (commandRunning) return;
     const site = detectSite();
     if (!site || !isProblemPage(site)) return;
+    if (document.visibilityState !== 'visible') {
+      postDebugLog('poll-skipped-hidden');
+      return;
+    }
     const cmd = await pollOjCommand(site);
     if (!cmd) return;
+    postDebugLog('command-polled', { commandId: cmd.id, source: cmd.source, autoSubmit: cmd.autoSubmit });
     commandRunning = true;
     try {
       await executeOjCommand(cmd);
@@ -711,25 +875,156 @@
 
   // ─────────── UI ───────────
 
+  const UI_POS_KEY = 'aicc_pusher_fab_pos_v1';
+  const UI_COLLAPSED_KEY = 'aicc_pusher_fab_collapsed_v1';
+  let collapsed = localStorage.getItem(UI_COLLAPSED_KEY) === '1';
+
+  function readFabPos() {
+    try {
+      const raw = localStorage.getItem(UI_POS_KEY);
+      if (!raw) return null;
+      const p = JSON.parse(raw);
+      if (typeof p.x === 'number' && typeof p.y === 'number') return p;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  }
+
+  function saveFabPos(x, y) {
+    localStorage.setItem(UI_POS_KEY, JSON.stringify({ x, y }));
+  }
+
+  function placeFab(el) {
+    const pos = readFabPos();
+    if (pos) {
+      const x = Math.max(8, Math.min(window.innerWidth - 56, pos.x));
+      const y = Math.max(8, Math.min(window.innerHeight - 56, pos.y));
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    } else {
+      el.style.right = '18px';
+      el.style.bottom = '18px';
+      el.style.left = 'auto';
+      el.style.top = 'auto';
+    }
+  }
+
+  function setCollapsed(next) {
+    collapsed = next;
+    localStorage.setItem(UI_COLLAPSED_KEY, collapsed ? '1' : '0');
+    if (btn) {
+      btn.classList.toggle('collapsed', collapsed);
+      btn.innerHTML = collapsed ? 'AI' : '📤 推送到 AI Coach';
+      btn.title = collapsed
+        ? 'AI Coach 推送器（双击展开，拖动可移动）'
+        : '推送当前题目到 AI Coach（双击收起，拖动可移动）';
+    }
+  }
+
+  function makeDraggable(el) {
+    let dragging = false;
+    let moved = false;
+    let startX = 0;
+    let startY = 0;
+    let baseX = 0;
+    let baseY = 0;
+    let lastClick = 0;
+    let suppressClick = false;
+
+    el.addEventListener('pointerdown', (e) => {
+      if (el.disabled) return;
+      dragging = true;
+      moved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      const r = el.getBoundingClientRect();
+      baseX = r.left;
+      baseY = r.top;
+      el.setPointerCapture?.(e.pointerId);
+      el.classList.add('dragging');
+    });
+
+    el.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (Math.abs(dx) + Math.abs(dy) > 4) moved = true;
+      const x = Math.max(8, Math.min(window.innerWidth - el.offsetWidth - 8, baseX + dx));
+      const y = Math.max(8, Math.min(window.innerHeight - el.offsetHeight - 8, baseY + dy));
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+    });
+
+    el.addEventListener('pointerup', (e) => {
+      if (!dragging) return;
+      dragging = false;
+      el.classList.remove('dragging');
+      el.releasePointerCapture?.(e.pointerId);
+      const r = el.getBoundingClientRect();
+      saveFabPos(r.left, r.top);
+      const now = Date.now();
+      if (!moved && now - lastClick < 320) {
+        setCollapsed(!collapsed);
+        suppressClick = true;
+      }
+      lastClick = now;
+      if (moved) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    });
+
+    el.addEventListener('click', (e) => {
+      if (moved || suppressClick) {
+        e.preventDefault();
+        e.stopPropagation();
+        suppressClick = false;
+      }
+    }, true);
+  }
+
   function injectStyles() {
     const css = `
     .aicc-push-btn {
-      position: fixed; right: 20px; bottom: 20px; z-index: 999999;
-      padding: 10px 16px; border-radius: 24px;
+      position: fixed; right: 18px; bottom: 18px; z-index: 999999;
+      min-width: 46px; min-height: 34px;
+      padding: 9px 14px; border-radius: 999px;
       background: linear-gradient(135deg, #ff6b00, #ffaa00);
       color: white; font-size: 13px; font-weight: 600;
       border: none; cursor: pointer;
       box-shadow: 0 4px 16px rgba(0,0,0,.2);
       font-family: system-ui, sans-serif;
-      transition: transform .15s, box-shadow .15s;
+      opacity: .42;
+      backdrop-filter: blur(8px);
+      user-select: none;
+      touch-action: none;
+      transition: opacity .15s, transform .15s, box-shadow .15s, min-width .15s, padding .15s;
       display: flex; align-items: center; gap: 6px;
     }
     .aicc-push-btn:hover {
+      opacity: .96;
       transform: translateY(-2px);
       box-shadow: 0 6px 20px rgba(0,0,0,.3);
     }
+    .aicc-push-btn.dragging {
+      opacity: .96;
+      transform: scale(1.02);
+      cursor: grabbing;
+    }
+    .aicc-push-btn.collapsed {
+      width: 38px; height: 38px; min-width: 38px; min-height: 38px;
+      padding: 0; justify-content: center;
+      font-size: 12px; letter-spacing: .02em;
+      background: rgba(255,107,0,.72);
+      box-shadow: 0 2px 10px rgba(0,0,0,.18);
+    }
     .aicc-push-btn:disabled {
-      opacity: .6; cursor: wait;
+      opacity: .7; cursor: wait;
     }
     .aicc-push-btn.ok { background: linear-gradient(135deg, #10b981, #059669); }
     .aicc-push-btn.err { background: linear-gradient(135deg, #ef4444, #dc2626); }
@@ -767,10 +1062,16 @@
     if (btn) return btn;
     btn = document.createElement('button');
     btn.className = 'aicc-push-btn';
-    btn.innerHTML = `📤 推送到 AI Coach`;
-    btn.title = `从 ${site === 'school-oj' ? '校内 OJ' : '头歌'} 抓取当前题目并推送到 AI Coach (5173)`;
+    placeFab(btn);
+    makeDraggable(btn);
+    setCollapsed(collapsed);
+    btn.title = `从 ${site === 'school-oj' ? '校内 OJ' : '头歌'} 抓取当前题目并推送到 AI Coach (5173)。拖动可移动，双击可收纳/展开。`;
 
     btn.addEventListener('click', async () => {
+      if (collapsed) {
+        setCollapsed(false);
+        return;
+      }
       btn.disabled = true;
       btn.innerHTML = '⏳ 抓取中...';
       btn.classList.remove('ok', 'err');
@@ -785,7 +1086,7 @@
           'ok',
         );
         setTimeout(() => {
-          btn.innerHTML = '📤 推送到 AI Coach';
+          btn.innerHTML = collapsed ? 'AI' : '📤 推送到 AI Coach';
           btn.classList.remove('ok');
           btn.disabled = false;
         }, 3000);
@@ -795,7 +1096,7 @@
         btn.classList.add('err');
         showToast(`推送失败：${err.message}\n确认 AI Coach 在 5173 端口运行`, 'err');
         setTimeout(() => {
-          btn.innerHTML = '📤 推送到 AI Coach';
+          btn.innerHTML = collapsed ? 'AI' : '📤 推送到 AI Coach';
           btn.classList.remove('err');
           btn.disabled = false;
         }, 4500);
@@ -850,7 +1151,8 @@
       pollCommandsTick().catch((err) => console.warn('[aicc-pusher] 轮询提交命令失败', err));
     }, 2_000);
 
-    console.log('[aicc-pusher] 已加载：支持题目推送 + AI Coach 推回代码自动提交');
+    postDebugLog('script-loaded', { version: '0.3.9' });
+    console.log('[aicc-pusher] 已加载：支持题目推送 + AI Coach 回填代码；自动提交需显式触发');
   }
 
   if (document.readyState === 'loading') {

@@ -10,6 +10,7 @@
  *   - 用户写代码不充分时，detect 必须输出全 0（"0000"），不许猜
  */
 import type { AlgoVizDetectionSchema, AlgoVizTrace, AlgoVizVisualPlan, ProblemExample } from '../core/types';
+import { parseJsonLoose } from '../core/ai/client';
 
 // ──────────────────────────────────────────────────────────────────────
 // 1) Status + Schema
@@ -118,7 +119,7 @@ export function parseTraceOutput(raw: string): AlgoVizTrace | null {
   if (!source) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripFence(source).trim());
+    parsed = parseJsonLoose(stripFence(source).trim());
   } catch {
     return null;
   }
@@ -246,7 +247,7 @@ export function parseVisualPlanOutput(raw: string): AlgoVizVisualPlan | null {
   if (!source) return null;
   let parsed: unknown;
   try {
-    parsed = JSON.parse(stripFence(source).trim());
+    parsed = parseJsonLoose(stripFence(source).trim());
   } catch {
     return null;
   }
@@ -423,7 +424,7 @@ export function parseStatusOutput(
   if (!statusCode || !schemaText) return null;
   let schema: AlgoVizDetectionSchema;
   try {
-    schema = JSON.parse(schemaText) as AlgoVizDetectionSchema;
+    schema = parseJsonLoose<AlgoVizDetectionSchema>(schemaText);
   } catch {
     return null;
   }

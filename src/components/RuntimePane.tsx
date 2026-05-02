@@ -23,6 +23,8 @@ import {
   Settings as SettingsIcon,
   Sparkles,
   Swords,
+  Send,
+  UploadCloud,
 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { runPython, runCpp, isRuntimeSupported } from '../lib/runtime';
@@ -34,6 +36,12 @@ const DRAFT_SCOPE = '__draft__';
 interface OutputLine {
   kind: 'stdout' | 'stderr' | 'system';
   text: string;
+}
+
+interface OjAcAction {
+  problemId: string;
+  fileId: string;
+  fileContent: string;
 }
 
 /** 样例对比：去除行首/尾空白、归一换行，逐行 trim 比较 */
@@ -59,6 +67,7 @@ export function RuntimePane() {
   const setLastRun = useStore((s) => s.setLastRun);
   const enqueueHackCase = useStore((s) => s.enqueueHackCase);
   const runHackChain = useStore((s) => s.runHackChain);
+  const enqueueOjSubmit = useStore((s) => s.enqueueOjSubmit);
   const hackChainRunning = useStore(
     (s) => !!s.hackChainState && !s.hackChainState.result,
   );
@@ -91,6 +100,7 @@ export function RuntimePane() {
   const [progress, setProgress] = useState<string>('');
   const [duration, setDuration] = useState<number | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
+  const [ojAcAction, setOjAcAction] = useState<OjAcAction | null>(null);
 
   // hack case 触发去抖：同一文件 30s 内只触发一次主动出题
   const lastHackTriggerRef = useRef<{ fileId: string; ts: number } | null>(null);
@@ -116,6 +126,7 @@ export function RuntimePane() {
     }
     const stdinForRun = forceStdin ?? stdin;
     setRunning(true);
+    setOjAcAction(null);
     setOutput([]);
     setDuration(null);
     setExitCode(null);
@@ -170,12 +181,23 @@ export function RuntimePane() {
       // 条件：当前样例输入与 examples[0].input 一致，输出与 examples[0].output 一致，
       //       且同 file 30s 内未触发过 hack case，且本次不是由 hack case 自动跑触发的
       const sample = activeProblem?.examples?.[0];
-      if (
+      const samplePassed = !!(
         result.exitCode === 0 &&
         sample &&
         sample.input.trim() &&
         normalizeSampleText(stdinForRun) === normalizeSampleText(sample.input) &&
-        normalizeSampleText(result.stdout || '') === normalizeSampleText(sample.output) &&
+        normalizeSampleText(result.stdout || '') === normalizeSampleText(sample.output)
+      );
+      if (samplePassed && activeProblem?.source && /^https?:\/\//.test(activeProblem.source)) {
+        setOjAcAction({
+          problemId: scope,
+          fileId: file.id,
+          fileContent: file.content,
+        });
+        append('system', '✓ 样例 AC，可以回填到原 OJ');
+      }
+      if (
+        samplePassed &&
         !pendingHackRunRef.current &&
         ollamaMode !== 'disabled'
       ) {
@@ -231,9 +253,29 @@ export function RuntimePane() {
     setOutput([]);
     setDuration(null);
     setExitCode(null);
+    setOjAcAction(null);
   };
 
   const supported = file ? isRuntimeSupported(file.language) : false;
+  const canOjSubmit = !!activeProblem?.source && /^https?:\/\//.test(activeProblem.source);
+  const showOjAcAction = !!(
+    ojAcAction &&
+    canOjSubmit &&
+    !running &&
+    exitCode === 0 &&
+    activeProblemId === ojAcAction.problemId &&
+    file?.id === ojAcAction.fileId &&
+    file.content === ojAcAction.fileContent
+  );
+
+  const onOjSubmit = (autoSubmit: boolean) => {
+    const taskId = enqueueOjSubmit({ autoSubmit });
+    if (taskId) setOjAcAction(null);
+  };
+
+  useEffect(() => {
+    setOjAcAction(null);
+  }, [activeProblemId, file?.id, file?.content]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -266,6 +308,25 @@ export function RuntimePane() {
           )}
           <ChevronUp size={12} className="ml-auto" />
         </button>
+        {showOjAcAction && (
+          <div className="h-full border-l border-line flex items-center text-[11px]">
+            <span className="px-2 text-ok font-semibold">AC</span>
+            <button
+              onClick={() => onOjSubmit(false)}
+              className="h-full px-2 hover:bg-ok/10 text-ok font-semibold"
+              title="只回填到原 OJ，不自动提交"
+            >
+              回填
+            </button>
+            <button
+              onClick={() => onOjSubmit(true)}
+              className="h-full px-2 hover:bg-accent/10 text-accent font-semibold"
+              title="回填并自动评测"
+            >
+              评测
+            </button>
+          </div>
+        )}
         {!running ? (
           <button
             data-runtime-pane-run
@@ -325,6 +386,28 @@ export function RuntimePane() {
           >
             {exitCode === 0 ? '✓' : '✗'} {duration.toFixed(0)}ms
           </span>
+        )}
+
+        {showOjAcAction && (
+          <div className="ml-2 flex items-center gap-1 rounded-lg border border-ok/40 bg-ok/10 px-1.5 py-0.5">
+            <span className="text-[11px] text-ok font-semibold px-1">样例 AC</span>
+            <button
+              onClick={() => onOjSubmit(false)}
+              className="px-2 py-0.5 text-[11px] rounded bg-ok/15 text-ok hover:bg-ok/25 transition flex items-center gap-1 font-semibold"
+              title="只回填到原 OJ，不自动提交"
+            >
+              <UploadCloud size={11} />
+              回填
+            </button>
+            <button
+              onClick={() => onOjSubmit(true)}
+              className="px-2 py-0.5 text-[11px] rounded bg-accent/15 text-accent hover:bg-accent/25 transition flex items-center gap-1 font-semibold"
+              title="回填并自动评测"
+            >
+              <Send size={11} />
+              评测
+            </button>
+          </div>
         )}
 
         {/* 失败时显示 Coach 入口 */}

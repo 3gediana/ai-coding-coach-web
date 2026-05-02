@@ -8,7 +8,7 @@
  *
  * 选取顺序：
  *   1. algoVizModels[role].enabled 且字段齐 → 用 override
- *   2. role === 'detect'：fastLane 启用 → 用 fastLane（本地）
+ *   2. role === 'detect'：fastLane 启用 → 用 fastLane（本地），否则用主模型的小 token 路径
  *   3. role === 'status' / 'animation'：fall back qualityModel（pro / 高质量模型）
  *   4. qualityModel 也不可用 → 返回 null（上层兜底报错）
  *
@@ -133,8 +133,7 @@ export function pickAlgoVizClient(cfg: AIConfig, role: AlgoVizRole): AIClient | 
   if (role === 'detect') {
     const fast = buildFastLaneClient(cfg, role);
     if (fast) return fast;
-    // detect 没 fastLane 就拒绝跑（避免高频烧云端 token）
-    return null;
+    return buildMainClient(cfg, role);
   }
   // 3. status / animation 走主 cfg
   return buildMainClient(cfg, role);
@@ -150,10 +149,10 @@ export function describeRoute(cfg: AIConfig, role: AlgoVizRole): string {
     return `override · ${resolved?.model ?? '未配'}`;
   }
   if (role === 'detect') {
-    if (cfg.ollamaMode === 'disabled') return '已关闭（无 Ollama 模式）';
     const fl = resolveFastLaneModel(cfg);
     if (fl) return `fastLane · ${fl.model}`;
-    return '不可用（需 fastLane 或 override）';
+    const primary = resolvePrimaryModel(cfg);
+    return `主云端 · ${primary.model || '未配'}`;
   }
   const primary =
     role === 'status' || role === 'animation'

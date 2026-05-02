@@ -344,7 +344,7 @@ export class Coach {
       });
     let data: AcReviewRaw;
     try {
-      data = await callWith(this.qualityClient());
+      data = await callWith(this.ai);
     } catch (e) {
       // 主云端连续失败 → fastLane 本地兜底（如果用户启用了 fastLane）
       if (this.aiFast) {
@@ -466,7 +466,7 @@ export class Coach {
       });
     let data: DiagRaw;
     try {
-      data = await callWith(this.qualityClient(), true);
+      data = await callWith(this.ai, true);
     } catch (e) {
       // 云端挂了 → fastLane 兜底
       if (this.aiFast) {
@@ -560,7 +560,7 @@ export class Coach {
     try {
       // 同义字段兜底：headline / title; estimatedMinutes / minutes / totalMinutes;
       // steps / plan / tasks; encouragement / motto / cheer
-      const data = await this.qualityClient().chatJson<{
+      const data = await this.ai.chatJson<{
         headline?: string;
         title?: string;
         estimatedMinutes?: number;
@@ -757,12 +757,12 @@ export class Coach {
     try {
       let data: Awaited<ReturnType<typeof callEvaluator>>;
       try {
-        data = await callEvaluator(this.qualityClient());
+        data = await callEvaluator(this.ai);
       } catch (e) {
         if (typeof console !== 'undefined' && console.debug) {
-          console.debug('[Coach.generateFeynmanEvaluation] quality failed, trying primary', e);
+          console.debug('[Coach.generateFeynmanEvaluation] failed', e);
         }
-        data = await callEvaluator(this.ai);
+        return null;
       }
       const clamp = (v: unknown) => {
         const n = typeof v === 'number' ? v : 0;
@@ -1333,7 +1333,7 @@ export class Coach {
     opts: StreamOpts = {},
   ): Promise<AttackerOutput> {
     const { system, user } = buildAttackerPrompt(ctx);
-    const client = this.qualityClient();
+    const client = this.ai;
     const data = await client.chatJsonStream<{
       hypothesis?: string;
       candidates?: Array<{
@@ -1386,7 +1386,7 @@ export class Coach {
     opts: StreamOpts = {},
   ): Promise<ExplainerOutput> {
     const { system, user } = buildExplainerPrompt(args);
-    const client = this.qualityClient();
+    const client = this.ai;
     const data = await client.chatJsonStream<{
       diagnosis?: string;
       rootCause?: string;
@@ -1417,7 +1417,7 @@ export class Coach {
     opts: StreamOpts = {},
   ): Promise<FixSuggestorOutput> {
     const { system, user } = buildFixSuggestorPrompt(args);
-    const client = this.qualityClient();
+    const client = this.ai;
     const data = await client.chatJsonStream<{
       direction?: string;
       hint?: string;

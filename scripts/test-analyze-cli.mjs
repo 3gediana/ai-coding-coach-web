@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import * as net from 'node:net';
 
-const MODEL    = process.env.MODEL    || 'sam:latest';
+const MODEL    = process.env.MODEL    || 'qwen3.5:4b';
 const ENDPOINT = process.env.ENDPOINT || 'http://localhost:11434/api/chat';
 const NUM_CTX  = 20480;
 

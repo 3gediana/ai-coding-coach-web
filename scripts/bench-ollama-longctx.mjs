@@ -1,5 +1,5 @@
 /**
- * Ollama 长上下文稳定性压测 — 测 sam:latest 在 1K/4K/8K/12K 输入下能否稳定输出 JSON。
+ * Ollama 长上下文稳定性压测 — 测 qwen3.5:4b 在 1K/4K/8K/12K 输入下能否稳定输出 JSON。
  *
  * 测试维度：
  *   - prompt 长度（chars）
@@ -20,7 +20,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import { spawn } from 'node:child_process';
 import * as net from 'node:net';
 
-const MODEL = process.env.MODEL || 'sam:latest';
+const MODEL = process.env.MODEL || 'qwen3.5:4b';
 const ENDPOINT = process.env.ENDPOINT || 'http://localhost:11434/api/chat';
 const NUM_CTX = parseInt(process.env.NUM_CTX || '16384', 10);  // 16K 给 12K 输入留余量
 const NUM_GPU = parseInt(process.env.NUM_GPU || '-1', 10);
@@ -327,7 +327,7 @@ async function runOne({ label, prompt, numCtx }) {
  *
  * MODE=ceiling：
  *   依次设 num_ctx=4K/8K/16K/24K/32K，每档用 ≈ 80% 窗口大小的输入
- *   → 找 sam:latest 能稳定运行的最大上下文上限（显存 / tok/s / JSON 是否劣化）
+ *   → 找 qwen3.5:4b 能稳定运行的最大上下文上限（显存 / tok/s / JSON 是否劣化）
  */
 const MODE = process.env.MODE || 'stability';
 

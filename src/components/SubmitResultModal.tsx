@@ -7,7 +7,7 @@
  */
 import { motion, AnimatePresence } from 'framer-motion';
 import { useEffect, useState } from 'react';
-import { CheckCircle2, X, Send, UploadCloud } from 'lucide-react';
+import { CheckCircle2, X, Send } from 'lucide-react';
 import { useStore } from '../lib/store';
 import type { SubmissionVerdict } from '../core/types';
 import { cn } from '../lib/cn';
@@ -32,7 +32,6 @@ export function SubmitResultModal() {
   const setOpen = useStore((s) => s.setSubmitModalOpen);
   const enqueueSummarize = useStore((s) => s.enqueueSummarize);
   const enqueueAnalyze = useStore((s) => s.enqueueAnalyze);
-  const enqueueOjSubmit = useStore((s) => s.enqueueOjSubmit);
   const activeProblem = useStore((s) => {
     const id = s.activeProblemId;
     return id ? s.problems.find((p) => p.id === id) ?? null : null;
@@ -41,7 +40,6 @@ export function SubmitResultModal() {
   const [verdict, setVerdict] = useState<SubmissionVerdict | null>(null);
   const [userNote, setUserNote] = useState('');
   const [alsoAnalyze, setAlsoAnalyze] = useState(true);
-  const canOjSubmit = !!activeProblem?.source && /^https?:\/\//.test(activeProblem.source);
 
   // 重置
   useEffect(() => {
@@ -117,27 +115,6 @@ export function SubmitResultModal() {
             </div>
 
             <div className="px-5 py-4 space-y-4">
-              {canOjSubmit && (
-                <div className="rounded-xl border border-accent/30 bg-accent/5 p-3">
-                  <div className="text-xs font-semibold text-ink mb-1">
-                    一键提交到原 OJ
-                  </div>
-                  <div className="text-[11px] text-ink-mute leading-relaxed mb-3">
-                    需要原题页保持打开，并安装/启用 AI Coach 油猴脚本。脚本会先清空 OJ 编辑器，再粘贴当前代码并自动提交，判题结果会回传到这里。
-                  </div>
-                  <button
-                    onClick={() => {
-                      enqueueOjSubmit();
-                      setOpen(false);
-                    }}
-                    className="btn-primary w-full justify-center"
-                  >
-                    <UploadCloud size={13} />
-                    推回原 OJ 并自动评测
-                  </button>
-                </div>
-              )}
-
               <div>
                 <div className="text-[11px] uppercase tracking-wider text-ink-dim font-semibold mb-2">
                   这次提交是？

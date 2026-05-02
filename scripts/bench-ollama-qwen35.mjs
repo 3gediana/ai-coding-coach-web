@@ -1,5 +1,5 @@
 /**
- * Ollama 本地小模型上限测试 — 针对 sam:latest (qwen3.5:4b 改名版)
+ * Ollama 本地模型上限测试 — 针对 qwen3.5:4b
  *
  * 测试指标：
  *   - TTFT (Time To First Token) — 流式首字符延迟
@@ -11,12 +11,12 @@
  *
  * 复用项目里 buildAnalyzeCodePrompt 的精神，但本脚本独立 — 直接打 ollama。
  *
- * 跑：node scripts/bench-ollama-sam.mjs
+ * 跑：node scripts/bench-ollama-qwen35.mjs
  */
 
 import { writeFile, mkdir } from 'fs/promises';
 
-const MODEL = process.env.MODEL || 'sam:latest';
+const MODEL = process.env.MODEL || 'qwen3.5:4b';
 // 用 ollama 原生 /api/chat（不是 OpenAI 兼容），才能传 options 控制 num_gpu / num_ctx
 const ENDPOINT = process.env.ENDPOINT || 'http://localhost:11434/api/chat';
 const NUM_CTX = parseInt(process.env.NUM_CTX || '4096', 10);
@@ -320,8 +320,8 @@ for (const c of CASES) {
 // ---------------- 写报告 ----------------
 
 const tsId = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const reportPath = `${OUT_DIR}/sam-bench-${tsId}.md`;
-const jsonPath = `${OUT_DIR}/sam-bench-${tsId}.json`;
+const reportPath = `${OUT_DIR}/local-model-bench-${tsId}.md`;
+const jsonPath = `${OUT_DIR}/local-model-bench-${tsId}.json`;
 
 const ok = results.filter((r) => !r.err && r.parsed);
 const avgTtft = ok.length ? Math.round(ok.reduce((s, r) => s + r.metrics.ttftMs, 0) / ok.length) : 0;

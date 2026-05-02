@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         AI Coach 通用网页结构探针
 // @namespace    https://github.com/aicc-probe
-// @version      0.1.1
-// @description  在任意网页上抓取页面结构（题面 / 图片 / 代码块 / 编辑器位置），导出 JSON / HTML 给 AI Coach 项目，用于设计平台专用解析器
+// @version      0.2.0
+// @description  在任意网页上抓取页面结构（题面 / 图片 / 代码块 / 编辑器 / 按钮 / 结果区），回传给 AI Coach 项目，用于设计平台专用解析器
 // @author       AI Coach
 // @match        *://*/*
 // @match        http://10.11.219.21/*
 // @grant        GM_setClipboard
 // @grant        GM_download
+// @grant        GM_xmlhttpRequest
+// @connect      127.0.0.1
+// @connect      localhost
 // @run-at       document-idle
 // @noframes
 // ==/UserScript==
@@ -17,6 +20,10 @@
 
   // 防止 iframe 重复注入
   if (window.top !== window.self) return;
+
+  const PROBE_VERSION = '0.2.0';
+  const COACH_ORIGINS = ['http://127.0.0.1:5173', 'http://127.0.0.1:5174'];
+  const networkLog = [];
 
   // ─────────────────── 工具函数 ───────────────────
 
@@ -80,6 +87,453 @@
 
   /** 文本内容长度（剔除空白） */
   const textLen = (el) => (el?.innerText || '').replace(/\s+/g, ' ').trim().length;
+
+  const attr = (el, name) => el?.getAttribute?.(name) || null;
+  const shortClass = (el) => typeof el?.className === 'string' ? truncate(el.className, 160) : '';
+
+  function selectorCount(selector) {
+    try { return document.querySelectorAll(selector).length; } catch { return -1; }
+  }
+
+  function nodeBrief(el, textLimit = 120) {
+    if (!el) return null;
+    const r = rect(el);
+    return {
+      tag: el.tagName,
+      path: cssPath(el),
+      id: el.id || null,
+      cls: shortClass(el),
+      text: truncate(el.innerText || el.textContent || el.value || '', textLimit),
+      title: attr(el, 'title'),
+      ariaLabel: attr(el, 'aria-label'),
+      role: attr(el, 'role'),
+      disabled: !!el.disabled || attr(el, 'aria-disabled') === 'true' || /disabled/.test(el.className || ''),
+      visible: isVisible(el),
+      size: r,
+    };
+  }
+
+  function collectBySelectors(selectors, limitPerSelector = 8) {
+    const seen = new Set();
+    const out = [];
+    for (const selector of selectors) {
+      let nodes = [];
+      try { nodes = [...document.querySelectorAll(selector)]; } catch { continue; }
+      for (const el of nodes.slice(0, limitPerSelector)) {
+        const path = cssPath(el);
+        const key = selector + '::' + path;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push({ selector, ...nodeBrief(el, 180) });
+      }
+    }
+    return out;
+  }
+
+  function collectMonacoDeep() {
+    const api = {
+      windowMonaco: !!window.monaco,
+      editorApiKeys: window.monaco?.editor ? Object.keys(window.monaco.editor).slice(0, 80) : [],
+      editors: [],
+      models: [],
+      domEditors: [],
+      textareas: [],
+    };
+    try {
+      const editors = window.monaco?.editor?.getEditors?.() || [];
+      api.editors = editors.map((ed, i) => {
+        const value = ed.getValue?.() || '';
+        const model = ed.getModel?.();
+        const node = ed.getDomNode?.();
+        return {
+          index: i,
+          hasSetValue: typeof ed.setValue === 'function',
+          hasGetValue: typeof ed.getValue === 'function',
+          valueLength: value.length,
+          firstLines: value.split('\n').slice(0, 8),
+          languageId: model?.getLanguageId?.() || null,
+          modelUri: String(model?.uri || ''),
+          dom: node ? nodeBrief(node, 80) : null,
+        };
+      });
+    } catch (e) {
+      api.editorsError = String(e?.message || e);
+    }
+    try {
+      const models = window.monaco?.editor?.getModels?.() || [];
+      api.models = models.map((m, i) => {
+        const value = m.getValue?.() || '';
+        return {
+          index: i,
+          uri: String(m.uri || ''),
+          languageId: m.getLanguageId?.() || null,
+          valueLength: value.length,
+          firstLines: value.split('\n').slice(0, 8),
+        };
+      });
+    } catch (e) {
+      api.modelsError = String(e?.message || e);
+    }
+    api.domEditors = [...document.querySelectorAll('.monaco-editor, [class*="monaco"], [class*="my-monaco-editor"], [class*="code-area-container"]')]
+      .slice(0, 20)
+      .map((el) => {
+        const viewLines = [...el.querySelectorAll('.view-line')].slice(0, 20).map((line) => ({
+          top: line.style.top || null,
+          text: truncate(line.innerText?.replace(/\u00A0/g, ' ') || '', 180),
+        }));
+        const scrollables = [...el.querySelectorAll('.monaco-scrollable-element, .overflow-guard')].slice(0, 8).map((s) => ({
+          path: cssPath(s),
+          scrollTop: s.scrollTop,
+          scrollHeight: s.scrollHeight,
+          clientHeight: s.clientHeight,
+          clientWidth: s.clientWidth,
+        }));
+        return {
+          ...nodeBrief(el, 120),
+          viewLineCount: el.querySelectorAll('.view-line').length,
+          viewLines,
+          scrollables,
+          textareaCount: el.querySelectorAll('textarea').length,
+        };
+      });
+    api.textareas = [...document.querySelectorAll('textarea')]
+      .slice(0, 30)
+      .map((ta) => ({
+        ...nodeBrief(ta, 80),
+        valueLength: ta.value?.length || 0,
+        valueFirstLines: (ta.value || '').split('\n').slice(0, 8),
+        placeholder: ta.placeholder || null,
+      }));
+    return api;
+  }
+
+  function collectFrameworkInternals() {
+    const root = document.querySelector('#root, #app, [data-reactroot], [data-v-app]') || document.body;
+    const keys = root ? Object.keys(root).filter((k) => /react|vue/i.test(k)).slice(0, 30) : [];
+    return {
+      rootPath: root ? cssPath(root) : null,
+      rootKeys: keys,
+      hasReactDevtoolsHook: !!window.__REACT_DEVTOOLS_GLOBAL_HOOK__,
+      hasVueDevtoolsHook: !!window.__VUE_DEVTOOLS_GLOBAL_HOOK__,
+    };
+  }
+
+  function collectDomOutline() {
+    const interesting = [
+      '#task-left-panel',
+      '[class*="task-left"]',
+      '[class*="task-right"]',
+      '[class*="challenge"]',
+      '[class*="shixun"]',
+      '[class*="monaco"]',
+      '[class*="editor"]',
+      '[class*="evaluate"]',
+      '[class*="result"]',
+      '[class*="test"]',
+      '[class*="grade"]',
+      '[class*="footer"]',
+      '[class*="header"]',
+    ];
+    return collectBySelectors(interesting, 12);
+  }
+
+  function collectAllClickables() {
+    return [...document.querySelectorAll('button, a, [role="button"], .ant-btn, .el-button, [class*="btn"], [onclick]')]
+      .filter((el) => isVisible(el) || textLen(el) > 0)
+      .slice(0, 120)
+      .map((el) => ({
+        ...nodeBrief(el, 100),
+        href: el.href || null,
+        type: attr(el, 'type'),
+        dataKeys: Object.keys(el.dataset || {}).slice(0, 20),
+      }));
+  }
+
+  function collectResultZones() {
+    return collectBySelectors([
+      '[class*="result"]',
+      '[class*="evaluate"]',
+      '[class*="grade"]',
+      '[class*="test"]',
+      '[class*="output"]',
+      '.ant-message',
+      '.ant-modal',
+      '.task-right-panel',
+      '[role="alert"]',
+    ], 20);
+  }
+
+  function collectEducoderDeep() {
+    const isEducoder = location.hostname === 'www.educoder.net';
+    if (!isEducoder) return null;
+    return {
+      pathParts: location.pathname.split('/').filter(Boolean),
+      selectorCounts: {
+        taskLeftPanel: selectorCount('section#task-left-panel'),
+        shixunInfo: selectorCount('h2.shixun-info'),
+        taskName: selectorCount('.task-name, [class*="task-name"]'),
+        monacoEditor: selectorCount('.monaco-editor'),
+        myMonacoEditor: selectorCount('[class*="my-monaco-editor"]'),
+        codeArea: selectorCount('[class*="code-area-container"]'),
+        viewLines: selectorCount('.view-line'),
+        submitButtons: [...document.querySelectorAll('button, a, [role="button"], .ant-btn')].filter((el) => /提交|评测|运行|保存/i.test(el.innerText || el.textContent || '')).length,
+      },
+      keyZones: collectBySelectors([
+        'section#task-left-panel',
+        'section#task-left-panel .scroll___lsiy3',
+        'h2.shixun-info',
+        '.task-name',
+        '[class*="task-name"]',
+        '[class*="my-monaco-editor"]',
+        '[class*="code-area-container"]',
+        '.monaco-editor',
+        '.task-right-panel',
+        '[class*="task-right"]',
+        '[class*="evaluate"]',
+        '[class*="result"]',
+        '[class*="grade"]',
+      ], 12),
+      actionButtons: [...document.querySelectorAll('button, a, [role="button"], .ant-btn, .el-button')]
+        .filter((el) => /提交|评测|运行|保存|下一关|查看|测试|重置/i.test(el.innerText || el.textContent || ''))
+        .slice(0, 80)
+        .map((el) => nodeBrief(el, 120)),
+    };
+  }
+
+  function collectSchoolOjDeep() {
+    const isSchoolOj = location.hostname === '10.11.219.21';
+    if (!isSchoolOj) return null;
+    return {
+      hash: location.hash,
+      selectorCounts: {
+        mainContainer: selectorCount('main.main-container'),
+        elCards: selectorCount('.el-card'),
+        codeMirror: selectorCount('.CodeMirror'),
+        codeMirrorLines: selectorCount('.CodeMirror-line'),
+        vueCodeMirrorWrap: selectorCount('.vue-codemirror-wrap'),
+        buttons: selectorCount('button, .el-button, [role="button"]'),
+      },
+      keyZones: collectBySelectors([
+        'main.main-container',
+        '.el-card',
+        '.el-card__body',
+        '.CodeMirror',
+        '.vue-codemirror-wrap',
+        '[class*="judge"]',
+        '[class*="result"]',
+        '[class*="status"]',
+        '.el-message',
+        '.el-dialog',
+      ], 12),
+      actionButtons: [...document.querySelectorAll('button, a, [role="button"], .el-button')]
+        .filter((el) => /提交|评测|运行|保存|测试|下一题|查看|重置/i.test(el.innerText || el.textContent || ''))
+        .slice(0, 80)
+        .map((el) => nodeBrief(el, 120)),
+    };
+  }
+
+  function collectGenericEditorWriteTargets() {
+    return {
+      monaco: [...document.querySelectorAll('.monaco-editor, [class*="monaco"]')]
+        .slice(0, 20)
+        .map((el) => ({
+          ...nodeBrief(el, 120),
+          textareaPath: el.querySelector('textarea') ? cssPath(el.querySelector('textarea')) : null,
+          viewLineCount: el.querySelectorAll('.view-line').length,
+          hasScrollable: !!el.querySelector('.monaco-scrollable-element'),
+        })),
+      codeMirror: [...document.querySelectorAll('.CodeMirror')]
+        .slice(0, 20)
+        .map((el) => ({
+          ...nodeBrief(el, 120),
+          hasInstance: !!el.CodeMirror,
+          instanceValueLength: el.CodeMirror?.getValue ? el.CodeMirror.getValue().length : null,
+          textareaPath: el.querySelector('textarea') ? cssPath(el.querySelector('textarea')) : null,
+          lineCount: el.querySelectorAll('.CodeMirror-line').length,
+        })),
+      ace: [...document.querySelectorAll('.ace_editor')]
+        .slice(0, 20)
+        .map((el) => ({
+          ...nodeBrief(el, 120),
+          textareaPath: el.querySelector('textarea') ? cssPath(el.querySelector('textarea')) : null,
+        })),
+      textareas: [...document.querySelectorAll('textarea')]
+        .slice(0, 50)
+        .map((el) => ({
+          ...nodeBrief(el, 100),
+          valueLength: el.value?.length || 0,
+          valueFirstLines: (el.value || '').split('\n').slice(0, 8),
+        })),
+      contentEditable: [...document.querySelectorAll('[contenteditable="true"], [contenteditable="plaintext-only"]')]
+        .slice(0, 30)
+        .map((el) => ({
+          ...nodeBrief(el, 120),
+          textLength: textLen(el),
+        })),
+    };
+  }
+
+  function collectGenericSubmissionTargets() {
+    const keywords = /提交|评测|运行|保存|测试|提交评测|运行评测|submit|run|judge|save|test|execute|compile/i;
+    return [...document.querySelectorAll('button, a, [role="button"], input[type="button"], input[type="submit"], .ant-btn, .el-button, [class*="btn"], [onclick]')]
+      .filter((el) => keywords.test(el.innerText || el.textContent || el.value || attr(el, 'aria-label') || attr(el, 'title') || ''))
+      .slice(0, 100)
+      .map((el) => ({
+        ...nodeBrief(el, 140),
+        href: el.href || null,
+        value: el.value || null,
+        type: attr(el, 'type'),
+        onclick: attr(el, 'onclick'),
+        dataKeys: Object.keys(el.dataset || {}).slice(0, 30),
+      }));
+  }
+
+  function collectGenericResources() {
+    const resources = performance.getEntriesByType?.('resource') || [];
+    return {
+      scripts: [...document.scripts].slice(0, 80).map((s) => ({
+        src: s.src || null,
+        type: s.type || null,
+        id: s.id || null,
+        cls: shortClass(s),
+        inlineLength: s.src ? 0 : (s.textContent || '').length,
+      })),
+      stylesheets: [...document.querySelectorAll('link[rel="stylesheet"], style')].slice(0, 80).map((el) => ({
+        tag: el.tagName,
+        href: el.href || null,
+        id: el.id || null,
+        cls: shortClass(el),
+        inlineLength: el.tagName === 'STYLE' ? (el.textContent || '').length : 0,
+      })),
+      performance: resources.slice(-120).map((r) => ({
+        name: r.name,
+        initiatorType: r.initiatorType,
+        duration: Math.round(r.duration),
+        transferSize: r.transferSize || 0,
+      })),
+    };
+  }
+
+  function installNetworkLogger() {
+    if (window.__aiccProbeNetworkLoggerInstalled) return;
+    window.__aiccProbeNetworkLoggerInstalled = true;
+    const push = (entry) => {
+      networkLog.push({
+        ts: new Date().toISOString(),
+        ...entry,
+      });
+      if (networkLog.length > 300) networkLog.shift();
+    };
+    const originalFetch = window.fetch;
+    if (typeof originalFetch === 'function') {
+      window.fetch = async function (...args) {
+        const started = performance.now();
+        const input = args[0];
+        const init = args[1] || {};
+        const url = typeof input === 'string' ? input : input?.url;
+        const method = init.method || input?.method || 'GET';
+        try {
+          const resp = await originalFetch.apply(this, args);
+          push({
+            kind: 'fetch',
+            method,
+            url: String(url || ''),
+            status: resp.status,
+            ok: resp.ok,
+            durationMs: Math.round(performance.now() - started),
+          });
+          return resp;
+        } catch (e) {
+          push({
+            kind: 'fetch',
+            method,
+            url: String(url || ''),
+            error: String(e?.message || e),
+            durationMs: Math.round(performance.now() - started),
+          });
+          throw e;
+        }
+      };
+    }
+    const OriginalXHR = window.XMLHttpRequest;
+    if (typeof OriginalXHR === 'function') {
+      window.XMLHttpRequest = function () {
+        const xhr = new OriginalXHR();
+        let method = 'GET';
+        let url = '';
+        let started = 0;
+        const origOpen = xhr.open;
+        const origSend = xhr.send;
+        xhr.open = function (m, u, ...rest) {
+          method = m;
+          url = String(u || '');
+          return origOpen.call(this, m, u, ...rest);
+        };
+        xhr.send = function (...args) {
+          started = performance.now();
+          xhr.addEventListener('loadend', () => {
+            push({
+              kind: 'xhr',
+              method,
+              url,
+              status: xhr.status,
+              durationMs: Math.round(performance.now() - started),
+              responseURL: xhr.responseURL || null,
+            });
+          });
+          return origSend.apply(this, args);
+        };
+        return xhr;
+      };
+    }
+  }
+
+  function collectStorageSnapshot() {
+    const safeKeys = (storage) => {
+      try {
+        return Array.from({ length: storage.length }, (_, i) => storage.key(i))
+          .filter(Boolean)
+          .slice(0, 100)
+          .map((key) => {
+            const value = storage.getItem(key) || '';
+            return { key, valueLength: value.length, valuePreview: truncate(value, 160) };
+          });
+      } catch (e) {
+        return [{ error: String(e?.message || e) }];
+      }
+    };
+    return {
+      localStorage: safeKeys(localStorage),
+      sessionStorage: safeKeys(sessionStorage),
+      cookieKeys: document.cookie
+        ? document.cookie.split(';').map((x) => x.split('=')[0].trim()).filter(Boolean).slice(0, 100)
+        : [],
+    };
+  }
+
+  function collectGenericDomStats() {
+    const all = [...document.querySelectorAll('*')];
+    const tagCounts = {};
+    const classCounts = {};
+    for (const el of all) {
+      tagCounts[el.tagName.toLowerCase()] = (tagCounts[el.tagName.toLowerCase()] || 0) + 1;
+      if (typeof el.className === 'string') {
+        for (const c of el.className.split(/\s+/).filter(Boolean)) {
+          if (c.length > 80) continue;
+          classCounts[c] = (classCounts[c] || 0) + 1;
+        }
+      }
+    }
+    const topClasses = Object.entries(classCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 80)
+      .map(([className, count]) => ({ className, count }));
+    return {
+      totalElements: all.length,
+      tagCounts,
+      topClasses,
+    };
+  }
 
   // ─────────────────── 探针主函数 ───────────────────
 
@@ -206,16 +660,56 @@
       url: location.href,
       title: document.title,
       domain: location.hostname,
+      path: location.pathname,
+      search: location.search,
+      hash: location.hash,
       timestamp: new Date().toISOString(),
+      probeVersion: PROBE_VERSION,
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY,
+        bodyScrollHeight: document.body?.scrollHeight || 0,
+        documentScrollHeight: document.documentElement?.scrollHeight || 0,
+      },
       frameworks,
+      frameworkInternals: collectFrameworkInternals(),
       titles,
       containers_top10: containers,
       images,
       code_blocks: codeBlocks,
       editors,
+      monacoDeep: collectMonacoDeep(),
       tabs,
       buttons_action: buttons,
+      clickables_all: collectAllClickables(),
+      editor_write_targets: collectGenericEditorWriteTargets(),
+      submit_targets: collectGenericSubmissionTargets(),
+      form_controls: [...document.querySelectorAll('input, textarea, select, [contenteditable="true"]')]
+        .slice(0, 100)
+        .map((el) => ({
+          ...nodeBrief(el, 80),
+          name: attr(el, 'name'),
+          type: attr(el, 'type'),
+          placeholder: attr(el, 'placeholder'),
+          valueLength: String(el.value || el.innerText || '').length,
+          valuePreview: truncate(el.value || el.innerText || '', 120),
+        })),
+      result_zones: collectResultZones(),
+      dom_outline: collectDomOutline(),
+      resources: collectGenericResources(),
+      networkLog: networkLog.slice(-300),
+      storageSnapshot: collectStorageSnapshot(),
+      domStats: collectGenericDomStats(),
+      siteSpecific: {
+        educoder: collectEducoderDeep(),
+        schoolOj: collectSchoolOjDeep(),
+      },
       iframes,
+      bodyTextHead: truncate(document.body?.innerText || '', 2000),
+      bodyTextTail: truncate((document.body?.innerText || '').slice(-3000), 2000),
       summary: {
         titleCount: titles.length,
         containerCount: containers.length,
@@ -223,6 +717,9 @@
         codeBlockCount: codeBlocks.length,
         editorCount: editors.length,
         tabCount: tabs.length,
+        clickableCount: selectorCount('button, a, [role="button"], .ant-btn, .el-button, [class*="btn"], [onclick]'),
+        textareaCount: selectorCount('textarea'),
+        inputCount: selectorCount('input'),
       },
     };
   }
@@ -355,6 +852,7 @@
       <button type="button" class="primary" data-act="copy-json">📋 复制 JSON</button>
       <button type="button" data-act="copy-html">📄 复制 HTML</button>
       <button type="button" data-act="download">⬇ 下载</button>
+      <button type="button" class="primary" data-act="send-local">📡 回传本地</button>
       <button type="button" data-act="close" title="关闭 (Esc)">✕</button>
     `;
 
@@ -402,6 +900,25 @@
         downloadFile(`aicc-probe-${location.hostname}-${Date.now()}.json`, JSON.stringify(data, null, 2));
         downloadFile(`aicc-probe-${location.hostname}-${Date.now()}.html`, document.documentElement.outerHTML);
         flash(btn, '已触发下载');
+      } else if (act === 'send-local') {
+        btn.disabled = true;
+        const old = btn.textContent;
+        btn.textContent = '回传中…';
+        sendLocalSnapshot(data)
+          .then((resp) => {
+            btn.textContent = '已回传';
+            console.log('[aicc-probe] 本地回传成功', resp);
+            setTimeout(() => {
+              btn.disabled = false;
+              btn.textContent = old;
+            }, 1800);
+          })
+          .catch((err) => {
+            btn.disabled = false;
+            btn.textContent = old;
+            console.error('[aicc-probe] 本地回传失败', err);
+            alert('回传失败：' + (err?.message || err));
+          });
       } else if (act === 'close') {
         close();
       }
@@ -550,9 +1067,64 @@
     setTimeout(() => { btn.textContent = old; }, 1500);
   }
 
+  function gmRequestJson(path, { method = 'GET', data, timeout = 30_000 } = {}) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest !== 'function') {
+        reject(new Error('GM_xmlhttpRequest 不可用，请确认油猴授权'));
+        return;
+      }
+      let idx = 0;
+      const tryOne = () => {
+        const origin = COACH_ORIGINS[idx++];
+        GM_xmlhttpRequest({
+          method,
+          url: origin + path,
+          headers: { 'content-type': 'application/json' },
+          data: data === undefined ? undefined : JSON.stringify(data),
+          timeout,
+          onload: (r) => {
+            if (r.status >= 200 && r.status < 300) {
+              try {
+                resolve(JSON.parse(r.responseText || '{}'));
+              } catch {
+                resolve({ ok: true });
+              }
+            } else if (idx < COACH_ORIGINS.length) {
+              tryOne();
+            } else {
+              reject(new Error(`HTTP ${r.status}: ${r.responseText?.slice(0, 200)}`));
+            }
+          },
+          onerror: () => {
+            if (idx < COACH_ORIGINS.length) tryOne();
+            else reject(new Error('网络错误：AI Coach 是否在 5173/5174 端口运行？'));
+          },
+          ontimeout: () => {
+            if (idx < COACH_ORIGINS.length) tryOne();
+            else reject(new Error('超时（30s）'));
+          },
+        });
+      };
+      tryOne();
+    });
+  }
+
+  function sendLocalSnapshot(data) {
+    return gmRequestJson('/__probe-snapshot', {
+      method: 'POST',
+      timeout: 45_000,
+      data: {
+        ...data,
+        fullHtml: document.documentElement.outerHTML,
+        capturedAt: new Date().toISOString(),
+      },
+    });
+  }
+
   // ─────────────────── 入口 ───────────────────
 
   function init() {
+    installNetworkLogger();
     injectStyles();
     const fab = document.createElement('button');
     fab.className = 'aicc-probe-fab';
@@ -568,7 +1140,7 @@
       }
     };
     document.body.appendChild(fab);
-    console.log('[aicc-probe] 已加载，点击右下角 🔍 抓取');
+    console.log('[aicc-probe] 已加载，点击右下角 🔍 抓取；本脚本只侦察结构，不写代码、不提交。');
   }
 
   if (document.readyState === 'loading') {

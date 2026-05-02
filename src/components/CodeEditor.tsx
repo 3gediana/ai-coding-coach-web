@@ -520,8 +520,11 @@ export function CodeEditor() {
                 </div>
               }
               options={{
-                fontFamily: 'JetBrains Mono, Menlo, monospace',
+                fontFamily: '"Cascadia Code", "Cascadia Mono", "Fira Code", "Maple Mono", "JetBrains Mono", "Microsoft YaHei UI", Consolas, monospace',
                 fontSize: 14,
+                fontWeight: '450',
+                lineHeight: 22,
+                letterSpacing: 0.1,
                 fontLigatures: true,
                 minimap: { enabled: false },
                 scrollBeyondLastLine: false,

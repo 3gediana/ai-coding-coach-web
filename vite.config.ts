@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
 
 /**
@@ -130,8 +130,8 @@ const ollamaAutostartPlugin: Plugin = {
 };
 
 export default defineConfig({
-  // 让 .env.local 里 AI_COACH_* 也能在前端访问（保持与已有变量命名一致）
-  envPrefix: ['VITE_', 'AI_COACH_'],
+  // 让 .env.local 里 AI_COACH_* / DEEPSEEK_* 也能在前端访问（保持与已有变量命名一致）
+  envPrefix: ['VITE_', 'AI_COACH_', 'DEEPSEEK_'],
   plugins: [
     react(),
     ollamaAutostartPlugin,
@@ -331,7 +331,7 @@ export default defineConfig({
           id: string;
           source: string;
           url: string;
-          status: 'done' | 'failed' | 'timeout';
+          status: 'filled' | 'done' | 'failed' | 'timeout';
           verdict?: string;
           rawText?: string;
           message?: string;
@@ -362,7 +362,7 @@ export default defineConfig({
           try {
             const u = new URL(raw);
             if (u.hostname === 'www.educoder.net') return `${u.origin}${u.pathname}`;
-            if (u.hostname === '10.11.219.21') return `${u.origin}${u.pathname}${u.hash}`;
+            if (u.hostname === '10.11.219.21') return `${u.origin}${u.pathname}${u.hash.replace(/#problem-[^#/?&]+$/, '')}`;
             return `${u.origin}${u.pathname}${u.hash}`;
           } catch {
             return raw;
@@ -373,6 +373,82 @@ export default defineConfig({
           res.setHeader('access-control-allow-methods', methods);
           res.setHeader('access-control-allow-headers', 'content-type');
         };
+
+        const safeFilePart = (value: unknown): string =>
+          String(value ?? 'unknown')
+            .replace(/^https?:\/\//, '')
+            .replace(/[^a-zA-Z0-9._-]+/g, '_')
+            .replace(/^_+|_+$/g, '')
+            .slice(0, 80) || 'unknown';
+
+        server.middlewares.use('/__probe-snapshot', async (req, res) => {
+          setCors(res, 'POST, OPTIONS');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          try {
+            const payload = await readJsonBody<Record<string, unknown>>(req);
+            const dir = pathResolve(process.cwd(), 'logs', 'dom-snapshots');
+            mkdirSync(dir, { recursive: true });
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const site = safeFilePart(payload.domain ?? payload.url ?? 'page');
+            const baseName = `${stamp}_${site}`;
+            const jsonPath = pathResolve(dir, `${baseName}.json`);
+            writeFileSync(jsonPath, JSON.stringify(payload, null, 2), 'utf8');
+            let htmlPath: string | null = null;
+            if (typeof payload.fullHtml === 'string' && payload.fullHtml.trim()) {
+              htmlPath = pathResolve(dir, `${baseName}.html`);
+              writeFileSync(htmlPath, payload.fullHtml, 'utf8');
+            }
+            res.statusCode = 200;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: true, jsonPath, htmlPath }));
+            console.log(`\x1b[36m[aicc-probe]\x1b[0m snapshot saved ${jsonPath}`);
+          } catch (err: any) {
+            res.statusCode = 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: String(err?.message || err) }));
+          }
+        });
+
+        server.middlewares.use('/__oj-debug-log', async (req, res) => {
+          setCors(res, 'POST, OPTIONS');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          try {
+            const payload = await readJsonBody<Record<string, unknown>>(req);
+            const dir = pathResolve(process.cwd(), 'logs', 'oj-debug');
+            mkdirSync(dir, { recursive: true });
+            const date = new Date().toISOString().slice(0, 10);
+            const logPath = pathResolve(dir, `${date}.jsonl`);
+            appendFileSync(logPath, JSON.stringify({ ts: Date.now(), ...payload }) + '\n', 'utf8');
+            res.statusCode = 200;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: true, logPath }));
+            console.log(`\x1b[35m[aicc-oj-debug]\x1b[0m ${String(payload.event ?? 'event')} ${String(payload.commandId ?? '')}`);
+          } catch (err: any) {
+            res.statusCode = 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: String(err?.message || err) }));
+          }
+        });
 
         server.middlewares.use('/__aicc-ollama-mode', async (req, res) => {
           setCors(res, 'GET, POST, OPTIONS');

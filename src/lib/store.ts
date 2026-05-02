@@ -219,6 +219,9 @@ export interface SubmitOpts {
 
 const LS_AI_CFG = 'aicc.aiConfig.v1';
 const LS_DEFAULT_LANG = 'aicc.defaultLang.v1';
+
+const DEEPSEEK_FLASH_MODEL_ID = 'deepseek-v4-flash';
+const DEEPSEEK_PRO_MODEL_ID = 'deepseek-v4-pro';
 const LS_OLD_CODE = 'aicc.code.v1'; // 旧数据迁移用
 
 const DRAFT_SCOPE = '__draft__';
@@ -789,20 +792,76 @@ interface State {
   // 外部导入（Tampermonkey 推送）
   /** 接收 TM 推送的 payload，去重 / 接收 qwen3.5 识图结果 / parseProblem / 入库 / 激活 */
   handleImportPayload: (payload: import('./importReceiver').ImportPayload) => Promise<void>;
-  /** 推送当前代码到原 OJ，由 Tampermonkey 清空编辑器、粘贴、提交并回传 verdict */
-  enqueueOjSubmit: () => string | null;
+  /** 推送当前代码到原 OJ，由 Tampermonkey 清空编辑器并粘贴；可选自动提交并回传 verdict */
+  enqueueOjSubmit: (opts?: { autoSubmit?: boolean }) => string | null;
 }
 
 // ============== 初始化 ==============
 
 /**
- * 从 .env.local 读取项目级默认 AI 配置（vite envPrefix 已开放 AI_COACH_*）。
+ * 从 .env.local 读取项目级默认 AI 配置（vite envPrefix 已开放 AI_COACH_* / DEEPSEEK_*）。
  * 用于：localStorage 还没保存过用户改动时，避免每次部署/换浏览器都得重新填密钥。
  * 用户在 SettingsModal 修改后，仍以 localStorage 为准。
  */
 function readEnvAIConfig(): Partial<AIConfig> {
   const env = (import.meta as any).env ?? {};
   const out: Partial<AIConfig> = {};
+  const deepseekKey = ((env.DEEPSEEK_KEY || env.DEEPSEEK_API_KEY) as string | undefined)?.trim();
+  const deepseekBaseUrl =
+    ((env.DEEPSEEK_BASE_URL || DEFAULT_AI_CONFIG.baseUrl) as string | undefined)?.trim() ||
+    DEFAULT_AI_CONFIG.baseUrl;
+  const deepseekFlashModel =
+    ((env.DEEPSEEK_FLASH_MODEL || DEEPSEEK_FLASH_MODEL_ID) as string | undefined)?.trim() ||
+    DEEPSEEK_FLASH_MODEL_ID;
+  const deepseekProModel =
+    ((env.DEEPSEEK_PRO_MODEL || DEEPSEEK_PRO_MODEL_ID) as string | undefined)?.trim() ||
+    DEEPSEEK_PRO_MODEL_ID;
+  if (deepseekKey) {
+    const deepseekRegistry: ModelEntry[] = [
+      {
+        id: DEEPSEEK_FLASH_MODEL_ID,
+        label: 'DeepSeek V4 Flash（轻量主力）',
+        provider: 'deepseek',
+        baseUrl: deepseekBaseUrl,
+        apiKey: deepseekKey,
+        model: deepseekFlashModel,
+      },
+      {
+        id: DEEPSEEK_PRO_MODEL_ID,
+        label: 'DeepSeek V4 Pro（重活/动画）',
+        provider: 'deepseek',
+        baseUrl: deepseekBaseUrl,
+        apiKey: deepseekKey,
+        model: deepseekProModel,
+      },
+    ];
+    out.provider = 'deepseek';
+    out.baseUrl = deepseekBaseUrl;
+    out.apiKey = deepseekKey;
+    out.model = deepseekFlashModel;
+    out.primaryModelId = DEEPSEEK_FLASH_MODEL_ID;
+    out.qualityModelId = DEEPSEEK_PRO_MODEL_ID;
+    out.modelRegistry = deepseekRegistry;
+    out.algoVizModels = {
+      status: {
+        enabled: true,
+        modelId: DEEPSEEK_PRO_MODEL_ID,
+        provider: 'deepseek',
+        baseUrl: deepseekBaseUrl,
+        apiKey: deepseekKey,
+        model: deepseekProModel,
+      },
+      animation: {
+        enabled: true,
+        modelId: DEEPSEEK_PRO_MODEL_ID,
+        provider: 'deepseek',
+        baseUrl: deepseekBaseUrl,
+        apiKey: deepseekKey,
+        model: deepseekProModel,
+      },
+    };
+    return out;
+  }
   const provider = env.AI_COACH_PROVIDER as AIProvider | undefined;
   const baseUrl = env.AI_COACH_BASE_URL as string | undefined;
   const apiKey = env.AI_COACH_KEY as string | undefined;
@@ -815,17 +874,22 @@ function readEnvAIConfig(): Partial<AIConfig> {
 }
 
 function withDefaultCloudModels(cfg: AIConfig): AIConfig {
-  if (cfg.provider !== 'deepseek' || cfg.baseUrl !== DEFAULT_AI_CONFIG.baseUrl) return cfg;
   const defaults = DEFAULT_AI_CONFIG.modelRegistry ?? [];
   const byId = new Map((cfg.modelRegistry ?? []).map((m) => [m.id, m]));
+  const inheritedKey =
+    cfg.provider === 'deepseek' && cfg.baseUrl === DEFAULT_AI_CONFIG.baseUrl ? cfg.apiKey : '';
   for (const m of defaults) {
     const existing = byId.get(m.id);
-    byId.set(m.id, { ...m, ...(existing ?? {}), apiKey: existing?.apiKey || cfg.apiKey });
+    byId.set(m.id, { ...m, ...(existing ?? {}), apiKey: existing?.apiKey || inheritedKey || m.apiKey });
+  }
+  if (cfg.provider !== 'deepseek' || cfg.baseUrl !== DEFAULT_AI_CONFIG.baseUrl) {
+    return { ...cfg, modelRegistry: [...byId.values()] };
   }
   return {
     ...cfg,
-    model: cfg.model || 'deepseek-v4-flash',
-    qualityModelId: cfg.qualityModelId ?? 'deepseek-v4-pro',
+    model: cfg.model || DEEPSEEK_FLASH_MODEL_ID,
+    primaryModelId: cfg.primaryModelId ?? DEEPSEEK_FLASH_MODEL_ID,
+    qualityModelId: cfg.qualityModelId ?? DEEPSEEK_PRO_MODEL_ID,
     modelRegistry: [...byId.values()],
     algoVizModels: {
       ...cfg.algoVizModels,
@@ -835,18 +899,37 @@ function withDefaultCloudModels(cfg: AIConfig): AIConfig {
   };
 }
 
+function mergeModelRegistries(...registries: Array<ModelEntry[] | undefined>): ModelEntry[] {
+  const byId = new Map<string, ModelEntry>();
+  for (const registry of registries) {
+    for (const entry of registry ?? []) {
+      byId.set(entry.id, { ...(byId.get(entry.id) ?? {}), ...entry });
+    }
+  }
+  return [...byId.values()];
+}
+
+function hasDeepSeekEnv(cfg: Partial<AIConfig>): boolean {
+  return !!cfg.modelRegistry?.some((m) => m.id === DEEPSEEK_FLASH_MODEL_ID && !!m.apiKey.trim());
+}
+
 const initialAIConfig: AIConfig = (() => {
   const envCfg = readEnvAIConfig();
   try {
     const raw = localStorage.getItem(LS_AI_CFG);
     if (raw) {
       const parsed = JSON.parse(raw);
-      // 浅合并：默认 → .env → localStorage（用户保存的优先级最高）
+      const forceDeepSeek = hasDeepSeekEnv(envCfg);
+      // 浅合并：默认 → .env → localStorage；如果显式配置 DEEPSEEK_KEY，则以 DeepSeek 双模型为当前运行路由
       // fastLane / intentRouter 做嵌套兜底
+      const mergedBase: AIConfig = forceDeepSeek
+        ? { ...DEFAULT_AI_CONFIG, ...parsed, ...envCfg }
+        : { ...DEFAULT_AI_CONFIG, ...envCfg, ...parsed };
       const merged: AIConfig = {
-        ...DEFAULT_AI_CONFIG,
-        ...envCfg,
-        ...parsed,
+        ...mergedBase,
+        modelRegistry: forceDeepSeek
+          ? mergeModelRegistries(parsed.modelRegistry, envCfg.modelRegistry)
+          : mergeModelRegistries(envCfg.modelRegistry, parsed.modelRegistry),
         fastLane: { ...DEFAULT_AI_CONFIG.fastLane!, ...(parsed.fastLane ?? {}) },
         intentRouter: {
           ...DEFAULT_AI_CONFIG.intentRouter!,
@@ -3837,7 +3920,7 @@ int main() {
         return { dailyPlan: next };
       }),
 
-    enqueueOjSubmit: () => {
+    enqueueOjSubmit: (opts = {}) => {
       const st = get();
       if (!st.activeProblemId) {
         toast.error('请先激活一道从 OJ 导入的题目');
@@ -3868,9 +3951,10 @@ int main() {
         detail: `目标：${problem.source}\n文件：${file.name}（${file.content.length} 字符）`,
         problemId: problem.id,
       });
-      return enqueue('oj-submit', `OJ 提交：${problem.title}`, {
+      const autoSubmit = opts.autoSubmit === true;
+      return enqueue('oj-submit', `${autoSubmit ? 'OJ 提交' : 'OJ 回填'}：${problem.title}`, {
         run: async (onChunk, _onRetry, signal) => {
-          onChunk('', '等待油猴脚本接收命令，请保持原 OJ 题目页打开…');
+          onChunk('', `等待油猴脚本接收命令，请保持原 OJ 题目页打开…${autoSubmit ? '' : '（只回填，不自动提交）'}`);
           get().recordAgentTrace({
             kind: 'act',
             level: 'info',
@@ -3886,10 +3970,14 @@ int main() {
               fileName: file.name,
               language: file.language,
               code: file.content,
-              autoSubmit: true,
+              autoSubmit,
             },
             { signal, timeoutMs: 8 * 60_000 },
           );
+          if (result.status === 'filled') {
+            onChunk('', '代码已回填到原 OJ 编辑器，未自动提交');
+            return result;
+          }
           if (result.status !== 'done') {
             throw new Error(result.message || 'OJ 自动提交失败');
           }
@@ -3898,6 +3986,17 @@ int main() {
         },
         onSuccess: async (result) => {
           const r = result as OjSubmitResult;
+          if (r.status === 'filled') {
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: 'success',
+              title: 'OJ 代码回填完成',
+              detail: r.message ?? '代码已写入原 OJ 编辑器，等待用户自行检查/提交',
+              problemId: problem.id,
+            });
+            toast.success('已回填到原 OJ', { description: '代码已写入编辑器，未自动提交' });
+            return;
+          }
           const verdict: SubmissionVerdict = r.verdict ?? 'OTHER';
           const isMistake = verdict !== 'AC';
           get().recordAgentTrace({
@@ -3970,6 +4069,48 @@ int main() {
         } else {
           toast.info(`已存在：${existing.title}`);
         }
+        const incomingCode = payload.initialCode ?? '';
+        if (incomingCode.trim()) {
+          const lang = inferImportedFileLang(payload);
+          const latest = get();
+          const files = latest.filesByScope[existing.id] ?? [];
+          const activeFileId = latest.activeFileIdByScope[existing.id];
+          const target = files.find((f) => f.id === activeFileId) ?? files[0];
+          if (target) {
+            const updatedFile: CodeFile = {
+              ...target,
+              language: lang,
+              content: incomingCode,
+              updatedAt: Date.now(),
+            };
+            await storage.saveFile(updatedFile);
+            set((s) => ({
+              filesByScope: {
+                ...s.filesByScope,
+                [existing.id]: (s.filesByScope[existing.id] ?? []).map((f) =>
+                  f.id === updatedFile.id ? updatedFile : f,
+                ),
+              },
+              activeFileIdByScope: { ...s.activeFileIdByScope, [existing.id]: updatedFile.id },
+            }));
+          } else {
+            const fileId = 'file-' + Date.now();
+            const file: CodeFile = {
+              id: fileId,
+              problemId: existing.id,
+              name: defaultFileName(lang, []),
+              language: lang,
+              content: incomingCode,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+            await storage.saveFile(file);
+            set((s) => ({
+              filesByScope: { ...s.filesByScope, [existing.id]: [file] },
+              activeFileIdByScope: { ...s.activeFileIdByScope, [existing.id]: fileId },
+            }));
+          }
+        }
         await get().setActiveProblem(existing.id);
         return;
       }
@@ -4012,7 +4153,7 @@ int main() {
 
       // 入库 + 编辑文件
       await storage.saveProblem(problem);
-      const lang: FileLang = (payload.language === 'python' ? 'python' : payload.language === 'c' ? 'c' : 'cpp');
+      const lang = inferImportedFileLang(payload);
       const fileId = 'file-' + Date.now();
       const fileName = lang === 'cpp' ? 'main.cpp' : lang === 'c' ? 'main.c' : 'main.py';
       const file: CodeFile = {
@@ -4083,6 +4224,21 @@ function findScopeOfFile(st: State, fileId: string): string | null {
     if (files.some((f) => f.id === fileId)) return scope;
   }
   return null;
+}
+
+function inferImportedFileLang(payload: import('./importReceiver').ImportPayload): FileLang {
+  const explicit = (payload.language ?? '').toLowerCase();
+  const text = `${payload.title ?? ''}\n${payload.rawText ?? ''}\n${payload.initialCode ?? ''}`.toLowerCase();
+  if (
+    explicit === 'python' ||
+    /\bpython\b/.test(text) ||
+    text.includes('input 函数') ||
+    /(^|\n)\s*(def|print|with\s+open|import\s+)\b/.test(payload.initialCode ?? '')
+  ) {
+    return 'python';
+  }
+  if (explicit === 'c') return 'c';
+  return 'cpp';
 }
 
 function smartDupName(orig: string, existing: string[]): string {

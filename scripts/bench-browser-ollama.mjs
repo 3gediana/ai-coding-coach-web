@@ -31,7 +31,7 @@ const result = await p.evaluate(async () => {
     provider: 'ollama',
     baseUrl: 'http://localhost:11434/v1/chat/completions',
     apiKey: '',
-    model: 'sam:latest',
+    model: 'qwen3.5:4b',
     maxTokens: 512,
     temperature: 0.3,
     timeoutMs: 60000,

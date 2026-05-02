@@ -3,7 +3,7 @@
  *
  * 流程：
  *   1. 读 raw payload 文件
- *   2. 对每张图调 ollama /api/chat (sam vision) → 文字描述
+ *   2. 对每张图调 ollama /api/chat (qwen3.5 vision) → 文字描述
  *   3. 把描述就地替换 rawText 里的 [[IMG_N]] placeholder
  *   4. 写 processed payload 文件（含 imageRecognitions 字段）
  *   5. finally 块发 keep_alive=0 卸载模型释放显存
@@ -24,9 +24,8 @@ import { resolve as pathResolve, basename, dirname, join } from 'node:path';
 // ─────────── 配置 ───────────
 
 const OLLAMA_BASE = process.env.AICC_OLLAMA_BASE || 'http://127.0.0.1:11434';
-// 视觉模型默认 ollama library 公共多模态 minicpm-v；
-// 用户可通过 AICC_VISION_MODEL 换成 llava / llama3.2-vision 等。
-const SAM_MODEL = process.env.AICC_VISION_MODEL || 'minicpm-v:latest';
+// 视觉模型默认复用项目统一本地模型 qwen3.5:4b。
+const VISION_MODEL = process.env.AICC_VISION_MODEL || 'qwen3.5:4b';
 const VISION_PROMPT =
   '请简要描述这张图的内容。' +
   '如果是文字截图（题面/样例/公式）请逐字识别原文；' +
@@ -61,7 +60,7 @@ async function ollamaVisionDescribe(base64) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      model: SAM_MODEL,
+      model: VISION_MODEL,
       messages: [{ role: 'user', content: VISION_PROMPT, images: [base64] }],
       stream: false,
       options: { temperature: 0.2 },
@@ -76,7 +75,7 @@ async function ollamaVisionDescribe(base64) {
   return String(data.message?.content || '').trim();
 }
 
-async function ollamaUnload(model = SAM_MODEL) {
+async function ollamaUnload(model = VISION_MODEL) {
   try {
     await fetch(`${OLLAMA_BASE}/api/generate`, {
       method: 'POST',
@@ -116,7 +115,7 @@ export async function processImportFile(rawPath) {
 
   const recognitions = []; // {index, src, alt, description, error?, elapsedMs}
 
-  // 没图直接跳过 sam，但仍输出 processed 文件保持流程一致
+  // 没图直接跳过识图，但仍输出 processed 文件保持流程一致
   if (payload.images?.length > 0) {
     // 总开关（与浏览器侧 ollamaMode='disabled' 对齐）：
     //   AICC_OLLAMA=0  → 直接跳过识图，不发任何 ollama 请求
@@ -186,7 +185,7 @@ export async function processImportFile(rawPath) {
     imageRecognitions: recognitions,
     processedAt: new Date().toISOString(),
     processorMeta: {
-      visionModel: SAM_MODEL,
+      visionModel: VISION_MODEL,
       ollamaBase: OLLAMA_BASE,
       startedAt,
     },

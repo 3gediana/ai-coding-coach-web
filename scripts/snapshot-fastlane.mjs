@@ -50,10 +50,10 @@ if (box) {
 }
 
 // 点击一个 ollama 模型 chip
-console.log('→ 选 sam:latest');
-const samChip = p.locator('button.chip:has-text("sam:latest")').first();
-if (await samChip.count()) {
-  await samChip.click();
+console.log('→ 选 qwen3.5:4b');
+const qwen35Chip = p.locator('button.chip:has-text("qwen3.5:4b")').first();
+if (await qwen35Chip.count()) {
+  await qwen35Chip.click();
   await p.waitForTimeout(300);
   console.log('→ Cap 3: 选中模型');
   const box2 = await modal.boundingBox();
