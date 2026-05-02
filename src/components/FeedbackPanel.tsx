@@ -86,10 +86,10 @@ export function FeedbackPanel() {
   const moduleStatus = useStore((s) =>
     activeProblemId ? s.moduleStatusByProblem[activeProblemId] : undefined,
   );
-  const algoVizActiveCount = moduleStatus
-    ? Object.values(moduleStatus).filter(Boolean).length
-    : 0;
   const algoVizStatusReady = !!problem?.algoViz?.statusCode && !!problem.algoViz.detectionSchema;
+  const algoVizActiveCount = algoVizStatusReady
+    ? problem.algoViz!.detectionSchema!.modules.filter((m) => !!moduleStatus?.[m.id]).length
+    : 0;
   const algoVizTotalCount = algoVizStatusReady ? problem.algoViz!.detectionSchema!.modules.length : 0;
   const algoVizDetecting = useStore((s) =>
     activeProblemId ? !!s.algoVizDetectingByProblem[activeProblemId] : false,

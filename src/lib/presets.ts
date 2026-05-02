@@ -156,21 +156,21 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
   timeoutMs: 180_000,
   maxRetries: 2,
   // FastLane 默认值（用户在 Settings 勾选 enabled 即可启用）
-  // model 用 ollama library 公共模型 qwen3:4b（≈4GB 显存，TTFT < 500ms）
-  // 用户也可换 qwen3:8b / qwen2.5:7b / deepseek-coder:6.7b 等
+  // model 用项目统一本地模型 qwen3.5:4b（≈4GB 显存，TTFT < 500ms）
+  // 用户也可换同系列更大上下文/更高质量模型
   fastLane: {
     enabled: false,
     baseUrl: 'http://localhost:11434',
-    model: 'qwen3:4b',
+    model: 'qwen3.5:4b',
   },
   // Coach 意图路由（兜底用的小模型）。默认关闭，开启后用本地 ollama 上的小模型判断意图。
-  // 复用 fastLane 同款 qwen3:4b 避免用户多 pull 一个模型
+  // 复用 fastLane 同款 qwen3.5:4b 避免用户多 pull 一个模型
   intentRouter: {
     enabled: false,
     provider: 'ollama',
     baseUrl: 'http://localhost:11434',
     apiKey: '',
-    model: 'qwen3:4b',
+    model: 'qwen3.5:4b',
   },
   algoVizModels: {
     status: {
@@ -202,7 +202,7 @@ export const RECOMMENDED_OLLAMA_MODELS: Array<{
   vramHint: string;
   desc: string;
 }> = [
-  { name: 'qwen3:4b', size: '~2.6 GB', vramHint: '4 GB+', desc: '默认推荐：速度/质量平衡，TTFT < 500ms' },
+  { name: 'qwen3.5:4b', size: '~2.6 GB', vramHint: '4 GB+', desc: '默认推荐：速度/质量平衡，TTFT < 500ms' },
   { name: 'qwen3:8b', size: '~5.2 GB', vramHint: '6 GB+', desc: '更强推理；适合复杂题分析' },
   { name: 'qwen2.5:7b', size: '~4.7 GB', vramHint: '6 GB+', desc: '稳定老牌，对中文友好' },
   { name: 'deepseek-coder:6.7b', size: '~3.8 GB', vramHint: '5 GB+', desc: '代码任务专长；批注更精准' },
@@ -217,7 +217,5 @@ export const RECOMMENDED_VISION_MODELS: Array<{
   size: string;
   desc: string;
 }> = [
-  { name: 'minicpm-v:latest', size: '~5.5 GB', desc: '推荐：识图 + OCR 在 7B 级别里第一档' },
-  { name: 'llava:7b', size: '~4.7 GB', desc: '老牌多模态；中文 OCR 偏弱' },
-  { name: 'llama3.2-vision:11b', size: '~7.9 GB', desc: 'Meta 官方 vision；显存够再上' },
+  { name: 'qwen3.5:4b', size: '~2.6 GB', desc: '项目统一本地模型：实时批注 + OJ 题图识别' },
 ];

@@ -38,7 +38,7 @@ export interface RouteDecision {
  * 路由阈值（用户可在 Settings 里覆盖）。
  *
  * 默认值的依据：
- *   - codeCharLimit 4000 ≈ 1000 tokens，本地 sam num_ctx 4096-20480 都装得下
+ *   - codeCharLimit 4000 ≈ 1000 tokens，本地 qwen3.5:4b num_ctx 4096-20480 都装得下
  *   - codeLineLimit 120：超过这行数本地 ctx 容易爆
  *   - heavyTags：复杂主题需要长链推理，本地小模型容易翻车
  */

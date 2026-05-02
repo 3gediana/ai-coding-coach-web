@@ -31,12 +31,11 @@ const FEATURES = [
   { icon: Zap, title: 'FastLane 实时批注', desc: '前台批注 / 卡住引导 / 粘贴解释零延迟零成本' },
   { icon: Lightbulb, title: '意图路由器', desc: '小模型识别问题类型，路由到合适的工位' },
   { icon: ScanLine, title: 'AC 后 Hack Case', desc: '样例通过后本地生成极端测试挑战代码' },
-  { icon: Image, title: '题目图片识别', desc: 'TM 推送的截图自动 OCR（minicpm-v）' },
+  { icon: Image, title: '题目图片识别', desc: 'TM 推送的截图自动 OCR（qwen3.5）' },
 ];
 
 const PULL_COMMANDS = [
-  { label: 'qwen3:4b（推荐 · 4 GB · 通用快车道）', cmd: 'ollama pull qwen3:4b' },
-  { label: 'minicpm-v（OCR 识图 · 5 GB · TM 导入用）', cmd: 'ollama pull minicpm-v' },
+  { label: 'qwen3.5:4b（推荐 · 4 GB · 通用快车道 + OJ 识图）', cmd: 'ollama pull qwen3.5:4b' },
 ];
 
 export function OllamaIntroModal() {

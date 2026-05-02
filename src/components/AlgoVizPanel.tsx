@@ -127,7 +127,9 @@ export function AlgoVizPanel(): React.ReactElement {
             animationCode={animationCode}
             schema={schema}
             moduleStatus={moduleStatus}
-            isAnimGenerating={status === 'generating-anim' || status === 'generating-status'}
+            isAnimGenerating={
+              status === 'status-ready' || status === 'generating-anim' || status === 'generating-status'
+            }
             onRegenerateAnim={() => void requestAnimOnly(problem.id)}
             showRealtimeStatus={showRealtimeStatus}
           />
@@ -161,7 +163,7 @@ function HeaderBar({
       case 'generating-status':
         return showRealtimeStatus ? '生成 Status…' : '准备动画素材…';
       case 'status-ready':
-        return showRealtimeStatus ? 'Status 就绪 · Animation 生成中' : '动画生成中…';
+        return showRealtimeStatus ? 'Status 就绪 · 准备动画中' : '准备动画中…';
       case 'generating-anim':
         return 'Animation 生成中…';
       case 'ready':

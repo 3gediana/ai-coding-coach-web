@@ -285,18 +285,18 @@ export default defineConfig({
       },
     },
     {
-      // ========== Tampermonkey 题目导入接收端 + Node 端 sam 处理 ==========
+      // ========== Tampermonkey 题目导入接收端 + Node 端 qwen3.5 处理 ==========
       // 流程：
       //   1. TM POST /__import → 落盘 logs/imports/<ts>.raw.json
       //   2. 立即响应 200（TM 早返回，不等处理）
-      //   3. 异步调 importProcessor.processImportFile（Node 端调 ollama sam）
+      //   3. 异步调 importProcessor.processImportFile（Node 端调 ollama qwen3.5）
       //   4. 处理完写 logs/imports/<ts>.processed.json
       //   5. SSE 推 processed payload 给前端 → 前端入库（不再调 AI）
       //
       // 这样：
       //   - 处理逻辑在 Node 端，稳定可观测（log + 落盘文件可重放）
       //   - 浏览器没刷新也能调试（看 .processed.json 文件即可）
-      //   - sam keep_alive=0 由 Node 端 finally 块统一管理
+      //   - qwen3.5 keep_alive=0 由 Node 端 finally 块统一管理
       //
       // 跨域：CORS 全开（仅 dev 环境）。SSE 未连时入队避免数据丢失
       name: 'aicc-import-receiver',
@@ -595,12 +595,12 @@ export default defineConfig({
                 `\x1b[36m[aicc-import]\x1b[0m ${payload.source} ${payload.title?.slice(0, 30) ?? '(无标题)'} (${sizeKB} KB, ${imgN} 图) ${rawPath ? `· raw 落盘 ${rawPath.split(/[\\\/]/).pop()}` : ''}`,
               );
 
-              // 2. 立即响应 200，让 TM 早返回（不等 sam 处理）
+              // 2. 立即响应 200，让 TM 早返回（不等 qwen3.5 处理）
               res.statusCode = 200;
               res.setHeader('content-type', 'application/json');
               res.end(JSON.stringify({ ok: true, rawPath: rawPath?.split(/[\\\/]/).pop() }));
 
-              // 3. 异步：Node 端处理（sam 识图 + 卸载）→ SSE 推 processed payload
+              // 3. 异步：Node 端处理（qwen3.5 识图 + 卸载）→ SSE 推 processed payload
               if (rawPath) {
                 processImportFile(rawPath)
                   .then((result: { processedPath: string; payload: ImportPayload }) => {

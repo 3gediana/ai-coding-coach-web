@@ -787,7 +787,7 @@ interface State {
   addBankProblem: (bankId: string) => Promise<string | null>;
 
   // 外部导入（Tampermonkey 推送）
-  /** 接收 TM 推送的 payload，去重 / 调 sam 多模态 / parseProblem / 入库 / 激活 */
+  /** 接收 TM 推送的 payload，去重 / 接收 qwen3.5 识图结果 / parseProblem / 入库 / 激活 */
   handleImportPayload: (payload: import('./importReceiver').ImportPayload) => Promise<void>;
   /** 推送当前代码到原 OJ，由 Tampermonkey 清空编辑器、粘贴、提交并回传 verdict */
   enqueueOjSubmit: () => string | null;
@@ -944,23 +944,38 @@ export const useStore = create<State>((set, get) => {
    * 把 algoViz patch 写回 IndexedDB + refresh，让所有订阅了 problems 的 UI 立即收到。
    * 单写入点：方便维护 + 保证三件套字段不会被部分丢失。
    */
+  const algoVizPatchQueues = new Map<string, Promise<void>>();
+
   async function persistAlgoVizPatch(
     pid: string,
     patch: Partial<NonNullable<Problem['algoViz']>>,
   ): Promise<void> {
-    const cur = get().problems.find((p) => p.id === pid);
-    if (!cur) return;
-    const merged: NonNullable<Problem['algoViz']> = {
-      status: 'idle',
-      statusCode: null,
-      animationCode: null,
-      detectionSchema: null,
-      ...(cur.algoViz ?? {}),
-      ...patch,
-    };
-    const updated: Problem = { ...cur, algoViz: merged };
-    await storage.saveProblem(updated);
-    await get().refreshProblems();
+    const previous = algoVizPatchQueues.get(pid) ?? Promise.resolve();
+    const next = previous
+      .catch(() => undefined)
+      .then(async () => {
+        const cur = get().problems.find((p) => p.id === pid);
+        if (!cur) return;
+        const merged: NonNullable<Problem['algoViz']> = {
+          status: 'idle',
+          statusCode: null,
+          animationCode: null,
+          detectionSchema: null,
+          ...(cur.algoViz ?? {}),
+          ...patch,
+        };
+        const updated: Problem = { ...cur, algoViz: merged };
+        await storage.saveProblem(updated);
+        await get().refreshProblems();
+      });
+    algoVizPatchQueues.set(pid, next);
+    try {
+      await next;
+    } finally {
+      if (algoVizPatchQueues.get(pid) === next) {
+        algoVizPatchQueues.delete(pid);
+      }
+    }
   }
 
   // ---- 任务队列 ----
@@ -1333,6 +1348,7 @@ export const useStore = create<State>((set, get) => {
         !opts.force &&
         (cur === 'ready' ||
           cur === 'generating-status' ||
+          cur === 'status-ready' ||
           cur === 'generating-anim')
       ) {
         return;
@@ -1382,11 +1398,15 @@ export const useStore = create<State>((set, get) => {
         },
         onStatusReady: async (statusCode, schema) => {
           await persistAlgoVizPatch(problem.id, {
-            status: 'generating-anim',
+            status: 'status-ready',
             statusCode,
             detectionSchema: schema,
             statusGeneratedAt: Date.now(),
           });
+          get().setAlgoVizModuleStatus(
+            problem.id,
+            Object.fromEntries(schema.modules.map((m) => [m.id, false])),
+          );
           get().recordAgentTrace({
             kind: 'feedback',
             level: 'success',
@@ -1394,6 +1414,11 @@ export const useStore = create<State>((set, get) => {
             detail: `${schema.algoName} · ${schema.modules.length} 模块`,
             problemId: problem.id,
             agentName: 'AlgoViz',
+          });
+        },
+        onAnimationStart: async () => {
+          await persistAlgoVizPatch(problem.id, {
+            status: 'generating-anim',
           });
         },
         onAnimationReady: async (animationCode) => {
@@ -3907,7 +3932,7 @@ int main() {
 
     handleImportPayload: async (payload) => {
       // payload 是 Node 端 importProcessor 处理后的 processed payload
-      // - rawText 已含 sam 识别结果（[图 N 识别] xxx）
+      // - rawText 已含 qwen3.5 识别结果（[图 N 识别] xxx）
       // - imageRecognitions 字段记录每张图的识别详情
       // 前端职责：去重、调 cloud AI parseProblem（可选）、入库、激活
       const st = get();
