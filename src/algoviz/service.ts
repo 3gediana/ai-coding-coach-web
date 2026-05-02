@@ -28,12 +28,18 @@ import {
   parseTraceOutput,
   parseVisualPlanOutput,
 } from './prompts';
+import {
+  buildAnimationTemplateHint,
+  buildVisualPlanTemplateHint,
+  getAlgoVizTemplate,
+} from './templates';
 
 export interface AlgoVizGenerateCallbacks {
   onTraceReady?: (trace: AlgoVizTrace) => void | Promise<void>;
   onVisualPlanReady?: (visualPlan: AlgoVizVisualPlan) => void | Promise<void>;
   /** 阶段 1 完成（Status 入库），UI 应立即 refresh 让用户看到模块卡片 */
   onStatusReady?: (statusCode: string, schema: AlgoVizDetectionSchema) => void | Promise<void>;
+  onAnimationStart?: () => void | Promise<void>;
   /** 阶段 2 完成（Animation 入库），UI 解锁播放按钮 */
   onAnimationReady?: (animationCode: string) => void | Promise<void>;
   /** 任一阶段失败 */
@@ -85,6 +91,13 @@ export class AlgoVizService {
       return;
     }
 
+    const templateRoute = trace.templateRoute ?? null;
+    const template = getAlgoVizTemplate(templateRoute?.templateId);
+    const visualPlanTemplateHint =
+      template && templateRoute ? buildVisualPlanTemplateHint(template, templateRoute) : undefined;
+    const animationTemplateHint =
+      template && templateRoute ? buildAnimationTemplateHint(template, templateRoute) : undefined;
+
     const visualPlanTask = (async (): Promise<{ visualPlan: AlgoVizVisualPlan } | { error: Error }> => {
       try {
         const { system, user } = buildVisualPlanPrompt({
@@ -93,6 +106,7 @@ export class AlgoVizService {
           constraints: problem.constraints,
           examples: problem.examples,
           trace,
+          templateHint: visualPlanTemplateHint,
         });
         const raw = await this.clients.status!.chat({
           messages: [
@@ -171,6 +185,7 @@ export class AlgoVizService {
       return;
     }
     try {
+      await cb.onAnimationStart?.();
       const { system, user } = buildAnimationPrompt({
         title: problem.title,
         statement: problem.statement,
@@ -180,6 +195,7 @@ export class AlgoVizService {
         schema,
         trace,
         visualPlan,
+        templateHint: animationTemplateHint,
       });
       const raw = await this.clients.animation.chat({
         messages: [
@@ -216,6 +232,10 @@ export class AlgoVizService {
       return;
     }
     try {
+      const templateRoute = problem.algoViz?.trace?.templateRoute ?? null;
+      const template = getAlgoVizTemplate(templateRoute?.templateId);
+      const animationTemplateHint =
+        template && templateRoute ? buildAnimationTemplateHint(template, templateRoute) : undefined;
       const { system, user } = buildAnimationPrompt({
         title: problem.title,
         statement: problem.statement,
@@ -225,6 +245,7 @@ export class AlgoVizService {
         schema,
         trace: problem.algoViz?.trace ?? null,
         visualPlan: problem.algoViz?.visualPlan ?? null,
+        templateHint: animationTemplateHint,
       });
       const raw = await this.clients.animation.chat({
         messages: [

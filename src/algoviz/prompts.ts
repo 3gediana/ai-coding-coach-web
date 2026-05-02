@@ -36,6 +36,13 @@ Required JSON shape:
 {
   "algoName": "PascalCaseName",
   "family": "short_family_name",
+  "templateRoute": {
+    "templateId": "one allowed template id from the list below",
+    "family": "normalized_family_name",
+    "subfamily": "optional_specific_subfamily",
+    "confidence": 0.0,
+    "evidence": ["short reason from problem/trace"]
+  },
   "sample": { "concrete": "input data parsed from the first example" },
   "states": [
     {
@@ -50,6 +57,24 @@ Required JSON shape:
     }
   ]
 }
+
+Template routing is part of Stage 0 and MUST be decided by this model, not by downstream rule matching.
+Choose the best templateId directly from this exact allowlist:
+- dynamic_programming.table.v1 — DP table/row, recurrence, base cases, dependency reads/writes.
+- hash_lookup.map.v1 — hash map/set lookup, complement/key hit/miss, insert/update.
+- binary_search.interval.v1 — sorted bounded interval, left/mid/right, interval shrink.
+- sliding_window.band.v1 — contiguous active window with left/right bounds and aggregate.
+- monotonic_stack.stack.v1 — stack top comparison, pop/push, next greater/smaller style output.
+- two_pointers.converging.v1 — left/right pointer pair scan or converging interval.
+- prefix_sum.ranges.v1 — prefix row/table and range sum/difference query.
+- bfs.queue.v1 — BFS, queue/frontier, visited set, graph/grid levels.
+- dfs_backtracking.recursion.v1 — DFS/backtracking, path, choices, recursion/call stack.
+- heap_topk.min_heap.v1 — heap/priority queue, top-k/kth, push/pop threshold.
+- union_find.parent_array.v1 — DSU/union-find, parent array, roots, component count.
+- greedy_intervals.timeline.v1 — interval scheduling/overlap greedy timeline.
+- dijkstra.shortest_path.v1 — weighted graph shortest path, priority queue, relax distances.
+- tree_traversal.frames.v1 — binary/tree traversal with stack/call frames and output order.
+If none applies, set templateRoute to null. If one applies, include templateRoute with confidence 0.62-0.98 and concrete evidence.
 
 Rules:
 - 4-8 states total.
@@ -192,10 +217,12 @@ Rules:
 - Include an updateData action for the component that displays any changed variable.
 - If a beat changes focus, include a focus/highlight action for the exact target, e.g. array[2], mid, map[7].
 - Do not over-plan text. Prefer visual components: cells, chips, pointers, rows, badges, progress dots.
+- If VISUAL_TEMPLATE_HINT is provided, use it as the preferred visual topology while still obeying TRACE_JSON.
 - Return valid JSON only inside VISUAL_PLAN_JSON.`;
 
 export interface VisualPlanPromptInput extends TracePromptInput {
   trace: AlgoVizTrace;
+  templateHint?: string;
 }
 
 export function buildVisualPlanPrompt(input: VisualPlanPromptInput) {
@@ -207,6 +234,7 @@ Statement: ${input.statement}
 ${input.constraints ? `Constraints: ${input.constraints}\n` : ''}${examplesText ? `\n${examplesText}\n` : ''}
 TRACE_JSON:
 ${formatTraceForPrompt(input.trace)}
+${input.templateHint ? `\nVISUAL_TEMPLATE_HINT:\n${input.templateHint}\n` : ''}
 
 Output the VISUAL_PLAN_JSON block only.`;
   return { system: VISUAL_PLAN_SYSTEM, user };
@@ -456,7 +484,7 @@ If VISUAL_PLAN_JSON is provided, it is the authoritative source of presentation:
 - obey composition.heroRule / focusStrategy / antiEmptySpaceRule
 
 The ONLY external variable is the problem. The Status TSX and schema are derived artifacts from Stage 1.
-Do not use any hardcoded algorithm template. Choose the animation story from the provided problem + Stage 1 visual vocabulary.
+Do not use any hardcoded algorithm template unless ALGORITHM_TEMPLATE_HINT is explicitly provided. If it is provided, follow it as the preferred algorithm-family motion grammar while still obeying TRACE_JSON, VISUAL_PLAN_JSON, Status TSX, and schema.
 
 Do NOT merely reproduce the Status layout.
 Do NOT make static cards.
@@ -712,6 +740,7 @@ export interface AnimationPromptInput extends StatusPromptInput {
   /** Status 输出的 schema，告诉 Animation 用哪些 module key */
   schema: AlgoVizDetectionSchema;
   visualPlan?: AlgoVizVisualPlan | null;
+  templateHint?: string;
 }
 
 export function buildAnimationPrompt(input: AnimationPromptInput) {
@@ -745,6 +774,7 @@ The Status component below was already generated with the same modules. Match it
 --- STATUS COMPONENT CODE ---
 ${input.statusCode}
 --- END STATUS COMPONENT ---
+${input.templateHint ? `\nALGORITHM_TEMPLATE_HINT:\n${input.templateHint}\n` : ''}
 
 Output the <ANIMATION_TSX> block.`;
   return { system: ANIMATION_SYSTEM, user };
@@ -871,6 +901,7 @@ function normalizeTrace(value: unknown): AlgoVizTrace | null {
   if (!isRecord(value)) return null;
   const algoName = typeof value.algoName === 'string' ? value.algoName.trim() : '';
   const family = typeof value.family === 'string' ? value.family.trim() : '';
+  const templateRoute = normalizeTemplateRoute(value.templateRoute);
   const sample = isRecord(value.sample) ? value.sample : {};
   const rawStates = Array.isArray(value.states) ? value.states : [];
   if (!algoName || !family || rawStates.length < 2 || rawStates.length > 12) return null;
@@ -902,7 +933,31 @@ function normalizeTrace(value: unknown): AlgoVizTrace | null {
     })
     .filter((state): state is AlgoVizTrace['states'][number] => !!state);
   if (states.length < 2) return null;
-  return { algoName, family, sample, states };
+  return { algoName, family, templateRoute, sample, states };
+}
+
+function normalizeTemplateRoute(value: unknown): AlgoVizTrace['templateRoute'] {
+  if (value === null) return null;
+  if (!isRecord(value)) return null;
+  const templateId = typeof value.templateId === 'string' ? value.templateId.trim() : '';
+  const family = typeof value.family === 'string' ? value.family.trim() : '';
+  if (!templateId || !family) return null;
+  const confidence =
+    typeof value.confidence === 'number' && Number.isFinite(value.confidence)
+      ? Math.max(0, Math.min(1, value.confidence))
+      : 0.62;
+  const evidence = Array.isArray(value.evidence)
+    ? value.evidence.filter((item): item is string => typeof item === 'string' && !!item.trim()).slice(0, 6)
+    : [];
+  const subfamily =
+    typeof value.subfamily === 'string' && value.subfamily.trim() ? value.subfamily.trim() : undefined;
+  return {
+    templateId,
+    family,
+    ...(subfamily ? { subfamily } : {}),
+    confidence,
+    evidence,
+  };
 }
 
 function normalizeVisualPlan(value: unknown): AlgoVizVisualPlan | null {

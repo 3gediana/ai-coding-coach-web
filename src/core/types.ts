@@ -116,8 +116,17 @@ export interface AlgoVizDetectionSchema {
 export interface AlgoVizTrace {
   algoName: string;
   family: string;
+  templateRoute?: AlgoVizTemplateRoute | null;
   sample: Record<string, unknown>;
   states: AlgoVizTraceState[];
+}
+
+export interface AlgoVizTemplateRoute {
+  templateId: string;
+  family: string;
+  subfamily?: string;
+  confidence: number;
+  evidence: string[];
 }
 
 export interface AlgoVizTraceState {
