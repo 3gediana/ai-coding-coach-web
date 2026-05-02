@@ -30,3 +30,4 @@ playwright.config.ts
 # 文档 / codebase 笔记（本地保留，不入库）
 docs/
 cb/
+dev-workspace/artifacts/
