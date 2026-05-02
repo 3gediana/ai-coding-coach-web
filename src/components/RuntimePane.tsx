@@ -54,6 +54,73 @@ function normalizeSampleText(s: string): string {
     .trim();
 }
 
+interface SampleMatch {
+  index: number;
+  output: string;
+}
+
+interface SampleDiff {
+  sampleIndex: number;
+  firstDiffLine: number;
+  expectedLine?: string;
+  actualLine?: string;
+}
+
+function findMatchingSample(
+  examples: Array<{ input: string; output: string }> | undefined,
+  stdinText: string,
+): SampleMatch | null {
+  const normalizedStdin = normalizeSampleText(stdinText);
+  if (!normalizedStdin) return null;
+  const list = examples ?? [];
+  for (let i = 0; i < list.length; i += 1) {
+    const ex = list[i];
+    if (ex.input.trim() && normalizeSampleText(ex.input) === normalizedStdin) {
+      return { index: i + 1, output: ex.output };
+    }
+  }
+  return null;
+}
+
+function getSampleDiff(sampleIndex: number, expected: string, actual: string): SampleDiff | null {
+  const expectedText = normalizeSampleText(expected);
+  const actualText = normalizeSampleText(actual);
+  if (expectedText === actualText) return null;
+  const expectedLines = expectedText ? expectedText.split('\n') : [];
+  const actualLines = actualText ? actualText.split('\n') : [];
+  const total = Math.max(expectedLines.length, actualLines.length);
+  for (let i = 0; i < total; i += 1) {
+    if ((expectedLines[i] ?? '') !== (actualLines[i] ?? '')) {
+      return {
+        sampleIndex,
+        firstDiffLine: i + 1,
+        expectedLine: expectedLines[i],
+        actualLine: actualLines[i],
+      };
+    }
+  }
+  return {
+    sampleIndex,
+    firstDiffLine: total + 1,
+  };
+}
+
+function previewLine(line: string | undefined): string {
+  if (line === undefined) return '∅（没有这一行）';
+  if (line === '') return '∅（空行）';
+  return line.length > 120 ? `${line.slice(0, 117)}...` : line;
+}
+
+function formatSampleDiff(diff: SampleDiff): string {
+  return [
+    `✗ 样例 ${diff.sampleIndex} 输出不一致（程序正常退出，但答案不对）`,
+    `首个差异：第 ${diff.firstDiffLine} 行`,
+    `期望：${previewLine(diff.expectedLine)}`,
+    `实际：${previewLine(diff.actualLine)}`,
+    '可以点上方「解释差异」，Coach 会带上本次 stdin/stdout 和题目样例。',
+  ].join('\n');
+}
+
 export function RuntimePane() {
   const open = useStore((s) => s.runtimePaneOpen);
   const setOpen = useStore((s) => s.setRuntimePaneOpen);
@@ -101,6 +168,7 @@ export function RuntimePane() {
   const [duration, setDuration] = useState<number | null>(null);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [ojAcAction, setOjAcAction] = useState<OjAcAction | null>(null);
+  const [sampleDiffPrefill, setSampleDiffPrefill] = useState<string | null>(null);
 
   // hack case 触发去抖：同一文件 30s 内只触发一次主动出题
   const lastHackTriggerRef = useRef<{ fileId: string; ts: number } | null>(null);
@@ -131,6 +199,7 @@ export function RuntimePane() {
     setDuration(null);
     setExitCode(null);
     append('system', `▶ 运行 ${file.name} ...`);
+    setSampleDiffPrefill(null);
 
     try {
       const opts = {
@@ -180,6 +249,7 @@ export function RuntimePane() {
       // ───── 主动 hack case 触发 ─────
       // 条件：当前样例输入与 examples[0].input 一致，输出与 examples[0].output 一致，
       //       且同 file 30s 内未触发过 hack case，且本次不是由 hack case 自动跑触发的
+      const matchingSample = findMatchingSample(activeProblem?.examples, stdinForRun);
       const sample = activeProblem?.examples?.[0];
       const samplePassed = !!(
         result.exitCode === 0 &&
@@ -188,6 +258,19 @@ export function RuntimePane() {
         normalizeSampleText(stdinForRun) === normalizeSampleText(sample.input) &&
         normalizeSampleText(result.stdout || '') === normalizeSampleText(sample.output)
       );
+      if (result.exitCode === 0 && matchingSample) {
+        const diff = getSampleDiff(matchingSample.index, matchingSample.output, result.stdout || '');
+        if (diff) {
+          append('system', formatSampleDiff(diff));
+          setSampleDiffPrefill(
+            `当前 stdin 命中了样例 ${diff.sampleIndex}，程序正常退出，但 stdout 和标准输出不一致。首个差异在第 ${diff.firstDiffLine} 行：期望「${previewLine(diff.expectedLine)}」，实际「${previewLine(diff.actualLine)}」。请先比较 expected/actual，再引导我定位是哪一步逻辑可能出了问题。`,
+          );
+          toast.warning(`样例 ${diff.sampleIndex} 输出不一致`, {
+            description: '终端已标出首个差异，可点「解释差异」继续定位',
+            duration: 7000,
+          });
+        }
+      }
       if (samplePassed && activeProblem?.source && /^https?:\/\//.test(activeProblem.source)) {
         setOjAcAction({
           problemId: scope,
@@ -241,12 +324,12 @@ export function RuntimePane() {
   const onAskAI = () => {
     if (!file) return;
     setCoachDraft({ source: 'runtime-error' });
-    setAskPrefill('帮我看看这次运行错误');
+    setAskPrefill(sampleDiffPrefill ?? '帮我看看这次运行错误');
     setFeedbackTab('ask');
     requestAnimationFrame(() => {
       document.querySelector<HTMLTextAreaElement>('[data-coach-input]')?.focus();
     });
-    toast.info('Coach 会自动带上 stderr、stdin 和当前代码');
+    toast.info(sampleDiffPrefill ? 'Coach 会自动带上题面、样例、stdin、stdout 和当前代码' : 'Coach 会自动带上 stderr、stdin 和当前代码');
   };
 
   const onClear = () => {
@@ -254,10 +337,16 @@ export function RuntimePane() {
     setDuration(null);
     setExitCode(null);
     setOjAcAction(null);
+    setSampleDiffPrefill(null);
   };
 
   const supported = file ? isRuntimeSupported(file.language) : false;
   const canOjSubmit = !!activeProblem?.source && /^https?:\/\//.test(activeProblem.source);
+  const showCoachAction = !!(
+    exitCode !== null &&
+    !running &&
+    (exitCode !== 0 || sampleDiffPrefill)
+  );
   const showOjAcAction = !!(
     ojAcAction &&
     canOjSubmit &&
@@ -411,14 +500,14 @@ export function RuntimePane() {
         )}
 
         {/* 失败时显示 Coach 入口 */}
-        {exitCode !== null && exitCode !== 0 && !running && (
+        {showCoachAction && (
           <button
             onClick={onAskAI}
             className="ml-2 px-2 py-0.5 text-[11px] rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 hover:border-accent/60 transition flex items-center gap-1 font-semibold"
-            title="让 Coach 自动结合错误输出、输入和代码分析"
+            title={sampleDiffPrefill ? '让 Coach 自动结合样例差异、输入和代码分析' : '让 Coach 自动结合错误输出、输入和代码分析'}
           >
             <Sparkles size={11} />
-            问教练
+            {sampleDiffPrefill ? '解释差异' : '问教练'}
           </button>
         )}
 
