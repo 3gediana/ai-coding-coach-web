@@ -10,6 +10,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { registerSnippets } from '../lib/editor-snippets';
 import { codeHash } from '../core/utils';
+import { collectLightweightDiagnostics, type LightweightDiagnostic } from '../lib/editor-diagnostics';
 
 /** 根据 <html data-theme> 当前值，把对应的 monaco 主题应用上 */
 function applyMonacoTheme(monaco: Monaco) {
@@ -76,6 +77,63 @@ export function CodeEditor() {
   const decorationIdsRef = useRef<string[]>([]);
   const contentWidgetsRef = useRef<any[]>([]);
   const activeIssuesRef = useRef<CodeIssue[]>([]);
+  const fileMetaRef = useRef<{ id: string; language: FileLang } | null>(null);
+  fileMetaRef.current = file ? { id: file.id, language: file.language } : null;
+
+  const issueSeverityToMarker = (monaco: Monaco, severity: CodeIssue['severity']) => {
+    if (severity === 'error') return monaco.MarkerSeverity.Error;
+    if (severity === 'warning') return monaco.MarkerSeverity.Warning;
+    return monaco.MarkerSeverity.Info;
+  };
+
+  const localSeverityToMarker = (monaco: Monaco, severity: LightweightDiagnostic['severity']) => {
+    if (severity === 'error') return monaco.MarkerSeverity.Error;
+    if (severity === 'warning') return monaco.MarkerSeverity.Warning;
+    return monaco.MarkerSeverity.Info;
+  };
+
+  const updateMarkers = () => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    const model = editor?.getModel?.();
+    const meta = fileMetaRef.current;
+    if (!editor || !monaco || !model) return;
+    if (!meta || meta.language === 'markdown' || meta.language === 'plaintext') {
+      monaco.editor.setModelMarkers(model, 'aicc', []);
+      return;
+    }
+    const lineCount = model.getLineCount();
+    const clampLine = (line: number) => Math.max(1, Math.min(lineCount, line || 1));
+    const aiMarkers = activeIssuesRef.current.map((iss) => {
+      const startLineNumber = clampLine(iss.line);
+      const endLineNumber = clampLine(iss.endLine ?? iss.line);
+      return {
+        owner: 'aicc',
+        source: 'AI Coach',
+        severity: issueSeverityToMarker(monaco, iss.severity),
+        message: iss.suggestion ? `${iss.message}\n\n建议：${iss.suggestion}` : iss.message,
+        startLineNumber,
+        endLineNumber,
+        startColumn: 1,
+        endColumn: model.getLineMaxColumn(endLineNumber),
+      };
+    });
+    const localMarkers = collectLightweightDiagnostics(model.getValue(), meta.language).map((diag) => {
+      const startLineNumber = clampLine(diag.line);
+      const endLineNumber = clampLine(diag.endLine ?? diag.line);
+      return {
+        owner: 'aicc',
+        source: 'AI Coach Local',
+        severity: localSeverityToMarker(monaco, diag.severity),
+        message: diag.message,
+        startLineNumber,
+        endLineNumber,
+        startColumn: Math.max(1, diag.startColumn ?? 1),
+        endColumn: Math.max(diag.startColumn ?? 1, diag.endColumn ?? model.getLineMaxColumn(endLineNumber)),
+      };
+    });
+    monaco.editor.setModelMarkers(model, 'aicc', [...localMarkers, ...aiMarkers]);
+  };
 
   const renderDecorations = () => {
     const editor = editorRef.current;
@@ -261,6 +319,7 @@ export function CodeEditor() {
         activeIssuesRef.current = remaining;
         renderDecorations();
       }
+      updateMarkers();
     });
 
     // 框选「问 AI」：选区非空 → 浮按钮
@@ -312,6 +371,8 @@ export function CodeEditor() {
 
     // 编辑器失焦也保留按钮（让用户能点）
     // 但选区清空（点别处）会通过上面的 onDidChangeCursorSelection 自动隐藏
+    renderDecorations();
+    updateMarkers();
   };
 
   /** 把 monaco 视图滚到指定行并把光标停在行首（CoachHint 跳行用） */
@@ -356,6 +417,7 @@ export function CodeEditor() {
       activeIssuesRef.current = [];
     }
     renderDecorations();
+    updateMarkers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId, file?.content, result, resultFresh]);
 
