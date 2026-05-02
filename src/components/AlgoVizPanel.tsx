@@ -12,7 +12,7 @@
  * Animation 组件由 @remotion/player 接管渲染。
  */
 import * as React from 'react';
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import {
   Loader2,
@@ -28,7 +28,7 @@ import {
   Radio,
   Wand2,
 } from 'lucide-react';
-import { Player } from '@remotion/player';
+import { Player, type PlayerRef } from '@remotion/player';
 import * as Remotion from 'remotion';
 import { useStore } from '../lib/store';
 import { LLMComponentRenderer, compileLLMComponent } from '../algoviz/runtime';
@@ -631,6 +631,7 @@ function AnimationPlayer({
   schema: NonNullable<Problem['algoViz']>['detectionSchema'];
 }): React.ReactElement {
   const [isOpen, setIsOpen] = useState(false);
+  const playerRef = useRef<PlayerRef>(null);
 
   // 编译一次（hash by code），失败时给错误兜底
   const compiled = useMemo(() => compileLLMComponent(animationCode, REMOTION_GLOBALS), [animationCode]);
@@ -653,6 +654,19 @@ function AnimationPlayer({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const timer = window.setTimeout(() => {
+      try {
+        playerRef.current?.seekTo(0);
+        playerRef.current?.play();
+      } catch {
+        void 0;
+      }
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [isOpen, animationCode]);
 
   if (compiled.error || !compiled.Component) {
     return (
@@ -694,7 +708,7 @@ function AnimationPlayer({
             }}
           >
             <div
-              className="relative shadow-soft rounded-lg overflow-hidden border border-line bg-bg-card"
+              className="relative shadow-soft rounded-lg border border-line bg-bg-card"
               style={{
                 width: 'min(75vw, calc(75vh * 16/9))',
                 aspectRatio: '16/9',
@@ -707,23 +721,31 @@ function AnimationPlayer({
               </div>
               <button
                 onClick={() => setIsOpen(false)}
-                className="absolute -top-3 -right-3 z-10 w-8 h-8 rounded-full bg-bg shadow-md border border-line text-ink-mute hover:text-ink hover:border-ink-mute transition flex items-center justify-center"
+                className="absolute top-2 right-2 z-30 w-8 h-8 rounded-full bg-bg/95 shadow-md border border-line text-ink-mute hover:text-ink hover:border-ink-mute transition flex items-center justify-center"
                 title="关闭（Esc）"
               >
                 <X size={14} />
               </button>
-              <Player
-                component={compiled.Component as React.ComponentType<Record<string, unknown>>}
-                durationInFrames={300}
-                fps={30}
-                compositionWidth={1280}
-                compositionHeight={720}
-                inputProps={inputProps}
-                controls
-                autoPlay
-                loop
-                style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
-              />
+              <div className="h-full w-full overflow-hidden rounded-lg">
+                <Player
+                  key={animationCode}
+                  ref={playerRef}
+                  component={compiled.Component as React.ComponentType<Record<string, unknown>>}
+                  durationInFrames={300}
+                  fps={30}
+                  compositionWidth={1280}
+                  compositionHeight={720}
+                  inputProps={inputProps}
+                  controls
+                  autoPlay
+                  loop
+                  clickToPlay
+                  initiallyMuted
+                  overflowVisible
+                  acknowledgeRemotionLicense
+                  style={{ width: '100%', height: '100%', backgroundColor: 'transparent' }}
+                />
+              </div>
             </div>
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[11px] text-ink-mute">
               点空白处或按 Esc 关闭

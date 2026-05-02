@@ -5,6 +5,8 @@ import * as net from 'node:net';
 import { writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
 
+const devArtifactPath = (...parts: string[]) => pathResolve(process.cwd(), 'dev-workspace', 'artifacts', ...parts);
+
 /**
  * Dev 时通过自定义中间件转发到真实 AI endpoint，绕开 CORS。
  *
@@ -287,10 +289,10 @@ export default defineConfig({
     {
       // ========== Tampermonkey 题目导入接收端 + Node 端 qwen3.5 处理 ==========
       // 流程：
-      //   1. TM POST /__import → 落盘 logs/imports/<ts>.raw.json
+      //   1. TM POST /__import → 落盘 dev-workspace/artifacts/logs/imports/<ts>.raw.json
       //   2. 立即响应 200（TM 早返回，不等处理）
       //   3. 异步调 importProcessor.processImportFile（Node 端调 ollama qwen3.5）
-      //   4. 处理完写 logs/imports/<ts>.processed.json
+      //   4. 处理完写 dev-workspace/artifacts/logs/imports/<ts>.processed.json
       //   5. SSE 推 processed payload 给前端 → 前端入库（不再调 AI）
       //
       // 这样：
@@ -396,7 +398,7 @@ export default defineConfig({
           }
           try {
             const payload = await readJsonBody<Record<string, unknown>>(req);
-            const dir = pathResolve(process.cwd(), 'logs', 'dom-snapshots');
+            const dir = devArtifactPath('logs', 'dom-snapshots');
             mkdirSync(dir, { recursive: true });
             const stamp = new Date().toISOString().replace(/[:.]/g, '-');
             const site = safeFilePart(payload.domain ?? payload.url ?? 'page');
@@ -434,7 +436,7 @@ export default defineConfig({
           }
           try {
             const payload = await readJsonBody<Record<string, unknown>>(req);
-            const dir = pathResolve(process.cwd(), 'logs', 'oj-debug');
+            const dir = devArtifactPath('logs', 'oj-debug');
             mkdirSync(dir, { recursive: true });
             const date = new Date().toISOString().slice(0, 10);
             const logPath = pathResolve(dir, `${date}.jsonl`);
@@ -655,7 +657,7 @@ export default defineConfig({
               // 1. 落盘 raw 文件
               let rawPath: string | null = null;
               try {
-                const dir = pathResolve(process.cwd(), 'logs', 'imports');
+                const dir = devArtifactPath('logs', 'imports');
                 mkdirSync(dir, { recursive: true });
                 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
                 const safeSource = String(payload.source).replace(/[^\w-]/g, '_');
@@ -746,6 +748,7 @@ export default defineConfig({
   server: {
     port: 3333,
     host: '127.0.0.1',
+    allowedHosts: ['1y2ae99xyr7b.vip3.xiaomiqiu123.top'],
     // 端口被占用时直接报错，避免 fallback 到其它端口导致 localStorage origin 漂移、AI 配置看似丢失
     strictPort: true,
   },

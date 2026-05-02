@@ -474,6 +474,98 @@ const MAX_CONCURRENT = 3;
 const algoVizDetectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** 用户停止打字后多久跑一次模块检测（trailing-edge debounce）。15s = 跟用户约定的频率 */
 const ALGOVIZ_DETECT_DEBOUNCE_MS = 15_000;
+const IMPORT_PLACEHOLDER_ANALYZING =
+  '题目已收到，AI 正在整理题面结构、样例和约束。你可以先在编辑器中准备代码，整理完成后这里会自动刷新。';
+const IMPORT_PLACEHOLDER_WAITING = '题目已收到，正在等待题面文本或图片识别结果。';
+
+function isImportedProblemPlaceholder(problem: Problem | null | undefined): boolean {
+  return problem?.statement === IMPORT_PLACEHOLDER_ANALYZING || problem?.statement === IMPORT_PLACEHOLDER_WAITING;
+}
+
+function scheduleImportedProblemParsing(
+  get: () => State,
+  set: (fn: (s: State) => Partial<State> | State) => void,
+  id: string,
+  payload: import('./importReceiver').ImportPayload,
+  statement: string,
+  fallbackTitle: string,
+  opts: { autoAnalyzeCode?: boolean } = {},
+): void {
+  if (!statement) return;
+  if (!hasUsableAIConfig(get().aiConfig)) return;
+  void (async () => {
+    const startedAt = Date.now();
+    const route = get().aiConfig.provider === 'ollama' ? 'fast' : 'cloud';
+    get().recordAgentTrace({
+      kind: 'act',
+      level: 'info',
+      title: `题面解析：后台结构化 ${fallbackTitle}`,
+      problemId: id,
+      agentName: 'ParseProblem',
+      route,
+    });
+    try {
+      const parsed = await get().coach.parseProblem(statement);
+      const latest = get().problems.find((p) => p.id === id);
+      if (!latest) return;
+      const updated: Problem = {
+        ...latest,
+        ...parsed,
+        id,
+        title: payload.title || parsed.title || latest.title,
+        statement: parsed.statement || latest.statement,
+        plainExplanation: parsed.plainExplanation?.trim() || latest.plainExplanation,
+        source: payload.url || latest.source,
+        createdAt: latest.createdAt,
+      };
+      await storage.saveProblem(updated);
+      set((s) => ({
+        problems: s.problems.map((p) => (p.id === id ? updated : p)),
+      }));
+      get().recordAgentTrace({
+        kind: 'feedback',
+        level: 'success',
+        title: `题面解析完成：${updated.title}`,
+        detail: `结构化字段已回填，不影响你继续做题`,
+        problemId: updated.id,
+        agentName: 'ParseProblem',
+        latencyMs: Date.now() - startedAt,
+        route,
+      });
+      if (get().activeProblemId === id) {
+        if (!updated.plainExplanation?.trim()) {
+          void get().requestPlainExplanation(id);
+        }
+        if (!updated.coachOverview?.headline) {
+          void get().requestProblemOverview(id);
+        }
+        if (!updated.algoViz) {
+          void get().requestAlgoVizGeneration(id);
+        }
+        if (opts.autoAnalyzeCode) {
+          window.setTimeout(() => {
+            const latest = get();
+            if (latest.activeProblemId === id) {
+              latest.enqueueAnalyze({ reason: 'oj-import' });
+            }
+          }, 250);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[handleImportPayload] parseProblem 失败，保留占位题面', err?.message || err);
+      get().recordAgentTrace({
+        kind: 'feedback',
+        level: 'warn',
+        title: `题面解析失败：保留占位题面`,
+        detail: String(err?.message || err).slice(0, 240),
+        problemId: id,
+        agentName: 'ParseProblem',
+        latencyMs: Date.now() - startedAt,
+        route,
+      });
+    }
+  })();
+}
 
 // ============== Store ==============
 
@@ -1647,6 +1739,7 @@ export const useStore = create<State>((set, get) => {
       // 懒补齐：如果该题缺白话解释，后台静默调 AI 生成（成功后右侧栏会自动出现）
       if (id) {
         const target = get().problems.find((p) => p.id === id);
+        if (isImportedProblemPlaceholder(target)) return;
         if (target && (!target.plainExplanation || !target.plainExplanation.trim())) {
           void get().requestPlainExplanation(id);
         }
@@ -4052,19 +4145,19 @@ int main() {
       const hasRecognition = !!(payload as any).imageRecognitions?.length;
 
       if (existing) {
-        // 已存在 → 用最新的 rawText 更新（让重新推送能刷新识别结果）
-        if ((payload.rawText && payload.rawText !== existing.statement) || existing.source !== payload.url) {
+        const incomingStatement = payload.rawText || '';
+        if ((payload.title && payload.title !== existing.title) || existing.source !== payload.url) {
           const updated = {
             ...existing,
-            statement: payload.rawText || existing.statement,
+            title: payload.title || existing.title,
             source: payload.url || existing.source,
           };
           await storage.saveProblem(updated);
           set((s) => ({
             problems: s.problems.map((p) => (p.id === id ? updated : p)),
           }));
-          toast.info(`🔄 已更新：${updated.title}`, {
-            description: hasRecognition ? '含最新识别结果' : '题面已刷新',
+          toast.info(`🔄 已接收更新：${updated.title}`, {
+            description: hasRecognition ? 'AI 正在整理最新识别结果' : 'AI 正在后台重新整理题面',
           });
         } else {
           toast.info(`已存在：${existing.title}`);
@@ -4112,58 +4205,38 @@ int main() {
           }
         }
         await get().setActiveProblem(existing.id);
+        const nonEmptyLines = incomingCode.split('\n').filter((line) => line.trim().length > 0).length;
+        scheduleImportedProblemParsing(get, set, id, payload, incomingStatement, payload.title || existing.title, {
+          autoAnalyzeCode: incomingCode.trim().length >= 30 && nonEmptyLines >= 3,
+        });
         return;
       }
 
-      // 新建：尝试 cloud AI parseProblem（可选）
       const statement = payload.rawText || '';
-      let problem: Problem;
-      if (hasUsableAIConfig(st.aiConfig) && statement) {
-        try {
-          const parsed = await get().coach.parseProblem(statement);
-          problem = {
-            ...parsed,
-            id,
-            title: payload.title || parsed.title || '导入的题目',
-            statement: parsed.statement || statement,
-            source: payload.url,
-            createdAt: Date.now(),
-          };
-        } catch (err: any) {
-          console.warn('[handleImportPayload] parseProblem 失败，使用原文', err?.message || err);
-          problem = {
-            id,
-            title: payload.title || '导入的题目',
-            statement,
-            source: payload.url,
-            tags: [],
-            createdAt: Date.now(),
-          };
-        }
-      } else {
-        problem = {
-          id,
-          title: payload.title || '导入的题目',
-          statement,
-          source: payload.url,
-          tags: [],
-          createdAt: Date.now(),
-        };
-      }
+      const now = Date.now();
+      const problem: Problem = {
+        id,
+        title: payload.title || '导入的题目',
+        statement: statement ? IMPORT_PLACEHOLDER_ANALYZING : IMPORT_PLACEHOLDER_WAITING,
+        source: payload.url,
+        tags: [],
+        createdAt: now,
+      };
 
       // 入库 + 编辑文件
       await storage.saveProblem(problem);
       const lang = inferImportedFileLang(payload);
-      const fileId = 'file-' + Date.now();
+      const fileId = 'file-' + now;
       const fileName = lang === 'cpp' ? 'main.cpp' : lang === 'c' ? 'main.c' : 'main.py';
+      const incomingCode = payload.initialCode || '';
       const file: CodeFile = {
         id: fileId,
         problemId: problem.id,
         name: fileName,
         language: lang,
-        content: payload.initialCode || '',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        content: incomingCode,
+        createdAt: now,
+        updatedAt: now,
       };
       await storage.saveFile(file);
 
@@ -4185,6 +4258,10 @@ int main() {
       });
       toast.success(`📥 已导入：${problem.title}`, {
         description: `来自 ${payload.source}${imgCount > 0 ? ` · ${recogCount}/${imgCount} 张图已识别` : ''}`,
+      });
+      const nonEmptyLines = incomingCode.split('\n').filter((line) => line.trim().length > 0).length;
+      scheduleImportedProblemParsing(get, set, id, payload, statement, problem.title, {
+        autoAnalyzeCode: incomingCode.trim().length >= 30 && nonEmptyLines >= 3,
       });
     },
 

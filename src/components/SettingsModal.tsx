@@ -1684,15 +1684,15 @@ function OllamaModeSwitch({
           type="button"
           onClick={() => onChange(enabled ? 'disabled' : 'enabled')}
           className={cn(
-            'relative shrink-0 w-12 h-6 rounded-full transition-colors',
+            'relative shrink-0 w-12 h-6 rounded-full transition-colors overflow-hidden',
             enabled ? 'bg-warn' : 'bg-line',
           )}
           title={enabled ? '点击关闭 Ollama 模式（隔离 8 项本地功能）' : '点击启用 Ollama 模式'}
         >
           <span
             className={cn(
-              'absolute top-0.5 w-5 h-5 rounded-full bg-bg-card border border-line shadow-md transition-transform',
-              enabled ? 'translate-x-6' : 'translate-x-0.5',
+              'absolute left-0.5 top-0.5 w-5 h-5 rounded-full bg-bg-card border border-line shadow-md transition-transform',
+              enabled ? 'translate-x-6' : 'translate-x-0',
             )}
           />
         </button>

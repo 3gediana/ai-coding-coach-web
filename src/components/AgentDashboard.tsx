@@ -98,17 +98,24 @@ export function AgentDashboard() {
   const totalErrors = stats.reduce((a, b) => a + b.errors, 0);
   const totalFast = stats.reduce((a, b) => a + b.fastCount, 0);
   const totalCloud = stats.reduce((a, b) => a + b.cloudCount, 0);
+  const totalAiCalls = totalFast + totalCloud;
   const maxCount = stats[0]?.count ?? 1;
 
   return (
     <div className="flex-1 overflow-y-auto min-h-0 p-2 text-[10px]">
       {/* 总览 */}
-      <div className={cn('grid gap-1.5 mb-2', ollamaEnabled ? 'grid-cols-4' : 'grid-cols-3')}>
+      <div className="grid grid-cols-2 gap-1.5 mb-2">
         <SummaryCard
           icon={Activity}
-          label="总调用"
+          label="行动"
           value={totalCalls.toString()}
           color="text-accent"
+        />
+        <SummaryCard
+          icon={Activity}
+          label="AI调用"
+          value={totalAiCalls.toString()}
+          color="text-ok"
         />
         {ollamaEnabled && (
           <SummaryCard
@@ -150,7 +157,7 @@ export function AgentDashboard() {
       )}
 
       <div className="mt-3 pt-2 border-t border-line/40 text-[9px] text-ink-mute leading-relaxed">
-        <strong>说明</strong>：调用次数从最近 200 条 trace 聚合；延迟自动按 perceive→feedback
+        <strong>说明</strong>：行动数从最近 200 条 trace 聚合；AI 调用只统计显式标记了本地/云端路由的 trace；延迟自动按 perceive→feedback
         配对推算（DailyPlan 编排链有最准确的延迟数据）；token 统计仅在 trace 显式带
         tokenIn/Out 时累加。
         {ollamaEnabled && (
@@ -198,6 +205,7 @@ function AgentRow({
   const avgLatency = s.latencySamples > 0 ? s.totalLatencyMs / s.latencySamples : null;
   const isError = s.errors > 0;
   const isLocal = s.fastCount > s.cloudCount;
+  const routedCount = s.fastCount + s.cloudCount;
   return (
     <div
       className={cn(
@@ -215,7 +223,7 @@ function AgentRow({
       <div className="relative flex items-center gap-2">
         <span className="font-mono text-[10px] truncate flex-1 min-w-0">{s.name}</span>
         <span className="text-[9px] text-ink-mute font-mono shrink-0">
-          ×{s.count}
+          事件×{s.count}
         </span>
         {avgLatency !== null && (
           <span className="text-[9px] text-cyan font-mono shrink-0" title="平均延迟">
@@ -230,12 +238,16 @@ function AgentRow({
             {s.tokenIn}↓/{s.tokenOut}↑
           </span>
         )}
-        {(s.fastCount > 0 || s.cloudCount > 0) && (
+        {routedCount > 0 ? (
           <span className="text-[9px] font-mono shrink-0">
             {s.fastCount > 0 && <span className="text-warn">⚡{s.fastCount}</span>}
             {s.cloudCount > 0 && (
               <span className="text-cyan ml-0.5">☁{s.cloudCount}</span>
             )}
+          </span>
+        ) : (
+          <span className="text-[9px] text-ink-mute font-mono shrink-0" title="这类行动日志没有绑定到一次具体 AI 请求">
+            仅行动
           </span>
         )}
         <span className="text-[9px] text-ink-mute font-mono shrink-0 w-12 text-right">
