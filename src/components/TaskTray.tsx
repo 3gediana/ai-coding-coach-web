@@ -26,7 +26,7 @@ export function TaskTray() {
 
   const [expanded, setExpanded] = useState(false);
   // 最小化：只显示右下角一个圆形小图标，避免遮挡 FeedbackPanel/编辑器
-  const [minimized, setMinimized] = useState(false);
+  const [minimized, setMinimized] = useState(true);
   const [previewId, setPreviewId] = useState<string | null>(null);
 
   if (tasks.length === 0) return null;
@@ -44,7 +44,7 @@ export function TaskTray() {
         initial={{ scale: 0.8, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         onClick={() => setMinimized(false)}
-        className="fixed bottom-4 right-4 z-40 w-9 h-9 rounded-full glass-card flex items-center justify-center hover:scale-110 transition shadow-lg"
+        className="fixed bottom-3 right-3 z-40 w-8 h-8 rounded-full glass-card flex items-center justify-center hover:scale-110 transition shadow-lg opacity-85 hover:opacity-100"
         title={`任务队列 (${tasks.length}) — 点击展开`}
       >
         {running > 0 ? (
@@ -68,7 +68,7 @@ export function TaskTray() {
       <motion.div
         initial={{ y: 80, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
-        className="fixed bottom-4 right-4 z-40 w-[380px] glass-card overflow-hidden"
+        className="fixed bottom-3 right-3 z-40 w-[320px] glass-card overflow-hidden"
       >
         <div className="w-full flex items-stretch hover:bg-bg-elev2 transition">
           <button

@@ -112,8 +112,8 @@ export function FeedbackPanel() {
             active={tab === 'analyze'}
             onClick={() => setTab('analyze')}
             icon={<ScrollText size={12} />}
-            label={result && result.issues.length > 0 ? '题目 · 分析' : '题目'}
-            badge={result && result.issues.length > 0 ? result.issues.length : undefined}
+            label={resultFresh && result && result.issues.length > 0 ? '题目 · 分析' : '题目'}
+            badge={resultFresh && result && result.issues.length > 0 ? result.issues.length : undefined}
           />
           <TabButton
             active={tab === 'ask'}
@@ -379,20 +379,23 @@ function ResultView({
 }) {
   const issues = result.issues;
   const route = result.routeInfo;
-  return (
-    <div className="p-4 space-y-3">
-      {stale && (
+  if (stale) {
+    return (
+      <div className="p-4">
         <div className="rounded-lg border border-warn/35 bg-warn/10 px-3 py-2 text-xs text-warn flex items-start gap-2">
           <AlertTriangle size={14} className="shrink-0 mt-0.5" />
           <div>
             <div className="font-semibold">这份分析来自旧代码</div>
             <div className="text-[11px] opacity-85 mt-0.5">
-              你已经修改过当前文件，行内批注已隐藏。可以直接问 Coach「帮我看看哪里错了」获取当前版本反馈。
+              旧问题计数和行内批注已隐藏。可以直接问 Coach「帮我看看哪里错了」获取当前版本反馈。
             </div>
           </div>
         </div>
-      )}
-
+      </div>
+    );
+  }
+  return (
+    <div className="p-4 space-y-3">
       {route && (
         <div
           className={cn(

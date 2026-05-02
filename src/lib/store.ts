@@ -1716,6 +1716,12 @@ export const useStore = create<State>((set, get) => {
             f.id === fileId ? updated : f,
           ),
         },
+        coachHintsByScope: s.coachHintsByScope[scopeKey]
+          ? {
+              ...s.coachHintsByScope,
+              [scopeKey]: s.coachHintsByScope[scopeKey].filter((h) => h.fileId && h.fileId !== fileId),
+            }
+          : s.coachHintsByScope,
       }));
       // algoViz 实时检测：trailing-edge debounce 15s。
       // 仅当 scope 是真正的题目（非 __draft__）且该题已有 detectionSchema 时触发。

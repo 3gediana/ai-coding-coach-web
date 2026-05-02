@@ -121,8 +121,8 @@ export function CodeEditor() {
       const shortMsg =
         iss.message.slice(0, 32) + (iss.message.length > 32 ? '…' : '');
       const node = document.createElement('span');
-      node.className = `aicc-after-${iss.severity}`;
-      node.textContent = `  // ${severityIcon(iss.severity)} ${shortMsg}`;
+      node.className = `aicc-after aicc-after-${iss.severity}`;
+      node.textContent = ` ${severityIcon(iss.severity)} ${shortMsg}`;
       // 完整内容：hover 时浏览器原生 tooltip 显示
       node.title =
         iss.message +
@@ -563,10 +563,11 @@ export function CodeEditor() {
         .aicc-line-error { background: rgba(248,113,113,0.06); }
         .aicc-line-warning { background: rgba(251,191,36,0.05); }
         .aicc-line-info { background: rgba(34,211,238,0.04); }
-        .aicc-after-error { color: #f87171 !important; opacity: 0.85; font-style: italic; }
-        .aicc-after-warning { color: #fbbf24 !important; opacity: 0.85; font-style: italic; }
-        .aicc-after-info { color: #22d3ee !important; opacity: 0.8; font-style: italic; }
-        .aicc-after-hint { color: #9aa3b8 !important; opacity: 0.7; font-style: italic; }
+        .aicc-after { margin-left: 10px; padding: 1px 7px; border-radius: 999px; font-size: 12px; font-weight: 650; font-style: normal; box-shadow: 0 1px 3px rgba(0,0,0,0.12); cursor: pointer; white-space: nowrap; }
+        .aicc-after-error { color: #991b1b !important; background: rgba(248,113,113,0.16); border: 1px solid rgba(248,113,113,0.42); }
+        .aicc-after-warning { color: #92400e !important; background: rgba(251,191,36,0.16); border: 1px solid rgba(251,191,36,0.42); }
+        .aicc-after-info { color: #0e7490 !important; background: rgba(34,211,238,0.14); border: 1px solid rgba(34,211,238,0.38); }
+        .aicc-after-hint { color: #475569 !important; background: rgba(148,163,184,0.14); border: 1px solid rgba(148,163,184,0.32); }
         .aicc-glyph-error { background: #f87171; width: 3px !important; margin-left: 3px; border-radius: 2px; }
         .aicc-glyph-warning { background: #fbbf24; width: 3px !important; margin-left: 3px; border-radius: 2px; }
         .aicc-glyph-info { background: #22d3ee; width: 3px !important; margin-left: 3px; border-radius: 2px; }
