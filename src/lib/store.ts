@@ -15,6 +15,7 @@ import { toast } from 'sonner';
 import type {
   AIConfig,
   AIProvider,
+  AlgoVizDetectionSchema,
   AnalysisHistoryEntry,
   AnalysisResult,
   CodeFile,
@@ -158,6 +159,10 @@ function hasUsableAIConfig(cfg: AIConfig): boolean {
   const resolved = resolvePrimaryModel(cfg);
   if (cfg.ollamaMode === 'disabled' && resolved.provider === 'ollama') return false;
   return resolved.provider === 'ollama' ? !!resolved.baseUrl.trim() : !!resolved.apiKey.trim();
+}
+
+function emptyAlgoVizModuleStatus(schema: AlgoVizDetectionSchema): Record<string, boolean> {
+  return Object.fromEntries(schema.modules.map((m) => [m.id, false]));
 }
 
 /**
@@ -1611,7 +1616,7 @@ export const useStore = create<State>((set, get) => {
           });
           get().setAlgoVizModuleStatus(
             problem.id,
-            Object.fromEntries(schema.modules.map((m) => [m.id, false])),
+            emptyAlgoVizModuleStatus(schema),
           );
           get().recordAgentTrace({
             kind: 'feedback',
@@ -1706,10 +1711,26 @@ export const useStore = create<State>((set, get) => {
      */
     detectAlgoVizModules: async (problemId, code) => {
       const st = get();
-      if (st.algoVizDetectingByProblem[problemId]) return;
       const problem = st.problems.find((p) => p.id === problemId);
       const schema = problem?.algoViz?.detectionSchema;
       if (!schema) return;
+      if (!code.trim()) {
+        const existing = algoVizDetectTimers.get(problemId);
+        if (existing) clearTimeout(existing);
+        algoVizDetectTimers.delete(problemId);
+        set((s) => ({
+          moduleStatusByProblem: {
+            ...s.moduleStatusByProblem,
+            [problemId]: emptyAlgoVizModuleStatus(schema),
+          },
+          algoVizDetectingByProblem: {
+            ...s.algoVizDetectingByProblem,
+            [problemId]: false,
+          },
+        }));
+        return;
+      }
+      if (st.algoVizDetectingByProblem[problemId]) return;
       set((s) => ({
         algoVizDetectingByProblem: {
           ...s.algoVizDetectingByProblem,
@@ -1948,10 +1969,24 @@ export const useStore = create<State>((set, get) => {
       // 仅当 scope 是真正的题目（非 __draft__）且该题已有 detectionSchema 时触发。
       if (scopeKey !== DRAFT_SCOPE) {
         const pid = scopeKey;
-        const hasSchema = !!st.problems.find((p) => p.id === pid)?.algoViz?.detectionSchema;
-        if (hasSchema) {
+        const schema = st.problems.find((p) => p.id === pid)?.algoViz?.detectionSchema;
+        if (schema) {
           const existing = algoVizDetectTimers.get(pid);
           if (existing) clearTimeout(existing);
+          if (!content.trim()) {
+            algoVizDetectTimers.delete(pid);
+            set((s) => ({
+              moduleStatusByProblem: {
+                ...s.moduleStatusByProblem,
+                [pid]: emptyAlgoVizModuleStatus(schema),
+              },
+              algoVizDetectingByProblem: {
+                ...s.algoVizDetectingByProblem,
+                [pid]: false,
+              },
+            }));
+            return;
+          }
           const timer = setTimeout(() => {
             algoVizDetectTimers.delete(pid);
             // 用最新内容（避免 closure 里的旧 content）

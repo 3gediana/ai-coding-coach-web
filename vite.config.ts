@@ -17,6 +17,8 @@ const devArtifactPath = (...parts: string[]) => pathResolve(process.cwd(), 'dev-
 
 let managedOllama: ChildProcess | null = null;
 let ensuringPromise: Promise<boolean> | null = null;
+let serverOllamaMode: 'enabled' | 'disabled' =
+  process.env.AICC_OLLAMA === '0' ? 'disabled' : 'enabled';
 
 function probePort(host: string, port: number, timeoutMs = 400): Promise<boolean> {
   return new Promise((resolve) => {
@@ -58,13 +60,12 @@ async function waitOllamaReady(maxMs = 20_000): Promise<boolean> {
  * 探测 11434 端口；若不通则 spawn `ollama serve`，并轮询到就绪。
  * 重复并发调用复用同一个 promise。
  *
- * **默认 opt-in**：仅当环境变量 `AICC_AUTO_OLLAMA=1` 时才自动 spawn；
- * 没装 ollama 的二次开发者就不会被强行拉起一个不存在的进程。
+ * 当网页端 Ollama 模式为 enabled 时自动 spawn；disabled 时不触碰本地服务。
  */
 async function ensureOllamaRunning(): Promise<boolean> {
   if (await probePort('127.0.0.1', 11434, 300)) return true;
-  if (process.env.AICC_AUTO_OLLAMA !== '1') {
-    return false; // 用户没显式 opt-in，不做事
+  if (serverOllamaMode === 'disabled') {
+    return false;
   }
   if (ensuringPromise) return ensuringPromise;
   ensuringPromise = (async () => {
@@ -109,6 +110,26 @@ function killManagedOllama() {
       /* ignore */
     }
     managedOllama = null;
+  }
+}
+
+async function unloadOllamaTargets(targets: Array<{ baseUrl?: string; model?: string }>) {
+  const seen = new Set<string>();
+  for (const t of targets) {
+    const model = t.model?.trim();
+    if (!model || seen.has(model)) continue;
+    seen.add(model);
+    try {
+      await fetch('http://127.0.0.1:11434/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages: [], keep_alive: 0 }),
+        signal: AbortSignal.timeout(8000),
+      });
+      console.log(`\x1b[33m[aicc-ollama]\x1b[0m unloaded ${model}`);
+    } catch (err: any) {
+      console.warn(`\x1b[31m[aicc-ollama]\x1b[0m unload ${model} 失败: ${err?.message || err}`);
+    }
   }
 }
 process.on('exit', killManagedOllama);
@@ -344,8 +365,6 @@ export default defineConfig({
         const ojCommands = new Map<string, OjCommand>();
         const ojResultQueue: OjResult[] = [];
         const ojResultClients = new Set<import('http').ServerResponse>();
-        let serverOllamaMode: 'enabled' | 'disabled' =
-          process.env.AICC_OLLAMA === '0' ? 'disabled' : 'enabled';
 
         const readJsonBody = <T,>(req: any): Promise<T> =>
           new Promise((resolve, reject) => {
@@ -477,6 +496,32 @@ export default defineConfig({
             res.statusCode = 200;
             res.setHeader('content-type', 'application/json');
             res.end(JSON.stringify({ ok: true, mode: serverOllamaMode }));
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: String(e?.message || e) }));
+          }
+        });
+
+        server.middlewares.use('/__aicc-ollama-unload', async (req, res) => {
+          setCors(res, 'POST, OPTIONS');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          try {
+            const payload = await readJsonBody<{ targets?: Array<{ baseUrl?: string; model?: string }> }>(req);
+            const targets = Array.isArray(payload.targets) ? payload.targets : [];
+            await unloadOllamaTargets(targets);
+            res.statusCode = 200;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: true, count: targets.length }));
           } catch (e: any) {
             res.statusCode = 400;
             res.setHeader('content-type', 'application/json');

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { TopBar } from './components/TopBar';
 import { Sidebar } from './components/Sidebar';
 import { FileTree } from './components/FileTree';
@@ -28,7 +28,12 @@ import { useStore } from './lib/store';
 import { startImportReceiver, stopImportReceiver } from './lib/importReceiver';
 import { startOjBridgeReceiver, stopOjBridgeReceiver } from './lib/ojBridge';
 import { loadDemoSeed } from './lib/demoSeed';
-import { warmupLocalModels } from './core/ai/warmup';
+import {
+  collectLocalOllamaTargets,
+  requestUnloadLocalModels,
+  unloadLocalModels,
+  warmupLocalModels,
+} from './core/ai/warmup';
 import { toast } from 'sonner';
 import { safeGetItem } from './lib/safeLocalStorage';
 
@@ -40,6 +45,7 @@ export default function App() {
   const dailyPlan = useStore((s) => s.dailyPlan);
   const dailyPlanGenerating = useStore((s) => s.dailyPlanGenerating);
   const pendingHackCase = useStore((s) => s.pendingHackCase);
+  const warmTargetsRef = useRef<ReturnType<typeof collectLocalOllamaTargets>>([]);
   const dailyPlanBlocksOverlay =
     (dailyPlanGenerating && !dailyPlan) || dailyPlan?.status === 'pending';
   const hackCaseBlocksOverlay =
@@ -49,7 +55,34 @@ export default function App() {
   // 不阻塞首屏；并行 warm；失败静默。配置变更时也重新 warm（用户切换模型后立即生效）。
   useEffect(() => {
     let cancelled = false;
-    // 100ms 后再发，避免和首屏 hydration 抢 CPU
+    const targets = aiConfig.ollamaMode === 'disabled' ? [] : collectLocalOllamaTargets(aiConfig);
+    const targetKey = (t: (typeof targets)[number]) => `${t.baseUrl}|${t.model}`;
+    const nextKeys = new Set(targets.map(targetKey));
+    const removedTargets = warmTargetsRef.current.filter((t) => !nextKeys.has(targetKey(t)));
+    warmTargetsRef.current = targets;
+    if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
+      const mode = aiConfig.ollamaMode === 'disabled' ? 'disabled' : 'enabled';
+      if (mode === 'disabled' && removedTargets.length > 0) {
+        void unloadLocalModels(removedTargets).finally(() => {
+          void fetch('/__aicc-ollama-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode }),
+          }).catch(() => undefined);
+        });
+      } else {
+        void fetch('/__aicc-ollama-mode', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ mode }),
+        }).catch(() => undefined);
+        if (removedTargets.length > 0) {
+          void unloadLocalModels(removedTargets);
+        }
+      }
+    } else if (removedTargets.length > 0) {
+      void unloadLocalModels(removedTargets);
+    }
     const timer = setTimeout(() => {
       if (cancelled) return;
       void warmupLocalModels(aiConfig).then((results) => {
@@ -63,27 +96,20 @@ export default function App() {
           });
         }
       });
-    }, 100);
+    }, 300);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-    // 用 baseUrl + model 字符串组合判依赖，避免 cfg 引用变化导致频繁触发
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    aiConfig.fastLane?.baseUrl,
-    aiConfig.fastLane?.model,
-    aiConfig.fastLane?.enabled,
-    aiConfig.intentRouter?.baseUrl,
-    aiConfig.intentRouter?.model,
-    aiConfig.intentRouter?.enabled,
-    aiConfig.algoVizModels?.status?.baseUrl,
-    aiConfig.algoVizModels?.status?.model,
-    aiConfig.algoVizModels?.animation?.baseUrl,
-    aiConfig.algoVizModels?.animation?.model,
-    aiConfig.algoVizModels?.detect?.baseUrl,
-    aiConfig.algoVizModels?.detect?.model,
-  ]);
+  }, [aiConfig]);
+
+  useEffect(() => {
+    const onPageHide = () => requestUnloadLocalModels(warmTargetsRef.current);
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+    };
+  }, []);
 
   // ?seed=demo：清空 IndexedDB 并注入 5 题 + 错题 + 7 天学习记录，然后 reload
   useEffect(() => {

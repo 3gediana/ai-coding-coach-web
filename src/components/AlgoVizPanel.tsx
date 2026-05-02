@@ -57,6 +57,11 @@ export function AlgoVizPanel(): React.ReactElement {
   const moduleStatus = useStore((s) =>
     activeProblemId ? s.moduleStatusByProblem[activeProblemId] : undefined,
   );
+  const activeFileContent = useStore((s) => {
+    if (!activeProblemId) return '';
+    const fileId = s.activeFileIdByScope[activeProblemId];
+    return (s.filesByScope[activeProblemId] ?? []).find((f) => f.id === fileId)?.content ?? '';
+  });
   const detecting = useStore((s) =>
     activeProblemId ? !!s.algoVizDetectingByProblem[activeProblemId] : false,
   );
@@ -154,6 +159,7 @@ export function AlgoVizPanel(): React.ReactElement {
             schema={schema}
             moduleStatus={moduleStatus}
             detecting={showRealtimeStatus && detecting}
+            hasUserCode={!!activeFileContent.trim()}
             isAnimGenerating={
               status === 'status-ready' || status === 'generating-anim' || status === 'generating-status'
             }
@@ -501,6 +507,7 @@ function ReadyView({
   schema,
   moduleStatus,
   detecting,
+  hasUserCode,
   isAnimGenerating,
   onRegenerateAnim,
   showRealtimeStatus,
@@ -511,22 +518,32 @@ function ReadyView({
   schema: NonNullable<Problem['algoViz']>['detectionSchema'];
   moduleStatus: Record<string, boolean> | undefined;
   detecting: boolean;
+  hasUserCode: boolean;
   isAnimGenerating: boolean;
   onRegenerateAnim: () => void;
   showRealtimeStatus: boolean;
-}): React.ReactElement {
+}) {
+  const effectiveModuleStatus = useMemo<Record<string, boolean>>(() => {
+    const out: Record<string, boolean> = {};
+    if (!schema) return out;
+    schema.modules.forEach((m) => {
+      out[m.id] = hasUserCode ? !!moduleStatus?.[m.id] : false;
+    });
+    return out;
+  }, [schema, moduleStatus, hasUserCode]);
+
   // schema → React props 映射：status 模块的 prop 名是 module1/module2/...
   // schema.modules 顺序就是 1/2/3/4，按 id 在 moduleStatus 里查
   const componentProps = useMemo<Record<string, boolean>>(() => {
     const out: Record<string, boolean> = {};
     if (!schema) return out;
     schema.modules.forEach((m, i) => {
-      out[`module${i + 1}`] = !!moduleStatus?.[m.id];
+      out[`module${i + 1}`] = !!effectiveModuleStatus[m.id];
     });
     return out;
-  }, [schema, moduleStatus]);
+  }, [schema, effectiveModuleStatus]);
   const modules = schema?.modules ?? [];
-  const completedCount = modules.filter((m) => !!moduleStatus?.[m.id]).length;
+  const completedCount = modules.filter((m) => !!effectiveModuleStatus[m.id]).length;
   const progressPercent = modules.length > 0 ? Math.round((completedCount / modules.length) * 100) : 0;
   const hasRealtimeStatus = showRealtimeStatus && !!statusCode;
 
@@ -547,12 +564,12 @@ function ReadyView({
       {hasRealtimeStatus && schema && (
         <ModuleProgressRail
           schema={schema}
-          moduleStatus={moduleStatus}
+          moduleStatus={effectiveModuleStatus}
           detecting={detecting}
         />
       )}
 
-      {hasRealtimeStatus && statusCode ? (
+      {hasRealtimeStatus && statusCode && schema ? (
         <div className="relative overflow-hidden rounded-md border border-line/60 bg-bg-card shadow-soft">
           <div className="relative px-3 py-1.5 flex items-center gap-2 border-b border-line/50 bg-bg-elev/35 text-[11px]">
             <Layers3 size={12} className="text-accent" />
@@ -560,11 +577,15 @@ function ReadyView({
             <span className="text-ink-mute">代码模块点亮后，下方视觉骨架会同步变化</span>
           </div>
           <div className="relative p-2">
-            <LLMComponentRenderer
-              code={statusCode}
-              globals={STATUS_GLOBALS}
-              componentProps={componentProps}
-            />
+            {hasUserCode ? (
+              <LLMComponentRenderer
+                code={statusCode}
+                globals={STATUS_GLOBALS}
+                componentProps={componentProps}
+              />
+            ) : (
+              <EmptyStatusPlaceholder schema={schema} />
+            )}
           </div>
         </div>
       ) : showRealtimeStatus ? (
@@ -610,14 +631,36 @@ function ReadyView({
             {schema.modules.map((m, i) => (
               <div key={m.id}>
                 <span className="text-accent">module{i + 1}</span> [{m.id}] {m.label} —{' '}
-                <span className={moduleStatus?.[m.id] ? 'text-ok' : 'text-ink-mute'}>
-                  {moduleStatus?.[m.id] ? '✓ 代码已出现' : '○ 待在代码中出现'}
+                <span className={effectiveModuleStatus[m.id] ? 'text-ok' : 'text-ink-mute'}>
+                  {effectiveModuleStatus[m.id] ? '✓ 代码已出现' : '○ 待在代码中出现'}
                 </span>
               </div>
             ))}
           </div>
         </details>
       )}
+    </div>
+  );
+}
+
+function EmptyStatusPlaceholder({
+  schema,
+}: {
+  schema: AlgoVizSchema;
+}): React.ReactElement {
+  return (
+    <div className="rounded-lg border border-dashed border-line-strong/70 bg-bg-elev/30 px-3 py-4 text-[11px] text-ink-mute">
+      <div className="font-medium text-ink mb-2">还没有代码，实时脚手架保持全灭</div>
+      <div className="grid gap-1.5">
+        {schema.modules.map((m, i) => (
+          <div key={m.id} className="flex items-center gap-2 rounded border border-line/60 bg-bg-card/60 px-2 py-1.5">
+            <Circle size={11} className="text-ink-mute shrink-0" />
+            <span className="font-mono text-[10px] text-ink-mute">M{i + 1}</span>
+            <span className="text-ink-dim">{m.label}</span>
+            <span className="ml-auto chip">待出现</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

@@ -16,6 +16,13 @@
  */
 import { AIClient } from './client';
 import type { AIConfig } from '../types';
+import {
+  resolveAlgoVizOverride,
+  resolveFastLaneModel,
+  resolveIntentRouterModel,
+  resolvePrimaryModel,
+  resolveQualityModel,
+} from '../../lib/modelRegistry';
 
 function isLocalOllamaUrl(url: string): boolean {
   if (!url) return false;
@@ -35,13 +42,13 @@ function isLocalOllamaUrl(url: string): boolean {
   }
 }
 
-interface WarmTarget {
+export interface WarmTarget {
   baseUrl: string;
   model: string;
   label: string;
 }
 
-function collectTargets(cfg: AIConfig): WarmTarget[] {
+export function collectLocalOllamaTargets(cfg: AIConfig): WarmTarget[] {
   const out: WarmTarget[] = [];
   const seen = new Set<string>();
 
@@ -56,20 +63,34 @@ function collectTargets(cfg: AIConfig): WarmTarget[] {
     out.push({ baseUrl: b, model: m, label });
   };
 
-  // fastLane：多个工位的"本地默认"
-  if (cfg.fastLane?.enabled) {
-    tryAdd(cfg.fastLane.baseUrl, cfg.fastLane.model, 'fastLane');
+  const primary = resolvePrimaryModel(cfg);
+  if (primary.provider === 'ollama') {
+    tryAdd(primary.baseUrl, primary.model, 'primary');
   }
-  // intentRouter：本地路由意图分类
-  if (cfg.intentRouter?.enabled) {
-    tryAdd(cfg.intentRouter.baseUrl, cfg.intentRouter.model, 'intentRouter');
+
+  const quality = resolveQualityModel(cfg);
+  if (quality.provider === 'ollama') {
+    tryAdd(quality.baseUrl, quality.model, 'quality');
   }
-  // algoViz 三个工位（如果用户配的是本地）
+
+  const fastLane = resolveFastLaneModel(cfg);
+  if (fastLane) {
+    tryAdd(fastLane.baseUrl, fastLane.model, 'fastLane');
+  }
+
+  const intentRouter = resolveIntentRouterModel(cfg);
+  if (intentRouter?.provider === 'ollama') {
+    tryAdd(intentRouter.baseUrl, intentRouter.model, 'intentRouter');
+  }
+
   const av = cfg.algoVizModels;
   if (av) {
-    if (av.status?.enabled) tryAdd(av.status.baseUrl, av.status.model, 'algoViz.status');
-    if (av.animation?.enabled) tryAdd(av.animation.baseUrl, av.animation.model, 'algoViz.animation');
-    if (av.detect?.enabled) tryAdd(av.detect.baseUrl, av.detect.model, 'algoViz.detect');
+    const status = resolveAlgoVizOverride(cfg, av.status);
+    const animation = resolveAlgoVizOverride(cfg, av.animation);
+    const detect = resolveAlgoVizOverride(cfg, av.detect);
+    if (status?.provider === 'ollama') tryAdd(status.baseUrl, status.model, 'algoViz.status');
+    if (animation?.provider === 'ollama') tryAdd(animation.baseUrl, animation.model, 'algoViz.animation');
+    if (detect?.provider === 'ollama') tryAdd(detect.baseUrl, detect.model, 'algoViz.detect');
   }
 
   return out;
@@ -90,7 +111,7 @@ export interface WarmupResult {
 export async function warmupLocalModels(cfg: AIConfig): Promise<WarmupResult[]> {
   // ollamaMode='disabled' 完全跳过预热（避免 console 噪音 + 防止误唤起 ollama 进程）
   if (cfg.ollamaMode === 'disabled') return [];
-  const targets = collectTargets(cfg);
+  const targets = collectLocalOllamaTargets(cfg);
   if (targets.length === 0) return [];
 
   const results: WarmupResult[] = await Promise.all(
@@ -112,6 +133,7 @@ export async function warmupLocalModels(cfg: AIConfig): Promise<WarmupResult[]> 
           maxTokens: 1,
           temperature: 0,
           timeoutMs: 30_000,
+          keepAlive: '24h',
         });
         const dt = Math.round(performance.now() - t0);
         return { label: t.label, model: t.model, ok: true, latencyMs: dt };
@@ -136,4 +158,78 @@ export async function warmupLocalModels(cfg: AIConfig): Promise<WarmupResult[]> 
     }
   }
   return results;
+}
+
+function ollamaChatUrl(baseUrl: string): string {
+  let u = baseUrl.trim();
+  u = u.replace(/\/v1\/chat\/completions\/?$/, '/api/chat');
+  if (!/\/api\/chat\/?$/.test(u)) {
+    u = u.replace(/\/+$/, '') + '/api/chat';
+  }
+  return u;
+}
+
+function buildUnloadUrl(baseUrl: string): string {
+  const url = ollamaChatUrl(baseUrl);
+  const isDev = typeof window !== 'undefined' && (import.meta as any).env?.DEV;
+  return isDev ? `/ai-proxy/${encodeURIComponent(url)}` : url;
+}
+
+export async function unloadLocalModels(targets: WarmTarget[]): Promise<void> {
+  const unique = collectUniqueTargets(targets);
+  if (unique.length === 0) return;
+  const isDev = typeof window !== 'undefined' && (import.meta as any).env?.DEV;
+  if (isDev) {
+    await fetch('/__aicc-ollama-unload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ targets: unique }),
+      signal: AbortSignal.timeout(8000),
+    }).catch(() => undefined);
+    return;
+  }
+  await Promise.all(
+    unique.map((t) =>
+      fetch(buildUnloadUrl(t.baseUrl), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: t.model, messages: [], keep_alive: 0 }),
+        signal: AbortSignal.timeout(8000),
+      }).catch(() => undefined),
+    ),
+  );
+}
+
+export function requestUnloadLocalModels(targets: WarmTarget[]): void {
+  const unique = collectUniqueTargets(targets);
+  if (unique.length === 0 || typeof window === 'undefined') return;
+  const isDev = (import.meta as any).env?.DEV;
+  if (isDev && navigator.sendBeacon) {
+    const blob = new Blob([JSON.stringify({ targets: unique })], { type: 'application/json' });
+    navigator.sendBeacon('/__aicc-ollama-unload', blob);
+    return;
+  }
+  for (const t of unique) {
+    fetch(buildUnloadUrl(t.baseUrl), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: t.model, messages: [], keep_alive: 0 }),
+      keepalive: true,
+    }).catch(() => undefined);
+  }
+}
+
+function collectUniqueTargets(targets: WarmTarget[]): WarmTarget[] {
+  const seen = new Set<string>();
+  const out: WarmTarget[] = [];
+  for (const t of targets) {
+    const baseUrl = t.baseUrl.trim();
+    const model = t.model.trim();
+    if (!baseUrl || !model || !isLocalOllamaUrl(baseUrl)) continue;
+    const key = `${baseUrl}|${model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...t, baseUrl, model });
+  }
+  return out;
 }

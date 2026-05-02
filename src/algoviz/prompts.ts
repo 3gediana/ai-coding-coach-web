@@ -352,6 +352,13 @@ function ModuleBox({ active, title, children }) {
   );
 }
 
+Runtime props contract:
+- The exported StatusViz MUST accept props named module1, module2, module3, module4, module5.
+- Each ModuleBox active value MUST come from the matching prop only, e.g. active={!!module1}.
+- Never hardcode active={true}, active={1}, green borders, green background, or success checkmarks outside an active prop branch.
+- When all module props are false, the entire Status panel must render as inactive / grey, with no green highlighted module.
+- If you draw inner cells/badges inside an inactive ModuleBox, those inner elements must also avoid green success styling unless that module prop is true.
+
 Inside each ModuleBox, draw algorithm parts with FLEXBOX, not SVG absolute coords for layout.
 Array cells:
 <div style={{ display:'flex', gap:4, flexWrap:'wrap', minWidth:0, maxWidth:'100%' }}>
