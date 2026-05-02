@@ -528,6 +528,7 @@ function ReadyView({
   const modules = schema?.modules ?? [];
   const completedCount = modules.filter((m) => !!moduleStatus?.[m.id]).length;
   const progressPercent = modules.length > 0 ? Math.round((completedCount / modules.length) * 100) : 0;
+  const hasRealtimeStatus = showRealtimeStatus && !!statusCode;
 
   return (
     <div className="px-2 py-2 space-y-3">
@@ -540,10 +541,10 @@ function ReadyView({
         detecting={detecting}
         isAnimGenerating={isAnimGenerating}
         hasAnimation={!!animationCode}
-        showRealtimeStatus={showRealtimeStatus}
+        showRealtimeStatus={hasRealtimeStatus}
       />
 
-      {showRealtimeStatus && schema && (
+      {hasRealtimeStatus && schema && (
         <ModuleProgressRail
           schema={schema}
           moduleStatus={moduleStatus}
@@ -551,7 +552,7 @@ function ReadyView({
         />
       )}
 
-      {showRealtimeStatus && statusCode ? (
+      {hasRealtimeStatus && statusCode ? (
         <div className="relative overflow-hidden rounded-md border border-line/60 bg-bg-card shadow-soft">
           <div className="relative px-3 py-1.5 flex items-center gap-2 border-b border-line/50 bg-bg-elev/35 text-[11px]">
             <Layers3 size={12} className="text-accent" />
@@ -597,18 +598,17 @@ function ReadyView({
         )}
       </div>
 
-      {/* 调试信息 */}
-      {showRealtimeStatus && schema && (
+      {hasRealtimeStatus && schema && (
         <details className="text-[10px] text-ink-mute">
           <summary className="cursor-pointer hover:text-ink transition">
-            schema 调试信息（{schema.modules.length} 模块）
+            代码模块检测状态（{schema.modules.length} 模块）
           </summary>
           <div className="mt-1 font-mono px-2 py-1 bg-bg-elev/50 rounded border border-line/50">
             {schema.modules.map((m, i) => (
               <div key={m.id}>
                 <span className="text-accent">module{i + 1}</span> [{m.id}] {m.label} —{' '}
                 <span className={moduleStatus?.[m.id] ? 'text-ok' : 'text-ink-mute'}>
-                  {moduleStatus?.[m.id] ? '✓ 已完成' : '○ 待完成'}
+                  {moduleStatus?.[m.id] ? '✓ 代码已出现' : '○ 待在代码中出现'}
                 </span>
               </div>
             ))}
