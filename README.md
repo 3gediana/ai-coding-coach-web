@@ -162,13 +162,13 @@ AI 编排层：AnalyzeCode / AlgoViz / Hack Chain / DailyPlan / Feynman
 
 ```bash
 npm install
-npm run dev
+npm run dev -- --host 127.0.0.1 --port 3333
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:5173/
+http://127.0.0.1:3333/
 ```
 
 ## 从零克隆与部署
@@ -239,16 +239,34 @@ AICC_VISION_MODEL=qwen3.5:4b
 
 ### 4. 启动开发服务
 
-推荐固定端口启动：
+推荐使用一键脚本启动：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local.ps1
+```
+
+也可以双击：
+
+```text
+scripts/start-local.cmd
+```
+
+默认端口是 `3333`，对应你的小米球隧道：
+
+```text
+1y2ae99xyr7b.vip3.xiaomiqiu123.top -> 127.0.0.1:3333
+```
+
+如果不用脚本，也可以手动启动：
 
 ```bash
-npm run dev -- --host 127.0.0.1 --port 5173
+npm run dev -- --host 127.0.0.1 --port 3333
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:5173/
+http://127.0.0.1:3333/
 ```
 
 Vite 开发服务同时提供本地桥接接口：
@@ -275,7 +293,36 @@ npm run preview
 
 - 静态部署只包含前端页面。
 - OJ 油猴桥接依赖 Vite dev middleware 的本地接口；如果要在生产环境继续使用 OJ 抓题/回填，需要提供等价的后端桥接服务。
-- 本项目当前主要面向本地学习/竞赛展示场景，推荐使用本地 `npm run dev -- --host 127.0.0.1 --port 5173`。
+- 本项目当前主要面向本地学习/竞赛展示场景，推荐使用 `scripts/start-local.ps1` 启动。
+
+### 6. 公网体验与多用户隔离
+
+如果你用隧道把 `127.0.0.1:3333` 映射出去，让同学/评委体验核心平台功能，目前是可行的。
+
+当前核心数据隔离方式：
+
+- 题目、代码文件、错题、会话、运行记录主要存储在**访问者自己浏览器的 IndexedDB / localStorage**。
+- 不同访问者使用不同浏览器、不同设备访问同一个隧道页面时，前端数据天然分开。
+- 他们不会直接看到你浏览器里的题目和代码。
+
+适合公网体验的功能：
+
+- 手动创建/粘贴题目
+- 代码编辑器
+- 本地样例运行
+- AI 代码分析
+- 问教练
+- AlgoViz
+- 错题本与学习复盘
+
+暂不建议开放给多人同时体验的功能：
+
+- OJ 油猴推题
+- OJ 回填
+- OJ 自动评测
+
+原因是这些 OJ bridge 接口当前是本地开发桥接队列，主要服务你自己的浏览器与本机 OJ 页面，不做公网多用户会话隔离。  
+如果以后要做真正公开多人版，需要把 bridge、任务队列、AI key、用户数据改造成服务端会话/账号隔离。
 
 ## 油猴脚本安装与 OJ 联动
 
@@ -335,8 +382,10 @@ logs/dom-snapshots/
 1. 启动本地服务：
 
 ```bash
-npm run dev -- --host 127.0.0.1 --port 5173
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local.ps1
 ```
+
+说明：当前油猴脚本默认连接本地 `3333`，和平台默认端口一致。
 
 2. 打开 OJ 题目页。
 3. 点击油猴浮动按钮，将题目推送到 AI Coach。

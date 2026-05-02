@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 题目推送器
 // @namespace    https://github.com/aicc-pusher
-// @version      0.3.9
+// @version      0.3.10
 // @description  从校内 OJ / 头歌 educoder 抓题目 → 推送到 AI Coach，并支持 Coach 回填代码；自动提交需显式触发。
 // @author       AI Coach
 // @match        http://10.11.219.21/*
@@ -17,7 +17,7 @@
   'use strict';
   if (window.top !== window.self) return;
 
-  const COACH_ORIGINS = ['http://127.0.0.1:5173', 'http://127.0.0.1:5174'];
+  const COACH_ORIGINS = ['http://127.0.0.1:3333'];
 
   // ─────────── 站点检测 ───────────
 
@@ -503,7 +503,7 @@
           },
           onerror: () => {
             if (idx < COACH_ORIGINS.length) tryOne();
-            else reject(new Error('网络错误：AI Coach 是否在 5173/5174 端口运行？'));
+            else reject(new Error('网络错误：AI Coach 是否在 3333 端口运行？'));
           },
           ontimeout: () => {
             if (idx < COACH_ORIGINS.length) tryOne();
@@ -1065,7 +1065,7 @@
     placeFab(btn);
     makeDraggable(btn);
     setCollapsed(collapsed);
-    btn.title = `从 ${site === 'school-oj' ? '校内 OJ' : '头歌'} 抓取当前题目并推送到 AI Coach (5173)。拖动可移动，双击可收纳/展开。`;
+    btn.title = `从 ${site === 'school-oj' ? '校内 OJ' : '头歌'} 抓取当前题目并推送到 AI Coach (3333)。拖动可移动，双击可收纳/展开。`;
 
     btn.addEventListener('click', async () => {
       if (collapsed) {
@@ -1094,7 +1094,7 @@
         console.error('[aicc-pusher]', err);
         btn.innerHTML = '❌ 推送失败';
         btn.classList.add('err');
-        showToast(`推送失败：${err.message}\n确认 AI Coach 在 5173 端口运行`, 'err');
+        showToast(`推送失败：${err.message}\n确认 AI Coach 在 3333 端口运行`, 'err');
         setTimeout(() => {
           btn.innerHTML = collapsed ? 'AI' : '📤 推送到 AI Coach';
           btn.classList.remove('err');
@@ -1151,7 +1151,7 @@
       pollCommandsTick().catch((err) => console.warn('[aicc-pusher] 轮询提交命令失败', err));
     }, 2_000);
 
-    postDebugLog('script-loaded', { version: '0.3.9' });
+    postDebugLog('script-loaded', { version: '0.3.10' });
     console.log('[aicc-pusher] 已加载：支持题目推送 + AI Coach 回填代码；自动提交需显式触发');
   }
 

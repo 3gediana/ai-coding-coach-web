@@ -744,9 +744,9 @@ export default defineConfig({
     },
   ],
   server: {
-    port: 5173,
+    port: 3333,
     host: '127.0.0.1',
-    // 端口被占用时直接报错，避免 fallback 到 5174 导致 localStorage origin 漂移、AI 配置看似丢失
+    // 端口被占用时直接报错，避免 fallback 到其它端口导致 localStorage origin 漂移、AI 配置看似丢失
     strictPort: true,
   },
 });

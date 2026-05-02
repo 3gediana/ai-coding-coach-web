@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         AI Coach 通用网页结构探针
 // @namespace    https://github.com/aicc-probe
-// @version      0.2.0
+// @version      0.2.1
 // @description  在任意网页上抓取页面结构（题面 / 图片 / 代码块 / 编辑器 / 按钮 / 结果区），回传给 AI Coach 项目，用于设计平台专用解析器
 // @author       AI Coach
 // @match        *://*/*
@@ -21,8 +21,8 @@
   // 防止 iframe 重复注入
   if (window.top !== window.self) return;
 
-  const PROBE_VERSION = '0.2.0';
-  const COACH_ORIGINS = ['http://127.0.0.1:5173', 'http://127.0.0.1:5174'];
+  const PROBE_VERSION = '0.2.1';
+  const COACH_ORIGINS = ['http://127.0.0.1:3333'];
   const networkLog = [];
 
   // ─────────────────── 工具函数 ───────────────────
@@ -1097,7 +1097,7 @@
           },
           onerror: () => {
             if (idx < COACH_ORIGINS.length) tryOne();
-            else reject(new Error('网络错误：AI Coach 是否在 5173/5174 端口运行？'));
+            else reject(new Error('网络错误：AI Coach 是否在 3333 端口运行？'));
           },
           ontimeout: () => {
             if (idx < COACH_ORIGINS.length) tryOne();
