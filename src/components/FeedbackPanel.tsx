@@ -63,6 +63,7 @@ export function FeedbackPanel() {
   const tab = useStore((s) => s.feedbackTab);
   const setTab = useStore((s) => s.setFeedbackTab);
   const ollamaMode = useStore((s) => s.aiConfig.ollamaMode);
+  const agentTraceCount = useStore((s) => s.agentTrace.length);
 
   const key = activeProblemId ?? '__draft__';
   const result = analysisByProblem[key];
@@ -166,7 +167,7 @@ export function FeedbackPanel() {
             className="h-7 w-full flex items-center px-2 border-t border-line bg-bg-elev/40 text-[11px] text-ink-mute hover:text-ink hover:bg-bg-elev2 transition shrink-0"
           >
             <Activity size={11} className="text-accent mr-1.5" />
-            Agent · {useStore((s) => s.agentTrace).length} 条行动 · 点击展开
+            Agent · {agentTraceCount} 条行动 · 点击展开
           </button>
         ) : (
           <>
