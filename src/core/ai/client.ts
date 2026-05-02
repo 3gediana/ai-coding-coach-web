@@ -445,14 +445,23 @@ function parseRetryAfter(h: string | null): number | null {
 }
 
 /**
- * Dev 模式下走 Vite proxy 绕 CORS。
- * 生产模式下直接打到真实 URL（用户自行处理 CORS）。
+ * 同源代理存在时走 /ai-proxy 绕 CORS，并允许服务端自动启动本机 Ollama。
+ * 只有外部生产部署才直连真实 URL。
  */
 function buildProxyUrl(baseUrl: string): string {
-  const isDev = typeof window !== 'undefined' && (import.meta as any).env?.DEV;
   // baseUrl 形如 https://api.minimaxi.com/v1/chat/completions（用户配置）
   const full = baseUrl.replace(/\/+$/, '');
-  if (!isDev) return full;
+  if (typeof window === 'undefined') return full;
+  const isLocal = (() => {
+    try {
+      const u = new URL(full);
+      const h = u.hostname.toLowerCase();
+      return h === 'localhost' || h === '127.0.0.1' || h === '::1' || h.startsWith('192.168.') || h.startsWith('10.') || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+    } catch {
+      return false;
+    }
+  })();
+  if (!isLocal && !(import.meta as any).env?.DEV) return full;
   return `/ai-proxy/${encodeURIComponent(full)}`;
 }
 

@@ -39,7 +39,8 @@ import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
 import { DEFAULT_ROUTER_HINTS } from '../core/ai/router';
 import { ModelRegistrySection, ModelPicker } from './ModelRegistry';
-import { resolvePrimaryModel } from '../lib/modelRegistry';
+import { resolveFastLaneModel, resolvePrimaryModel } from '../lib/modelRegistry';
+import { collectLocalOllamaTargets, getLocalOllamaTargetConflict } from '../core/ai/warmup';
 import { applyTheme, getStoredTheme, THEMES, type Theme } from '../lib/theme';
 import { setForcedOffline, useOnlineStatus } from '../lib/offlineMode';
 
@@ -66,20 +67,22 @@ export function SettingsModal() {
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [currentTheme, setCurrentTheme] = useState<Theme>(getStoredTheme());
 
+  const fastLaneModel = resolveFastLaneModel(draft);
+  const localOllamaTargets = collectLocalOllamaTargets(draft);
+  const localOllamaConflicts = getLocalOllamaTargetConflict(draft);
+
   /** fastLane 是否就绪：enabled + 本地 baseUrl + model + Ollama 模式打开 */
   const fastLaneReady = !!(
     draft.ollamaMode !== 'disabled' &&
-    draft.fastLane?.enabled &&
-    draft.fastLane.baseUrl?.trim() &&
-    draft.fastLane.model?.trim() &&
-    isLocalOllamaUrl(draft.fastLane.baseUrl)
+    fastLaneModel?.baseUrl.trim() &&
+    fastLaneModel?.model.trim() &&
+    isLocalOllamaUrl(fastLaneModel.baseUrl)
   );
   const ollamaEnabled = draft.ollamaMode !== 'disabled';
   const offlineFastUsable =
     ollamaEnabled &&
-    !!draft.fastLane?.enabled &&
-    !!draft.fastLane?.baseUrl &&
-    !!draft.fastLane?.model;
+    !!fastLaneModel?.baseUrl &&
+    !!fastLaneModel?.model;
   const forcedOffline = onlineStatus === 'forced-offline';
 
   const onPickTheme = (theme: Theme) => {
@@ -174,6 +177,15 @@ export function SettingsModal() {
   const onSaveAndTest = async () => {
     // 校验"实际生效的主模型"——若分配了 primaryModelId 就走 registry，否则走顶层字段
     const primary = resolvePrimaryModel(draft);
+    if (localOllamaConflicts.length > 1) {
+      setTestResult({
+        ok: false,
+        msg:
+          '本地 Ollama 只能配置一个模型。请让所有本地工位使用同一个模型：\n' +
+          localOllamaConflicts.map((t) => `- ${t.label}: ${t.model} @ ${t.baseUrl}`).join('\n'),
+      });
+      return;
+    }
     if (!primary.baseUrl.trim()) {
       setTestResult({ ok: false, msg: 'Base URL 不能为空（请到注册表登记或填写下方字段）' });
       return;
@@ -183,12 +195,6 @@ export function SettingsModal() {
         ok: false,
         msg: '当前是「无 Ollama 模式」，主 AI 服务不能选择 Ollama。请切到 DeepSeek / OpenAI 兼容云端，或打开 Ollama 模式。',
       });
-      return;
-    }
-    // ollama 本地服务可以不要 apiKey
-    const needsKey = primary.provider !== 'ollama';
-    if (needsKey && !primary.apiKey.trim()) {
-      setTestResult({ ok: false, msg: 'API Key 不能为空' });
       return;
     }
     if (!primary.model.trim()) {
@@ -213,6 +219,23 @@ export function SettingsModal() {
     }
     setTesting(true);
     setTestResult(null);
+    setCfg(draft);
+    toast.success(localOllamaTargets.length > 0 ? 'AI 配置已保存，正在预热本地模型' : 'AI 配置已保存', {
+      description:
+        localOllamaTargets.length > 0
+          ? `本地模型：${localOllamaTargets[0].model}。请稍等，预热完成后会占用显存。`
+          : '连接测试将在后台继续执行。',
+    });
+    const shouldTestPrimary = primary.provider === 'ollama' || !!primary.apiKey.trim();
+    if (!shouldTestPrimary) {
+      setTestResult({
+        ok: true,
+        msg: '配置已保存。主云端模型尚未填写 API Key，云端任务会继续显示未配置；本地 Ollama 工位会按配置预热/工作。',
+      });
+      setTesting(false);
+      setTimeout(() => setOpen(false), 600);
+      return;
+    }
     // 用解析后的 primary 字段拼一个临时 AIConfig 给 AIClient
     const resolvedDraft: AIConfig = {
       ...draft,
@@ -233,14 +256,15 @@ export function SettingsModal() {
         timeoutMs: 30_000,
         maxRetries: 0,
       });
-      // 测试通过 → 保存 + 关闭
-      setCfg(draft);
       setTestResult({ ok: true, msg: `成功：${text.trim().slice(0, 60) || '(空响应)'}` });
-      toast.success('AI 配置已保存', { description: '连接测试通过，可以开始用了' });
+      toast.success('主模型连接测试通过', { description: '配置已保存，可以开始用了' });
       // 留 600ms 让用户看到绿条，再关闭
       setTimeout(() => setOpen(false), 600);
     } catch (e: any) {
       setTestResult({ ok: false, msg: String(e?.message || e).slice(0, 200) });
+      toast.warning('配置已保存，但主模型连接测试失败', {
+        description: '本地模型预热不依赖云端主模型测试；如需云端任务，请回到设置检查主模型。',
+      });
     } finally {
       setTesting(false);
     }
@@ -370,8 +394,38 @@ export function SettingsModal() {
                 onChange={(m) => setDraft({ ...draft, ollamaMode: m })}
               />
 
+              {ollamaEnabled && (
+                <div
+                  className={cn(
+                    'rounded-lg border px-3 py-2 text-[11px] leading-relaxed',
+                    localOllamaConflicts.length > 1
+                      ? 'border-bad/50 bg-bad/10 text-bad'
+                      : localOllamaTargets.length > 0
+                        ? 'border-ok/40 bg-ok/10 text-ok'
+                        : 'border-line/60 bg-bg-elev/40 text-ink-mute',
+                  )}
+                >
+                  <div className="font-semibold text-ink mb-0.5">本地 Ollama 预热状态</div>
+                  {localOllamaConflicts.length > 1 ? (
+                    <>
+                      <div>只能配置一个本地模型；请把所有本地工位改成同一个模型：</div>
+                      <div className="font-mono whitespace-pre-wrap mt-1">
+                        {localOllamaConflicts.map((t) => `${t.label}: ${t.model} @ ${t.baseUrl}`).join('\n')}
+                      </div>
+                    </>
+                  ) : localOllamaTargets.length > 0 ? (
+                    <div>
+                      保存后会立即预热：<strong>{localOllamaTargets[0].model}</strong>
+                      <span className="text-ink-mute">（{localOllamaTargets.map((t) => t.label).join(' / ')} 共用）</span>
+                    </div>
+                  ) : (
+                    <div>当前没有任何工位使用本地 Ollama；不会占用显存。</div>
+                  )}
+                </div>
+              )}
+
               {/* 模型注册表：先注册好模型，再分配给各 Agent slot */}
-              <ModelRegistrySection />
+              <ModelRegistrySection config={draft} onChange={setDraft} />
 
               {/* 主模型分配：从注册表里挑一个；选了之后下面的预设/key/model 就被注册表覆盖 */}
               <div>
@@ -379,6 +433,7 @@ export function SettingsModal() {
                 <ModelPicker
                   value={draft.primaryModelId}
                   onChange={(id) => setDraft({ ...draft, primaryModelId: id })}
+                  config={draft}
                   placeholder="— 未分配 / 用下方手填字段 —"
                 />
                 <p className="text-[11px] text-ink-mute mt-1">
@@ -693,6 +748,7 @@ export function SettingsModal() {
                             fastLane: { ...draft.fastLane!, modelId: id },
                           })
                         }
+                        config={draft}
                         filter={(m) => m.provider === 'ollama'}
                         placeholder="— 未分配 / 用下方手填 —"
                       />
@@ -913,6 +969,7 @@ export function SettingsModal() {
                               intentRouter: { ...draft.intentRouter!, modelId: id },
                             })
                           }
+                          config={draft}
                           placeholder="— 未分配 / 用下方手填 —"
                         />
                       </Field>
@@ -1157,7 +1214,6 @@ export function SettingsModal() {
                   // 校验"实际生效的主模型"——若用了注册制就看注册条目，否则看顶层字段
                   const r = resolvePrimaryModel(draft);
                   if (!r.baseUrl.trim() || !r.model.trim()) return true;
-                  if (r.provider !== 'ollama' && !r.apiKey.trim()) return true;
                   return false;
                 })()}
                 className="btn-primary"
@@ -1280,6 +1336,7 @@ function AlgoVizRoleConfig({
             <ModelPicker
               value={cur?.modelId}
               onChange={(id) => update({ modelId: id })}
+              config={draft}
               filter={role === 'detect' ? (m) => m.provider === 'ollama' : undefined}
               placeholder="— 未分配 / 用下方手填 —"
             />

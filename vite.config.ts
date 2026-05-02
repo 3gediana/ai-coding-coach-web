@@ -2,10 +2,12 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
-import { writeFileSync, mkdirSync, appendFileSync } from 'node:fs';
-import { resolve as pathResolve } from 'node:path';
+import { writeFile, mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve, extname, resolve as pathResolve } from 'node:path';
+import type { Connect } from 'vite';
 
-const devArtifactPath = (...parts: string[]) => pathResolve(process.cwd(), 'dev-workspace', 'artifacts', ...parts);
+const devArtifactPath = (...parts: string[]) => resolve(process.cwd(), 'dev-workspace', 'artifacts', ...parts);
 
 /**
  * Dev 时通过自定义中间件转发到真实 AI endpoint，绕开 CORS。
@@ -143,11 +145,88 @@ function isLocalOllamaTarget(target: URL): boolean {
   return h === 'localhost' || h === '127.0.0.1' || h === '::1';
 }
 
+function installAiProxyMiddleware(middlewares: Connect.Server) {
+  middlewares.use('/ai-proxy', async (req, res) => {
+    const encoded = (req.url || '').replace(/^\//, '');
+    if (!encoded) {
+      res.statusCode = 400;
+      res.end('missing target');
+      return;
+    }
+    let target: URL;
+    try {
+      target = new URL(decodeURIComponent(encoded));
+    } catch {
+      res.statusCode = 400;
+      res.end('invalid target');
+      return;
+    }
+
+    if (isLocalOllamaTarget(target)) {
+      const ok = await ensureOllamaRunning();
+      if (!ok) {
+        res.statusCode = 503;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({
+          error: 'ollama 未就绪：请检查 PATH 中是否有 `ollama` 命令，或手动 `ollama serve`',
+        }));
+        return;
+      }
+    }
+
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', async () => {
+      const body = Buffer.concat(chunks);
+      const headers: Record<string, string> = {};
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (typeof v === 'string') {
+          if (k === 'host' || k === 'connection' || k === 'content-length') continue;
+          headers[k] = v;
+        }
+      }
+      try {
+        const upstream = await fetch(target.toString(), {
+          method: req.method ?? 'POST',
+          headers,
+          body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
+        });
+        res.statusCode = upstream.status;
+        upstream.headers.forEach((v, k) => {
+          if (k === 'content-encoding' || k === 'content-length' || k === 'transfer-encoding') return;
+          res.setHeader(k, v);
+        });
+        if (!upstream.body) {
+          res.end();
+          return;
+        }
+        const reader = upstream.body.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            res.write(Buffer.from(value));
+          }
+        } finally {
+          res.end();
+        }
+      } catch (e: any) {
+        res.statusCode = 502;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ error: String(e?.message || e) }));
+      }
+    });
+  });
+}
+
 const ollamaAutostartPlugin: Plugin = {
   name: 'aicc-ollama-autostart',
   configureServer(server) {
     // 启动 vite 时不立即拉起 ollama（lazy）：第一次有 ollama 请求才 spawn
     // 这样不依赖 ollama 的项目 / 用户也不会被影响
+    server.httpServer?.on('close', killManagedOllama);
+  },
+  configurePreviewServer(server) {
     server.httpServer?.on('close', killManagedOllama);
   },
 };
@@ -161,89 +240,10 @@ export default defineConfig({
     {
       name: 'aicc-ai-proxy',
       configureServer(server) {
-        server.middlewares.use('/ai-proxy', async (req, res) => {
-          const encoded = (req.url || '').replace(/^\//, '');
-          if (!encoded) {
-            res.statusCode = 400;
-            res.end('missing target');
-            return;
-          }
-          let target: URL;
-          try {
-            target = new URL(decodeURIComponent(encoded));
-          } catch {
-            res.statusCode = 400;
-            res.end('invalid target');
-            return;
-          }
-
-          // 目标是本地 ollama → 自动确保 ollama serve 在跑
-          if (isLocalOllamaTarget(target)) {
-            const ok = await ensureOllamaRunning();
-            if (!ok) {
-              res.statusCode = 503;
-              res.setHeader('content-type', 'application/json');
-              res.end(JSON.stringify({
-                error: 'ollama 未就绪：请检查 PATH 中是否有 `ollama` 命令，或手动 `ollama serve`',
-              }));
-              return;
-            }
-          }
-
-          // 收集 body（本地不流式接收，但发到 AI 后保持流式响应）
-          const chunks: Buffer[] = [];
-          req.on('data', (c: Buffer) => chunks.push(c));
-          req.on('end', async () => {
-            const body = Buffer.concat(chunks);
-            const headers: Record<string, string> = {};
-            for (const [k, v] of Object.entries(req.headers)) {
-              if (typeof v === 'string') {
-                if (k === 'host' || k === 'connection' || k === 'content-length') continue;
-                headers[k] = v;
-              }
-            }
-            try {
-              const upstream = await fetch(target.toString(), {
-                method: req.method ?? 'POST',
-                headers,
-                body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
-              });
-              res.statusCode = upstream.status;
-              upstream.headers.forEach((v, k) => {
-                // 跳过会冲突的 header
-                if (
-                  k === 'content-encoding' ||
-                  k === 'content-length' ||
-                  k === 'transfer-encoding'
-                ) {
-                  return;
-                }
-                res.setHeader(k, v);
-              });
-              if (!upstream.body) {
-                res.end();
-                return;
-              }
-              const reader = upstream.body.getReader();
-              const pump = async () => {
-                try {
-                  while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    res.write(Buffer.from(value));
-                  }
-                } finally {
-                  res.end();
-                }
-              };
-              await pump();
-            } catch (e: any) {
-              res.statusCode = 502;
-              res.setHeader('content-type', 'application/json');
-              res.end(JSON.stringify({ error: String(e?.message || e) }));
-            }
-          });
-        });
+        installAiProxyMiddleware(server.middlewares);
+      },
+      configurePreviewServer(server) {
+        installAiProxyMiddleware(server.middlewares);
       },
     },
     {

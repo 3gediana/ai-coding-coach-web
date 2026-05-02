@@ -9,12 +9,13 @@
  *   - 旧字段（baseUrl/apiKey/model）当 modelId 不为空时彻底隐藏，降低用户混淆
  *   - 新建模型默认 label 跟 provider 预设走，减少输入
  */
-import { useState } from 'react';
-import { Plus, Pencil, Trash2, X, Check, Database } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { Plus, Pencil, Trash2, X, Check, Database, Loader2, RefreshCw, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/cn';
 import { useStore } from '../lib/store';
-import type { AIProvider, ModelEntry } from '../core/types';
+import type { AIConfig, AIProvider, ModelEntry } from '../core/types';
 import { PRESETS } from '../lib/presets';
+import { fetchOllamaModels, formatModelSize } from '../lib/ollama';
 
 const PROVIDER_LABELS: Record<AIProvider, string> = {
   deepseek: 'DeepSeek',
@@ -48,13 +49,24 @@ const EMPTY_FORM: FormState = {
 };
 
 /** Settings 顶部的"已注册模型"区块：列表 + 新建表单 */
-export function ModelRegistrySection() {
-  const registry = useStore((s) => s.aiConfig.modelRegistry ?? []);
-  const registerModel = useStore((s) => s.registerModel);
-  const updateModel = useStore((s) => s.updateModel);
-  const removeModel = useStore((s) => s.removeModel);
+export function ModelRegistrySection({
+  config,
+  onChange,
+}: {
+  config?: AIConfig;
+  onChange?: (next: AIConfig) => void;
+}) {
+  const storeConfig = useStore((s) => s.aiConfig);
+  const setAIConfig = useStore((s) => s.setAIConfig);
+  const effectiveConfig = config ?? storeConfig;
+  const registry = effectiveConfig.modelRegistry ?? [];
 
   const [editing, setEditing] = useState<FormState | null>(null);
+
+  const persistConfig = (next: AIConfig) => {
+    if (onChange) onChange(next);
+    else setAIConfig(next);
+  };
 
   const startCreate = () => setEditing({ ...EMPTY_FORM });
   const startEdit = (m: ModelEntry) =>
@@ -72,26 +84,38 @@ export function ModelRegistrySection() {
   const save = () => {
     if (!editing) return;
     if (!editing.label.trim() || !editing.baseUrl.trim() || !editing.model.trim()) return;
-    if (editing.id) {
-      updateModel(editing.id, {
-        label: editing.label.trim(),
-        provider: editing.provider,
-        baseUrl: editing.baseUrl.trim(),
-        apiKey: editing.apiKey.trim(),
-        model: editing.model.trim(),
-        numCtx: editing.numCtx,
-      });
-    } else {
-      registerModel({
-        label: editing.label.trim(),
-        provider: editing.provider,
-        baseUrl: editing.baseUrl.trim(),
-        apiKey: editing.apiKey.trim(),
-        model: editing.model.trim(),
-        numCtx: editing.numCtx,
-      });
-    }
+    const id = editing.id ?? `m-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const entry: ModelEntry = {
+      id,
+      label: editing.label.trim(),
+      provider: editing.provider,
+      baseUrl: editing.baseUrl.trim(),
+      apiKey: editing.apiKey.trim(),
+      model: editing.model.trim(),
+      numCtx: editing.numCtx,
+    };
+    const nextRegistry = editing.id
+      ? registry.map((m) => (m.id === editing.id ? entry : m))
+      : [...registry, entry];
+    persistConfig({ ...effectiveConfig, modelRegistry: nextRegistry });
     setEditing(null);
+  };
+
+  const removeModel = (id: string) => {
+    const nextRegistry = registry.filter((m) => m.id !== id);
+    const cleaned: AIConfig = { ...effectiveConfig, modelRegistry: nextRegistry };
+    if (cleaned.primaryModelId === id) cleaned.primaryModelId = undefined;
+    if (cleaned.qualityModelId === id) cleaned.qualityModelId = undefined;
+    if (cleaned.fastLane?.modelId === id) cleaned.fastLane = { ...cleaned.fastLane, modelId: undefined };
+    if (cleaned.intentRouter?.modelId === id) cleaned.intentRouter = { ...cleaned.intentRouter, modelId: undefined };
+    if (cleaned.algoVizModels) {
+      const av = { ...cleaned.algoVizModels };
+      for (const role of ['status', 'animation', 'detect'] as const) {
+        if (av[role]?.modelId === id) av[role] = { ...av[role]!, modelId: undefined };
+      }
+      cleaned.algoVizModels = av;
+    }
+    persistConfig(cleaned);
   };
 
   return (
@@ -140,9 +164,7 @@ export function ModelRegistrySection() {
               <button
                 type="button"
                 onClick={() => {
-                  if (confirm(`删除「${m.label}」？引用该模型的 Agent 会回到未配置状态。`)) {
-                    removeModel(m.id);
-                  }
+                  if (confirm(`删除「${m.label}」？引用该模型的 Agent 会回到未配置状态。`)) removeModel(m.id);
                 }}
                 className="btn-ghost p-1 hover:text-bad"
                 title="删除"
@@ -171,7 +193,7 @@ export function ModelRegistrySection() {
                     ...editing,
                     provider: p.id,
                     baseUrl: p.baseUrl,
-                    model: editing.model || p.defaultModel,
+                    model: p.defaultModel,
                     label: editing.label || p.label,
                   })
                 }
@@ -195,12 +217,7 @@ export function ModelRegistrySection() {
               />
             </FormField>
             <FormField label="Model">
-              <input
-                className="input font-mono text-xs"
-                placeholder="model-name"
-                value={editing.model}
-                onChange={(e) => setEditing({ ...editing, model: e.target.value })}
-              />
+              <RegistryModelSelector editing={editing} setEditing={setEditing} />
             </FormField>
           </div>
 
@@ -251,6 +268,146 @@ function FormField({ label, children }: { label: string; children: React.ReactNo
   );
 }
 
+const REGISTRY_CUSTOM_MODEL = '__custom__';
+
+function RegistryModelSelector({
+  editing,
+  setEditing,
+}: {
+  editing: FormState;
+  setEditing: (next: FormState) => void;
+}) {
+  const preset = PRESETS.find((p) => p.id === editing.provider);
+  const examples = preset?.modelExamples ?? [];
+  const [showCustom, setShowCustom] = useState(false);
+  const [ollamaModels, setOllamaModels] = useState<Array<{ name: string; size: number }> | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const probeOllama = useCallback(async () => {
+    if (editing.provider !== 'ollama' || !editing.baseUrl.trim()) return;
+    setProbing(true);
+    setError(null);
+    try {
+      const models = await fetchOllamaModels(editing.baseUrl);
+      setOllamaModels(models);
+      if (!editing.id && models[0]?.name && !models.some((m) => m.name === editing.model)) {
+        setEditing({ ...editing, model: models[0].name });
+      }
+    } catch (e: any) {
+      setOllamaModels(null);
+      setError(String(e?.message ?? e).slice(0, 120));
+    } finally {
+      setProbing(false);
+    }
+  }, [editing, setEditing]);
+
+  useEffect(() => {
+    setShowCustom(false);
+    setOllamaModels(null);
+    setError(null);
+    if (editing.provider === 'ollama' && editing.baseUrl.trim()) {
+      void probeOllama();
+    }
+  }, [editing.provider, editing.baseUrl]);
+
+  if (editing.provider === 'ollama') {
+    const hasModels = !!ollamaModels?.length;
+    return (
+      <div className="space-y-1.5">
+        <div className="flex items-stretch gap-1.5">
+          {hasModels ? (
+            <select
+              className="input font-mono text-xs flex-1"
+              value={editing.model}
+              onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+            >
+              {editing.model && !ollamaModels!.some((m) => m.name === editing.model) && (
+                <option value={editing.model}>{editing.model}（未在本机列表中）</option>
+              )}
+              {ollamaModels!.map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name} · {formatModelSize(m.size)}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              className="input font-mono text-xs flex-1"
+              placeholder="点击右侧探测本机 ollama list"
+              value={editing.model}
+              onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+            />
+          )}
+          <button
+            type="button"
+            onClick={probeOllama}
+            disabled={probing || !editing.baseUrl.trim()}
+            className="btn text-xs shrink-0"
+            title="读取本机 Ollama 已安装模型列表"
+          >
+            {probing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+            探测
+          </button>
+        </div>
+        {error && (
+          <div className="rounded border border-warn/40 bg-warn/10 px-2 py-1 text-[10px] text-warn flex items-start gap-1.5">
+            <AlertTriangle size={10} className="shrink-0 mt-0.5" />
+            <span>未读到本机 Ollama 模型：{error}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  if (examples.length === 0) {
+    return (
+      <input
+        className="input font-mono text-xs"
+        placeholder="model-name"
+        value={editing.model}
+        onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+      />
+    );
+  }
+
+  const valueIsPreset = examples.includes(editing.model);
+  return (
+    <div className="space-y-1.5">
+      <select
+        className="input font-mono text-xs"
+        value={valueIsPreset && !showCustom ? editing.model : REGISTRY_CUSTOM_MODEL}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next === REGISTRY_CUSTOM_MODEL) {
+            setShowCustom(true);
+            return;
+          }
+          setShowCustom(false);
+          setEditing({ ...editing, model: next });
+        }}
+      >
+        {examples.map((m) => (
+          <option key={m} value={m}>
+            {m}
+            {m === preset?.defaultModel ? '（推荐）' : ''}
+          </option>
+        ))}
+        <option value={REGISTRY_CUSTOM_MODEL}>其他模型…</option>
+      </select>
+      {(!valueIsPreset || showCustom) && (
+        <input
+          className="input font-mono text-xs"
+          placeholder="输入自定义模型名"
+          value={editing.model}
+          onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+          autoFocus={showCustom}
+        />
+      )}
+    </div>
+  );
+}
+
 /**
  * Slot 分配下拉：从注册表中选一个 model 分配给该 agent slot。
  *
@@ -266,13 +423,16 @@ export function ModelPicker({
   onChange,
   filter,
   placeholder,
+  config,
 }: {
   value: string | undefined;
   onChange: (modelId: string | undefined) => void;
   filter?: (m: ModelEntry) => boolean;
   placeholder?: string;
+  config?: AIConfig;
 }) {
-  const registry = useStore((s) => s.aiConfig.modelRegistry ?? []);
+  const storeConfig = useStore((s) => s.aiConfig);
+  const registry = config?.modelRegistry ?? storeConfig.modelRegistry ?? [];
   const items = filter ? registry.filter(filter) : registry;
 
   return (

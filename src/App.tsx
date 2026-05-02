@@ -46,6 +46,7 @@ export default function App() {
   const dailyPlanGenerating = useStore((s) => s.dailyPlanGenerating);
   const pendingHackCase = useStore((s) => s.pendingHackCase);
   const warmTargetsRef = useRef<ReturnType<typeof collectLocalOllamaTargets>>([]);
+  const lastWarmResultKeyRef = useRef<string>('');
   const dailyPlanBlocksOverlay =
     (dailyPlanGenerating && !dailyPlan) || dailyPlan?.status === 'pending';
   const hackCaseBlocksOverlay =
@@ -88,11 +89,19 @@ export default function App() {
       void warmupLocalModels(aiConfig).then((results) => {
         if (cancelled || results.length === 0) return;
         const okCount = results.filter((r) => r.ok).length;
-        // 只在 dev / 调试时 toast；生产环境静默
-        if (typeof window !== 'undefined' && (window as any).__aiccDebug) {
-          toast.success(`本地模型预热：${okCount}/${results.length} 就绪`, {
-            description: results.map((r) => `${r.label}/${r.model}: ${r.ok ? r.latencyMs + 'ms' : '失败'}`).join('\n'),
-            duration: 4000,
+        const message = results.map((r) => `${r.label}/${r.model}: ${r.ok ? r.latencyMs + 'ms' : r.error ?? '失败'}`).join('\n');
+        const resultKey = results.map((r) => `${r.label}:${r.model}:${r.ok}:${r.error ?? ''}`).join('|');
+        if (resultKey === lastWarmResultKeyRef.current) return;
+        lastWarmResultKeyRef.current = resultKey;
+        if (okCount === results.length) {
+          toast.success(`本地模型已预热：${results[0].model}`, {
+            description: `已加载到 Ollama keep_alive=24h；首次实时调用不再冷启动。`,
+            duration: 3500,
+          });
+        } else {
+          toast.error(`本地模型预热失败：${okCount}/${results.length} 就绪`, {
+            description: message,
+            duration: 8000,
           });
         }
       });

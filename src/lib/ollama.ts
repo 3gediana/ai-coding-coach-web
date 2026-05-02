@@ -52,9 +52,7 @@ export function ollamaTagsUrl(baseUrl: string): string {
 
 export async function fetchOllamaModels(baseUrl: string): Promise<OllamaModel[]> {
   const tagsUrl = ollamaTagsUrl(baseUrl);
-  const isDev = (import.meta as any).env?.DEV;
-  // dev：走 vite middleware（绕 CORS）；prod：直连
-  const url = isDev ? `/ai-proxy/${encodeURIComponent(tagsUrl)}` : tagsUrl;
+  const url = shouldProxyLocalOllama(tagsUrl) ? `/ai-proxy/${encodeURIComponent(tagsUrl)}` : tagsUrl;
   const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   const data = await res.json();
@@ -99,8 +97,7 @@ export function formatModelSize(bytes: number) {
 export async function fetchRunningOllamaModels(baseUrl: string): Promise<string[]> {
   const u = new URL(baseUrl);
   const psUrl = `${u.protocol}//${u.host}/api/ps`;
-  const isDev = (import.meta as any).env?.DEV;
-  const url = isDev ? `/ai-proxy/${encodeURIComponent(psUrl)}` : psUrl;
+  const url = shouldProxyLocalOllama(psUrl) ? `/ai-proxy/${encodeURIComponent(psUrl)}` : psUrl;
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) return [];
@@ -118,8 +115,7 @@ export async function fetchRunningOllamaModels(baseUrl: string): Promise<string[
 export async function unloadOllamaModel(baseUrl: string, modelName: string): Promise<void> {
   const u = new URL(baseUrl);
   const chatUrl = `${u.protocol}//${u.host}/api/chat`;
-  const isDev = (import.meta as any).env?.DEV;
-  const url = isDev ? `/ai-proxy/${encodeURIComponent(chatUrl)}` : chatUrl;
+  const url = shouldProxyLocalOllama(chatUrl) ? `/ai-proxy/${encodeURIComponent(chatUrl)}` : chatUrl;
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -144,5 +140,15 @@ export function formatModified(iso: string) {
     return d.toLocaleDateString();
   } catch {
     return iso;
+  }
+}
+
+function shouldProxyLocalOllama(url: string): boolean {
+  if (typeof window === 'undefined') return false;
+  if ((import.meta as any).env?.DEV) return true;
+  try {
+    return isLocalOllamaUrl(url);
+  } catch {
+    return false;
   }
 }

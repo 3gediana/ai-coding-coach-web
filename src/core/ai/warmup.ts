@@ -42,6 +42,18 @@ function isLocalOllamaUrl(url: string): boolean {
   }
 }
 
+function localOllamaTargetKey(baseUrl: string, model: string): string {
+  try {
+    const u = new URL(baseUrl.trim());
+    let host = u.hostname.toLowerCase();
+    if (host === 'localhost' || host === '::1') host = '127.0.0.1';
+    const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+    return `${u.protocol}//${host}:${port}|${model.trim()}`;
+  } catch {
+    return `${baseUrl.trim()}|${model.trim()}`;
+  }
+}
+
 export interface WarmTarget {
   baseUrl: string;
   model: string;
@@ -57,7 +69,7 @@ export function collectLocalOllamaTargets(cfg: AIConfig): WarmTarget[] {
     const m = model?.trim();
     if (!b || !m) return;
     if (!isLocalOllamaUrl(b)) return;
-    const key = `${b}|${m}`;
+    const key = localOllamaTargetKey(b, m);
     if (seen.has(key)) return;
     seen.add(key);
     out.push({ baseUrl: b, model: m, label });
@@ -96,6 +108,11 @@ export function collectLocalOllamaTargets(cfg: AIConfig): WarmTarget[] {
   return out;
 }
 
+export function getLocalOllamaTargetConflict(cfg: AIConfig): WarmTarget[] {
+  const targets = collectLocalOllamaTargets(cfg);
+  return targets.length > 1 ? targets : [];
+}
+
 export interface WarmupResult {
   label: string;
   model: string;
@@ -113,6 +130,15 @@ export async function warmupLocalModels(cfg: AIConfig): Promise<WarmupResult[]> 
   if (cfg.ollamaMode === 'disabled') return [];
   const targets = collectLocalOllamaTargets(cfg);
   if (targets.length === 0) return [];
+  if (targets.length > 1) {
+    return targets.map((t) => ({
+      label: t.label,
+      model: t.model,
+      ok: false,
+      latencyMs: 0,
+      error: '本地 Ollama 只能配置一个模型；请让所有本地工位使用同一个模型。',
+    }));
+  }
 
   const results: WarmupResult[] = await Promise.all(
     targets.map(async (t) => {
@@ -171,8 +197,10 @@ function ollamaChatUrl(baseUrl: string): string {
 
 function buildUnloadUrl(baseUrl: string): string {
   const url = ollamaChatUrl(baseUrl);
-  const isDev = typeof window !== 'undefined' && (import.meta as any).env?.DEV;
-  return isDev ? `/ai-proxy/${encodeURIComponent(url)}` : url;
+  const shouldProxy =
+    typeof window !== 'undefined' &&
+    ((import.meta as any).env?.DEV || isLocalOllamaUrl(url));
+  return shouldProxy ? `/ai-proxy/${encodeURIComponent(url)}` : url;
 }
 
 export async function unloadLocalModels(targets: WarmTarget[]): Promise<void> {
@@ -226,7 +254,7 @@ function collectUniqueTargets(targets: WarmTarget[]): WarmTarget[] {
     const baseUrl = t.baseUrl.trim();
     const model = t.model.trim();
     if (!baseUrl || !model || !isLocalOllamaUrl(baseUrl)) continue;
-    const key = `${baseUrl}|${model}`;
+    const key = localOllamaTargetKey(baseUrl, model);
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({ ...t, baseUrl, model });
