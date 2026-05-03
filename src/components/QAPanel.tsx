@@ -10,11 +10,23 @@
  *   - 折叠时只显示输入框，展开时显示历史 + 输入
  */
 import { useEffect, useRef, useState } from 'react';
-import { Loader2, Trash2, User, Sparkles, Send, AlertTriangle, MessageCircle } from 'lucide-react';
+import {
+  Loader2,
+  Trash2,
+  User,
+  Sparkles,
+  Send,
+  AlertTriangle,
+  MessageCircle,
+  Square,
+  RotateCcw,
+} from 'lucide-react';
+import { toast } from 'sonner';
 import { hasUsableAIConfig, useStore } from '../lib/store';
-import { MathMarkdown } from './MathMarkdown';
+import { MathMarkdown, type CodeBlockActions } from './MathMarkdown';
 import { cn } from '../lib/cn';
 import type { CoachRoute } from '../core/coach/types';
+import type { FileLang } from '../core/types';
 
 const DRAFT_SCOPE = '__draft__';
 
@@ -22,6 +34,8 @@ export function QAPanel() {
   const activeProblemId = useStore((s) => s.activeProblemId);
   const qaByProblem = useStore((s) => s.qaByProblem);
   const askCoach = useStore((s) => s.askCoach);
+  const abortCoach = useStore((s) => s.abortCoach);
+  const retryLastCoach = useStore((s) => s.retryLastCoach);
   const clearQA = useStore((s) => s.clearQA);
   const pending = useStore((s) => s.qaPendingProblemId);
   const aiOk = useStore((s) => hasUsableAIConfig(s.aiConfig));
@@ -29,10 +43,68 @@ export function QAPanel() {
   const setAskPrefill = useStore((s) => s.setAskPrefill);
   const coachDraft = useStore((s) => s.coachDraft);
   const setCoachDraft = useStore((s) => s.setCoachDraft);
+  // 代码块按钮：替换当前 / 新建文件 都需要拿到 active file 上下文
+  const filesByScope = useStore((s) => s.filesByScope);
+  const activeFileIdByScope = useStore((s) => s.activeFileIdByScope);
+  const updateFileContent = useStore((s) => s.updateFileContent);
+  const createFile = useStore((s) => s.createFile);
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const messages = qaByProblem[scope] ?? [];
   const isPending = pending === scope;
+
+  const activeFile = (filesByScope[scope] ?? []).find(
+    (f) => f.id === activeFileIdByScope[scope],
+  );
+
+  /** 把 markdown 里 ```cpp ```python ```c 等 fence lang 映射到我们 FileLang */
+  const mapFenceLangToFileLang = (lang: string | undefined): FileLang | null => {
+    if (!lang) return null;
+    const l = lang.toLowerCase();
+    if (l === 'cpp' || l === 'c++' || l === 'cxx') return 'cpp';
+    if (l === 'c') return 'c';
+    if (l === 'py' || l === 'python' || l === 'python3') return 'python';
+    if (l === 'md' || l === 'markdown') return 'markdown';
+    if (l === 'txt' || l === 'plaintext' || l === 'text') return 'plaintext';
+    return null;
+  };
+
+  /** 代码块按钮：复制 / 替换当前 / 新建文件 */
+  const codeActions: CodeBlockActions = {
+    onCopy: async (code) => {
+      try {
+        await navigator.clipboard.writeText(code);
+        toast.success('已复制');
+      } catch {
+        toast.error('复制失败');
+      }
+    },
+    // 仅在有 active file 且语言兼容时才提供"替换当前"
+    onApplyToCurrent: activeFile
+      ? (code, lang) => {
+          const inferred = mapFenceLangToFileLang(lang);
+          // 语言不一致时弹确认；一致直接替换
+          if (
+            inferred &&
+            inferred !== activeFile.language &&
+            !confirm(`AI 代码语言是 ${inferred}，当前文件是 ${activeFile.language}，仍要替换吗？`)
+          ) {
+            return;
+          }
+          updateFileContent(activeFile.id, code);
+          toast.success(`已替换到 ${activeFile.name}`);
+        }
+      : undefined,
+    // 在草稿 scope 也允许新建（createFile 已经支持 DRAFT_SCOPE）
+    onCreateNew: (code, lang) => {
+      const inferred = mapFenceLangToFileLang(lang) ?? activeFile?.language ?? 'cpp';
+      void createFile({ scope, content: code, language: inferred, activate: true }).then(
+        (file) => {
+          if (file) toast.success(`已建文件 ${file.name}`);
+        },
+      );
+    },
+  };
 
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -92,16 +164,25 @@ export function QAPanel() {
             </div>
           </div>
         ) : (
-          messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              role={m.role}
-              content={m.content}
-              streaming={m.streaming}
-              error={m.error}
-              route={m.route}
-            />
-          ))
+          messages.map((m, idx) => {
+            // 重答按钮只在最后一条 assistant 上显示，且不在流式中
+            const isLastAssistant =
+              m.role === 'assistant' &&
+              idx === messages.length - 1 &&
+              !m.streaming;
+            return (
+              <MessageBubble
+                key={m.id}
+                role={m.role}
+                content={m.content}
+                streaming={m.streaming}
+                error={m.error}
+                route={m.route}
+                onRetry={isLastAssistant ? () => void retryLastCoach(scope) : undefined}
+                codeActions={m.role === 'assistant' && !m.streaming ? codeActions : undefined}
+              />
+            );
+          })
         )}
       </div>
 
@@ -116,15 +197,26 @@ export function QAPanel() {
               </span>
             )}
           </span>
-          <button
-            onClick={() => {
-              if (confirm('清空当前对话历史？')) clearQA(scope);
-            }}
-            className="hover:text-bad transition flex items-center gap-1"
-            title="清空对话历史"
-          >
-            <Trash2 size={10} /> 清空
-          </button>
+          <div className="flex items-center gap-3">
+            {isPending && (
+              <button
+                onClick={() => abortCoach()}
+                className="hover:text-bad transition flex items-center gap-1"
+                title="停止当前流式生成"
+              >
+                <Square size={10} /> 停止
+              </button>
+            )}
+            <button
+              onClick={() => {
+                if (confirm('清空当前对话历史？')) clearQA(scope);
+              }}
+              className="hover:text-bad transition flex items-center gap-1"
+              title="清空对话历史"
+            >
+              <Trash2 size={10} /> 清空
+            </button>
+          </div>
         </div>
       )}
 
@@ -176,12 +268,18 @@ function MessageBubble({
   streaming,
   error,
   route,
+  onRetry,
+  codeActions,
 }: {
   role: 'user' | 'assistant';
   content: string;
   streaming?: boolean;
   error?: string;
   route?: CoachRoute;
+  /** 仅最后一条 assistant 消息会传：点击后用同一条 user 提问重答 */
+  onRetry?: () => void;
+  /** 仅 assistant 完成后传：让 markdown 里 ```cpp 等代码块右上角出现按钮 */
+  codeActions?: CodeBlockActions;
 }) {
   const isUser = role === 'user';
   return (
@@ -208,17 +306,38 @@ function MessageBubble({
         )}
         {!isUser && route && (
           <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-ink-mute">
-            <span className="chip px-1.5 py-0">{ROUTE_LABEL[route.intent] ?? route.intent}</span>
-            <span>{route.routedBy === 'ai' ? 'AI 判断' : '规则判断'}</span>
+            {/* hover 显示决策原因；同步给 chip + 旁边文字，方便用户理解为什么走了这条路由 */}
+            <span
+              className="chip px-1.5 py-0 cursor-help"
+              title={`${ROUTE_LABEL[route.intent] ?? route.intent} · ${ROUTED_BY_LABEL[route.routedBy] ?? route.routedBy} · 置信度 ${(route.confidence * 100).toFixed(0)}%\n${route.reason}`}
+            >
+              {ROUTE_LABEL[route.intent] ?? route.intent}
+            </span>
+            <span title={route.reason} className="cursor-help">
+              {ROUTED_BY_LABEL[route.routedBy] ?? route.routedBy}
+            </span>
           </div>
         )}
         {isUser ? (
           <div className="whitespace-pre-wrap">{content}</div>
         ) : (
           <div className="md-compact">
-            <MathMarkdown compact>{content || (streaming ? '思考中…' : '')}</MathMarkdown>
+            <MathMarkdown compact codeActions={codeActions}>
+              {content || (streaming ? '思考中…' : '')}
+            </MathMarkdown>
             {streaming && (
               <span className="inline-block w-1.5 h-3 bg-accent ml-0.5 animate-pulse" />
+            )}
+            {onRetry && (
+              <div className="mt-2 flex items-center gap-1.5 text-[10px] text-ink-mute">
+                <button
+                  onClick={onRetry}
+                  className="hover:text-accent transition inline-flex items-center gap-1"
+                  title="用同一条提问重答（删除当前回答后重新生成）"
+                >
+                  <RotateCcw size={10} /> 重答
+                </button>
+              </div>
             )}
           </div>
         )}
@@ -235,4 +354,10 @@ const ROUTE_LABEL: Record<string, string> = {
   explain_selection: '选区',
   stuck_hint: '卡住',
   general_question: '问答',
+};
+
+const ROUTED_BY_LABEL: Record<string, string> = {
+  rule: '规则判断',
+  ai: 'AI 判断',
+  fallback: '兜底',
 };

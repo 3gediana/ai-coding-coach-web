@@ -504,6 +504,15 @@ const handlersById = new Map<string, TaskHandler>();
 const abortersById = new Map<string, AbortController>();
 const MAX_CONCURRENT = 3;
 
+/**
+ * 当前正在跑的 askCoach 流式 AbortController（ref 形式避开 TS narrow 误报为 never）。
+ * - askCoach 启动时 new 一个赋给 .current，把 signal 传给 coach.askCoach
+ * - 用户点 UI 上的"停止"按钮 → abortCoach action → .current?.abort()
+ * - askCoach 的 finally 里清回 null，避免悬挂引用
+ * 同一时刻只允许一个 askCoach 在跑（qaPendingProblemId 已经做了门禁），所以单 ref 足够。
+ */
+const coachAbortRef: { current: AbortController | null } = { current: null };
+
 /** algoViz 实时检测的 debounce timer：每个 problemId 一个 */
 const algoVizDetectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** 用户停止打字后多久跑一次模块检测（trailing-edge debounce）。15s = 跟用户约定的频率 */
@@ -884,6 +893,10 @@ interface State {
   /** 学生在做题时问问题：流式回答到 qaByProblem[scope] */
   askQuestion: (question: string) => Promise<void>;
   askCoach: (input: CoachAskInput) => Promise<void>;
+  /** 取消当前流式中的 askCoach（如果在跑）；不在跑就 noop */
+  abortCoach: () => void;
+  /** 重答：复用上一条 user message 重新跑一遍（删掉旧 assistant 后追加新的） */
+  retryLastCoach: (scope: string) => Promise<void>;
   /** 清空当前 scope 的提问历史 */
   clearQA: (scope: string) => void;
   setCmdPaletteOpen: (v: boolean) => void;
@@ -3407,6 +3420,34 @@ export const useStore = create<State>((set, get) => {
 
     askQuestion: async (question) => get().askCoach({ text: question, source: 'manual' }),
 
+    abortCoach: () => {
+      // 直接 try abort；非 null 才生效。
+      // ref 在 askCoach 的 finally 里会被清回 null，这里不动。
+      coachAbortRef.current?.abort();
+    },
+
+    retryLastCoach: async (scope) => {
+      const st = get();
+      if (st.qaPendingProblemId === scope) return; // 还在流式中，先停再重答
+      const list = st.qaByProblem[scope] ?? [];
+      // 从后往前找最近一条 user，然后把它之后的 assistant message（最多 1 条）丢掉
+      let lastUserIdx = -1;
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].role === 'user') {
+          lastUserIdx = i;
+          break;
+        }
+      }
+      if (lastUserIdx < 0) return;
+      const lastUser = list[lastUserIdx];
+      const trimmed = list.slice(0, lastUserIdx); // 不含旧 user / 旧 assistant
+      set((s) => ({
+        qaByProblem: { ...s.qaByProblem, [scope]: trimmed },
+      }));
+      // 复用 askCoach 主路径；source 用 'manual' 即可（重答场景不需要原 source 信号）
+      await get().askCoach({ text: lastUser.content, source: 'manual' });
+    },
+
     askCoach: async (input) => {
       const trimmed = input.text.trim();
       if (!trimmed) return;
@@ -3512,6 +3553,11 @@ export const useStore = create<State>((set, get) => {
       const history = (get().qaByProblem[scope] ?? [])
         .slice(0, -2)
         .map((m) => ({ role: m.role, content: m.content }));
+
+      // 流式可中断：每次 askCoach 启动时新建一个 AbortController；
+      // 用户在 UI 点"停止"会调 abortCoach() → ctrl.abort() → fetch 中断 → catch 走 abort 分支。
+      const ctrl = new AbortController();
+      coachAbortRef.current = ctrl;
 
       try {
         if (
@@ -3699,6 +3745,7 @@ export const useStore = create<State>((set, get) => {
             history,
           },
           {
+            signal: ctrl.signal,
             onChunk: (_delta, accumulated) => {
               set((st) => {
                 const list = st.qaByProblem[scope] ?? [];
@@ -3723,24 +3770,37 @@ export const useStore = create<State>((set, get) => {
           };
         });
       } catch (e: any) {
+        const isAbort = e?.name === 'AbortError' || ctrl.signal.aborted;
         const msg = String(e?.message ?? e);
         set((st) => {
           const list = st.qaByProblem[scope] ?? [];
           const idx = list.findIndex((m) => m.id === assistMsg.id);
           if (idx < 0) return st;
           const next = list.slice();
-          next[idx] = {
-            ...next[idx],
-            streaming: false,
-            error: msg,
-            content: next[idx].content || '（AI 调用失败）',
-          };
+          // abort 分支：保留已收到的部分内容，标记成"已停止"，不视为错误
+          // 普通失败：保留 error 字段供 UI 展示
+          next[idx] = isAbort
+            ? {
+                ...next[idx],
+                streaming: false,
+                content:
+                  (next[idx].content ? next[idx].content + '\n\n' : '') + '_（已停止生成）_',
+              }
+            : {
+                ...next[idx],
+                streaming: false,
+                error: msg,
+                content: next[idx].content || '（AI 调用失败）',
+              };
           return {
             qaByProblem: { ...st.qaByProblem, [scope]: next },
             qaPendingProblemId: null,
           };
         });
-        toast.error('AI 提问失败', { description: msg });
+        if (!isAbort) toast.error('AI 提问失败', { description: msg });
+      } finally {
+        // 清 ref，避免悬挂引用让下次的 abortCoach 误中已经结束的 controller
+        if (coachAbortRef.current === ctrl) coachAbortRef.current = null;
       }
     },
 
