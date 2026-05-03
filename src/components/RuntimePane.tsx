@@ -176,6 +176,7 @@ export function RuntimePane() {
   const pendingHackRunRef = useRef(false);
 
   const outputRef = useRef<HTMLDivElement | null>(null);
+  const runRef = useRef<(forceStdin?: string) => Promise<void>>(async () => undefined);
   // auto-scroll
   useEffect(() => {
     if (outputRef.current) {
@@ -315,12 +316,10 @@ export function RuntimePane() {
       if (!newStdin) return;
       setStdin(newStdin);
       pendingHackRunRef.current = true; // 防止本次结果再次触发出 hack
-      void onRun(newStdin);
+      void runRef.current(newStdin);
     };
     window.addEventListener('aicc:hack-case-run', onHackRun as EventListener);
     return () => window.removeEventListener('aicc:hack-case-run', onHackRun as EventListener);
-    // onRun 闭包里依赖 file/stdin，但每次 effect 重建会 lose 监听 → 忽略 deps，仅挂一次
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const onAskAI = () => {

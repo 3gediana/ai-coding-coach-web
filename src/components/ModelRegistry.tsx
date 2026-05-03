@@ -16,6 +16,7 @@ import { useStore } from '../lib/store';
 import type { AIConfig, AIProvider, ModelEntry } from '../core/types';
 import { PRESETS } from '../lib/presets';
 import { fetchOllamaModels, formatModelSize } from '../lib/ollama';
+import { formatTokenWindow, inferModelContextWindowTokens } from '../core/coach/contextBudget';
 
 const PROVIDER_LABELS: Record<AIProvider, string> = {
   deepseek: 'DeepSeek',
@@ -37,6 +38,7 @@ interface FormState {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindowTokens?: number;
   numCtx?: number;
 }
 
@@ -46,7 +48,13 @@ const EMPTY_FORM: FormState = {
   baseUrl: PRESETS[0].baseUrl,
   apiKey: '',
   model: PRESETS[0].defaultModel,
+  contextWindowTokens: inferModelContextWindowTokens('deepseek', PRESETS[0].defaultModel),
 };
+
+function inferContextForForm(provider: AIProvider, model: string, fallback?: number): number {
+  const preset = PRESETS.find((p) => p.id === provider);
+  return preset?.modelContextTokens?.[model] ?? preset?.defaultContextWindowTokens ?? inferModelContextWindowTokens(provider, model, fallback);
+}
 
 /** Settings 顶部的"已注册模型"区块：列表 + 新建表单 */
 export function ModelRegistrySection({
@@ -77,6 +85,7 @@ export function ModelRegistrySection({
       baseUrl: m.baseUrl,
       apiKey: m.apiKey,
       model: m.model,
+      contextWindowTokens: m.contextWindowTokens ?? inferContextForForm(m.provider, m.model),
       numCtx: m.numCtx,
     });
   const cancel = () => setEditing(null);
@@ -92,6 +101,7 @@ export function ModelRegistrySection({
       baseUrl: editing.baseUrl.trim(),
       apiKey: editing.apiKey.trim(),
       model: editing.model.trim(),
+      contextWindowTokens: editing.contextWindowTokens ?? inferContextForForm(editing.provider, editing.model),
       numCtx: editing.numCtx,
     };
     const nextRegistry = editing.id
@@ -153,6 +163,9 @@ export function ModelRegistrySection({
               <span className="text-[10px] text-ink-mute font-mono truncate max-w-[140px]" title={m.model}>
                 {m.model}
               </span>
+              <span className="text-[10px] text-ink-mute font-mono shrink-0">
+                {formatTokenWindow(m.contextWindowTokens ?? inferContextForForm(m.provider, m.model))}
+              </span>
               <button
                 type="button"
                 onClick={() => startEdit(m)}
@@ -194,6 +207,10 @@ export function ModelRegistrySection({
                     provider: p.id,
                     baseUrl: p.baseUrl,
                     model: p.id === 'ollama' ? '' : p.defaultModel,
+                    contextWindowTokens:
+                      p.id === 'ollama'
+                        ? p.defaultContextWindowTokens
+                        : inferContextForForm(p.id, p.defaultModel),
                     label: editing.label || p.label,
                   })
                 }
@@ -220,6 +237,22 @@ export function ModelRegistrySection({
               <RegistryModelSelector editing={editing} setEditing={setEditing} />
             </FormField>
           </div>
+
+          <FormField label="上下文窗口 tokens">
+            <input
+              className="input font-mono text-xs"
+              type="number"
+              min="1024"
+              placeholder={String(inferContextForForm(editing.provider, editing.model))}
+              value={editing.contextWindowTokens ?? ''}
+              onChange={(e) =>
+                setEditing({
+                  ...editing,
+                  contextWindowTokens: e.target.value ? Number(e.target.value) : undefined,
+                })
+              }
+            />
+          </FormField>
 
           <FormField label="Base URL（完整 chat-completions endpoint）">
             <input
@@ -295,7 +328,11 @@ function RegistryModelSelector({
       setLastLoadedAt(Date.now());
       // autoPick 只在「新建条目 + 用户还没手输 model」时生效，避免覆盖用户已经填好的临时模型名
       if (autoPick && !editing.id && !editing.model.trim() && models[0]?.name) {
-        setEditing({ ...editing, model: models[0].name });
+        setEditing({
+          ...editing,
+          model: models[0].name,
+          contextWindowTokens: inferContextForForm(editing.provider, models[0].name),
+        });
       }
     } catch (e: any) {
       setOllamaModels(null);
@@ -328,7 +365,13 @@ function RegistryModelSelector({
               className="input font-mono text-xs flex-1"
               value={editing.model}
               onFocus={() => void probeOllama(false)}
-              onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+              onChange={(e) =>
+                setEditing({
+                  ...editing,
+                  model: e.target.value,
+                  contextWindowTokens: inferContextForForm(editing.provider, e.target.value),
+                })
+              }
             >
               {editing.model && !ollamaModels!.some((m) => m.name === editing.model) && (
                 <option value={editing.model}>{editing.model}（未在本机列表中）</option>
@@ -348,7 +391,13 @@ function RegistryModelSelector({
               className="input font-mono text-xs flex-1"
               placeholder="未读取到本机 ollama list，可临时手填"
               value={editing.model}
-              onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+              onChange={(e) =>
+                setEditing({
+                  ...editing,
+                  model: e.target.value,
+                  contextWindowTokens: inferContextForForm(editing.provider, e.target.value),
+                })
+              }
             />
           )}
           <button
@@ -389,7 +438,13 @@ function RegistryModelSelector({
         className="input font-mono text-xs"
         placeholder="model-name"
         value={editing.model}
-        onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+        onChange={(e) =>
+          setEditing({
+            ...editing,
+            model: e.target.value,
+            contextWindowTokens: inferContextForForm(editing.provider, e.target.value),
+          })
+        }
       />
     );
   }
@@ -407,7 +462,11 @@ function RegistryModelSelector({
             return;
           }
           setShowCustom(false);
-          setEditing({ ...editing, model: next });
+          setEditing({
+            ...editing,
+            model: next,
+            contextWindowTokens: inferContextForForm(editing.provider, next),
+          });
         }}
       >
         {examples.map((m) => (
@@ -423,7 +482,13 @@ function RegistryModelSelector({
           className="input font-mono text-xs"
           placeholder="输入自定义模型名"
           value={editing.model}
-          onChange={(e) => setEditing({ ...editing, model: e.target.value })}
+          onChange={(e) =>
+            setEditing({
+              ...editing,
+              model: e.target.value,
+              contextWindowTokens: inferContextForForm(editing.provider, e.target.value),
+            })
+          }
           autoFocus={showCustom}
         />
       )}

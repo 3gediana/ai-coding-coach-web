@@ -84,6 +84,7 @@ export async function submitToOj(
     const onAbort = () => {
       clearTimeout(timer);
       pending.delete(id);
+      void cancelOjCommand(id);
       reject(new DOMException('已取消 OJ 提交', 'AbortError') as any);
     };
     opts.signal?.addEventListener('abort', onAbort, { once: true });
@@ -99,6 +100,18 @@ export async function submitToOj(
       timer,
     });
   });
+}
+
+async function cancelOjCommand(id: string): Promise<void> {
+  try {
+    await fetch('/__oj-cancel-command', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
+  } catch {
+    /* ignore */
+  }
 }
 
 function connect(): void {

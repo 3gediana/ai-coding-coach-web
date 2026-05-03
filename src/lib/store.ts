@@ -32,8 +32,9 @@ import type {
 } from '../core/types';
 import { AIClient } from '../core/ai/client';
 import { Coach } from '../core/analyzer';
-import { storage } from './storage';
-import { DEFAULT_AI_CONFIG } from './presets';
+import { cn } from './cn';
+import { PRESETS, DEFAULT_AI_CONFIG } from './presets';
+import { inferModelContextWindowTokens } from '../core/coach/contextBudget';
 import { isLocalOllamaUrl } from './ollama';
 import { AlgoVizService, type AlgoVizClients } from '../algoviz/service';
 import { pickAlgoVizClient } from '../algoviz/clients';
@@ -81,6 +82,7 @@ import {
 } from './modelRegistry';
 import bankData from '../data/problemBank.json';
 import { safeGetItem, safeJsonParse, safeRemoveItem, safeSetItem } from './safeLocalStorage';
+import { storage } from './storage';
 
 const PROBLEM_BANK = bankData as BankProblem[];
 
@@ -144,6 +146,7 @@ function deriveFastConfig(cfg: AIConfig): AIConfig | null {
     baseUrl: resolved.baseUrl.trim(),
     apiKey: '',
     model: resolved.model.trim(),
+    contextWindowTokens: resolved.contextWindowTokens ?? resolved.numCtx,
     // 兜底默认值。注意：analyzer.ts 的每个任务（analyzeCode / stuckHint / explainPaste）
     // 都会显式传 maxTokens 覆盖此值，所以这里只在调用方未传时生效。
     maxTokens: 2048,
@@ -178,6 +181,7 @@ function resolveAIClientConfig(cfg: AIConfig): AIConfig {
     baseUrl: p.baseUrl,
     apiKey: p.apiKey,
     model: p.model,
+    contextWindowTokens: p.contextWindowTokens ?? cfg.contextWindowTokens,
     numCtx: p.numCtx ?? cfg.numCtx,
   };
 }
@@ -193,6 +197,7 @@ function createIntentRouterClient(cfg: AIConfig): AIClient | null {
     baseUrl: resolved.baseUrl.trim(),
     apiKey: resolved.apiKey?.trim() ?? '',
     model: resolved.model.trim(),
+    contextWindowTokens: resolved.contextWindowTokens,
     maxTokens: 256,
     temperature: 0,
     timeoutMs: 8_000,
@@ -622,6 +627,7 @@ interface State {
   moduleStatusByProblem: Record<string, Record<string, boolean>>;
   /** 标记某题是否正有 detect 调用 in-flight，避免 15s 节流外又叠新调用 */
   algoVizDetectingByProblem: Record<string, boolean>;
+  pendingAlgoVizDetectByProblem: Record<string, string | undefined>;
   /** 入库流水线：完整两阶段（录题 / 题目激活时按需自动调用） */
   requestAlgoVizGeneration: (problemId: string, opts?: { force?: boolean }) => Promise<void>;
   /** 老题模式：仅生成 Animation；缺 schema 时自动 fallback 到完整 pipeline */
@@ -964,6 +970,7 @@ function readEnvAIConfig(): Partial<AIConfig> {
         baseUrl: deepseekBaseUrl,
         apiKey: deepseekKey,
         model: deepseekFlashModel,
+        contextWindowTokens: 1_000_000,
       },
       {
         id: DEEPSEEK_PRO_MODEL_ID,
@@ -972,6 +979,7 @@ function readEnvAIConfig(): Partial<AIConfig> {
         baseUrl: deepseekBaseUrl,
         apiKey: deepseekKey,
         model: deepseekProModel,
+        contextWindowTokens: 1_000_000,
       },
     ];
     out.provider = 'deepseek';
@@ -1021,12 +1029,24 @@ function withDefaultCloudModels(cfg: AIConfig): AIConfig {
     const existing = byId.get(m.id);
     byId.set(m.id, { ...m, ...(existing ?? {}), apiKey: existing?.apiKey || inheritedKey || m.apiKey });
   }
+  for (const [id, entry] of byId) {
+    byId.set(id, {
+      ...entry,
+      contextWindowTokens:
+        entry.contextWindowTokens ?? inferModelContextWindowTokens(entry.provider, entry.model, entry.numCtx),
+    });
+  }
   if (cfg.provider !== 'deepseek' || cfg.baseUrl !== DEFAULT_AI_CONFIG.baseUrl) {
-    return { ...cfg, modelRegistry: [...byId.values()] };
+    return {
+      ...cfg,
+      contextWindowTokens: cfg.contextWindowTokens ?? inferModelContextWindowTokens(cfg.provider, cfg.model, cfg.numCtx),
+      modelRegistry: [...byId.values()],
+    };
   }
   return {
     ...cfg,
     model: cfg.model || DEEPSEEK_FLASH_MODEL_ID,
+    contextWindowTokens: cfg.contextWindowTokens ?? 1_000_000,
     primaryModelId: cfg.primaryModelId ?? DEEPSEEK_FLASH_MODEL_ID,
     qualityModelId: cfg.qualityModelId ?? DEEPSEEK_PRO_MODEL_ID,
     modelRegistry: [...byId.values()],
@@ -1244,6 +1264,9 @@ export const useStore = create<State>((set, get) => {
         },
         ctrl.signal,
       );
+      if (ctrl.signal.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
 
       const now = Date.now();
       set((s) => ({
@@ -1355,6 +1378,7 @@ export const useStore = create<State>((set, get) => {
     algoVizService,
     moduleStatusByProblem: {},
     algoVizDetectingByProblem: {},
+    pendingAlgoVizDetectByProblem: {},
 
     problems: [],
     mistakes: [],
@@ -1502,6 +1526,7 @@ export const useStore = create<State>((set, get) => {
         baseUrl: entry.baseUrl,
         apiKey: entry.apiKey,
         model: entry.model,
+        contextWindowTokens: entry.contextWindowTokens,
         numCtx: entry.numCtx,
       };
       const existing = cfg.modelRegistry ?? [];
@@ -1737,7 +1762,15 @@ export const useStore = create<State>((set, get) => {
         }));
         return;
       }
-      if (st.algoVizDetectingByProblem[problemId]) return;
+      if (st.algoVizDetectingByProblem[problemId]) {
+        set((s) => ({
+          pendingAlgoVizDetectByProblem: {
+            ...s.pendingAlgoVizDetectByProblem,
+            [problemId]: code,
+          },
+        }));
+        return;
+      }
       set((s) => ({
         algoVizDetectingByProblem: {
           ...s.algoVizDetectingByProblem,
@@ -1747,6 +1780,10 @@ export const useStore = create<State>((set, get) => {
       try {
         const result = await st.algoVizService.detect(code, schema);
         if (result) {
+          const latest = get();
+          const fileId = latest.activeFileIdByScope[problemId];
+          const latestFile = (latest.filesByScope[problemId] ?? []).find((f) => f.id === fileId);
+          if (!latestFile || codeHash(latestFile.content) !== codeHash(code)) return;
           set((s) => ({
             moduleStatusByProblem: {
               ...s.moduleStatusByProblem,
@@ -1755,12 +1792,20 @@ export const useStore = create<State>((set, get) => {
           }));
         }
       } finally {
+        const pendingCode = get().pendingAlgoVizDetectByProblem[problemId];
         set((s) => ({
           algoVizDetectingByProblem: {
             ...s.algoVizDetectingByProblem,
             [problemId]: false,
           },
+          pendingAlgoVizDetectByProblem: {
+            ...s.pendingAlgoVizDetectByProblem,
+            [problemId]: undefined,
+          },
         }));
+        if (pendingCode !== undefined && codeHash(pendingCode) !== codeHash(code)) {
+          void get().detectAlgoVizModules(problemId, pendingCode);
+        }
       }
     },
 
@@ -1821,7 +1866,10 @@ export const useStore = create<State>((set, get) => {
       const scopeKey = scope ?? st.activeProblemId ?? DRAFT_SCOPE;
       const lang: FileLang = language ?? st.defaultLang;
       const existing = st.filesByScope[scopeKey] ?? [];
-      const finalName = name?.trim() || defaultFileName(lang, existing.map((f) => f.name));
+      const finalName = uniqueFileName(
+        name?.trim() || defaultFileName(lang, existing.map((f) => f.name)),
+        existing.map((f) => f.name),
+      );
       const file: CodeFile = {
         id: nanoid(),
         problemId: scopeKey === DRAFT_SCOPE ? null : scopeKey,
@@ -1850,7 +1898,16 @@ export const useStore = create<State>((set, get) => {
       if (!scopeKey) return;
       const file = (st.filesByScope[scopeKey] ?? []).find((f) => f.id === fileId);
       if (!file) return;
-      const updated = { ...file, name: newName.trim(), updatedAt: Date.now() };
+      const desiredName = newName.trim();
+      if (!desiredName) return;
+      const updated = {
+        ...file,
+        name: uniqueFileName(
+          desiredName,
+          (st.filesByScope[scopeKey] ?? []).filter((f) => f.id !== fileId).map((f) => f.name),
+        ),
+        updatedAt: Date.now(),
+      };
       await storage.saveFile(updated);
       set((s) => ({
         filesByScope: {
@@ -1869,8 +1926,10 @@ export const useStore = create<State>((set, get) => {
       const file = (st.filesByScope[scopeKey] ?? []).find((f) => f.id === fileId);
       if (!file) throw new Error('file not found');
       const existing = st.filesByScope[scopeKey] ?? [];
-      const fname =
-        newName ?? smartDupName(file.name, existing.map((f) => f.name));
+      const fname = uniqueFileName(
+        newName ?? smartDupName(file.name, existing.map((f) => f.name)),
+        existing.map((f) => f.name),
+      );
       const dup: CodeFile = {
         ...file,
         id: nanoid(),
@@ -2023,6 +2082,20 @@ export const useStore = create<State>((set, get) => {
             f.id === fileId ? updated : f,
           ),
         },
+        analysisByProblem:
+          s.analysisByProblem[scopeKey]?.fileId === fileId
+            ? omitRecordKey(s.analysisByProblem, scopeKey)
+            : s.analysisByProblem,
+        lastRunByScope:
+          s.lastRunByScope[scopeKey]?.fileId === fileId
+            ? omitRecordKey(s.lastRunByScope, scopeKey)
+            : s.lastRunByScope,
+        coachHintsByScope: s.coachHintsByScope[scopeKey]
+          ? {
+              ...s.coachHintsByScope,
+              [scopeKey]: s.coachHintsByScope[scopeKey].filter((h) => h.fileId && h.fileId !== fileId),
+            }
+          : s.coachHintsByScope,
       }));
     },
 
@@ -2315,7 +2388,7 @@ export const useStore = create<State>((set, get) => {
       for (const k of Object.keys(grouped)) {
         grouped[k].sort((a, b) => {
           if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
-          return a.createdAt - b.createdAt;
+          return b.updatedAt - a.updatedAt;
         });
       }
       set({ filesByScope: grouped });
@@ -3221,8 +3294,22 @@ export const useStore = create<State>((set, get) => {
               agentName: stepAgent.attacker,
             });
           },
-          onExecutorProgress: () => {
-            // 暂不每条上 trace（避免噪音）；最后总结一条
+          onExecutorProgress: (run) => {
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: run.hacked ? 'warn' : 'success',
+              title: `${stepTitle.executor} · case #${run.candidateIndex + 1} ${run.hacked ? '命中' : '通过'}`,
+              detail: [
+                `exit ${run.exitCode} · ${run.durationMs}ms`,
+                run.reason ? `原因：${run.reason}` : '',
+                run.matchesExpected !== undefined ? `期望输出匹配：${run.matchesExpected ? '是' : '否'}` : '',
+                run.stdout ? `stdout:\n${run.stdout}` : '',
+                run.stderr ? `stderr:\n${run.stderr}` : '',
+              ].filter(Boolean).join('\n'),
+              problemId: problem.id,
+              agentName: stepAgent.executor,
+              route: 'fast',
+            });
           },
           onExplainerOutput: (out) => {
             get().recordAgentTrace({
@@ -3366,7 +3453,13 @@ export const useStore = create<State>((set, get) => {
       // 删题目时同步把它的所有 file 也删了
       const st = get();
       const files = st.filesByScope[id] ?? [];
-      await Promise.all(files.map((f) => storage.deleteFile(f.id)));
+      const mistakes = await storage.listMistakes();
+      const sessions = await storage.listSessions();
+      await Promise.all([
+        ...files.map((f) => storage.deleteFile(f.id)),
+        ...mistakes.filter((m) => m.problemId === id).map((m) => storage.deleteMistake(m.id)),
+        ...sessions.filter((sn) => sn.problemId === id).map((sn) => storage.deleteSession(sn.id)),
+      ]);
       await storage.deleteProblem(id);
       set((s) => {
         const nextFiles = { ...s.filesByScope };
@@ -3377,6 +3470,15 @@ export const useStore = create<State>((set, get) => {
           activeProblemId: s.activeProblemId === id ? null : s.activeProblemId,
           filesByScope: nextFiles,
           activeFileIdByScope: nextActive,
+          mistakes: s.mistakes.filter((m) => m.problemId !== id),
+          sessions: s.sessions.filter((sn) => sn.problemId !== id),
+          analysisByProblem: omitRecordKey(s.analysisByProblem, id),
+          qaByProblem: omitRecordKey(s.qaByProblem, id),
+          lastRunByScope: omitRecordKey(s.lastRunByScope, id),
+          coachHintsByScope: omitRecordKey(s.coachHintsByScope, id),
+          moduleStatusByProblem: omitRecordKey(s.moduleStatusByProblem, id),
+          algoVizDetectingByProblem: omitRecordKey(s.algoVizDetectingByProblem, id),
+          pendingAlgoVizDetectByProblem: omitRecordKey(s.pendingAlgoVizDetectByProblem, id),
         };
       });
       await get().refreshProblems();
@@ -3812,10 +3914,15 @@ export const useStore = create<State>((set, get) => {
     },
 
     clearQA: (scope) => {
+      coachAbortByScope.get(scope)?.abort();
+      coachAbortByScope.delete(scope);
       set((st) => {
         const next = { ...st.qaByProblem };
         delete next[scope];
-        return { qaByProblem: next };
+        return {
+          qaByProblem: next,
+          qaPendingProblemId: st.qaPendingProblemId === scope ? null : st.qaPendingProblemId,
+        };
       });
     },
     setCmdPaletteOpen: (v) => set({ cmdPaletteOpen: v }),
@@ -4511,6 +4618,24 @@ function smartDupName(orig: string, existing: string[]): string {
   }
   while (existing.includes(`${prefix}-v${n}${ext}`)) n++;
   return `${prefix}-v${n}${ext}`;
+}
+
+function uniqueFileName(desired: string, existing: string[]): string {
+  const trimmed = desired.trim();
+  if (!existing.includes(trimmed)) return trimmed;
+  const dotIdx = trimmed.lastIndexOf('.');
+  const base = dotIdx > 0 ? trimmed.slice(0, dotIdx) : trimmed;
+  const ext = dotIdx > 0 ? trimmed.slice(dotIdx) : '';
+  let n = 2;
+  while (existing.includes(`${base}-v${n}${ext}`)) n++;
+  return `${base}-v${n}${ext}`;
+}
+
+function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  if (!(key in record)) return record;
+  const next = { ...record };
+  delete next[key];
+  return next;
 }
 
 /** 把旧 codeByProblem (LS_OLD_CODE) 迁移成 files store */

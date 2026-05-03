@@ -27,6 +27,12 @@ import { MathMarkdown, type CodeBlockActions } from './MathMarkdown';
 import { cn } from '../lib/cn';
 import type { CoachRoute } from '../core/coach/types';
 import type { FileLang } from '../core/types';
+import { resolvePrimaryModel } from '../lib/modelRegistry';
+import {
+  estimateCoachHistoryRounds,
+  formatTokenWindow,
+  inferModelContextWindowTokens,
+} from '../core/coach/contextBudget';
 
 const DRAFT_SCOPE = '__draft__';
 
@@ -39,6 +45,7 @@ export function QAPanel() {
   const clearQA = useStore((s) => s.clearQA);
   const pending = useStore((s) => s.qaPendingProblemId);
   const aiOk = useStore((s) => hasUsableAIConfig(s.aiConfig));
+  const aiConfig = useStore((s) => s.aiConfig);
   const askPrefill = useStore((s) => s.askPrefill);
   const setAskPrefill = useStore((s) => s.setAskPrefill);
   const coachDraft = useStore((s) => s.coachDraft);
@@ -52,6 +59,12 @@ export function QAPanel() {
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const messages = qaByProblem[scope] ?? [];
   const isPending = pending === scope;
+  const primaryModel = resolvePrimaryModel(aiConfig);
+  const contextWindowTokens =
+    primaryModel.contextWindowTokens ??
+    aiConfig.contextWindowTokens ??
+    inferModelContextWindowTokens(primaryModel.provider, primaryModel.model);
+  const estimatedRounds = estimateCoachHistoryRounds(contextWindowTokens);
 
   const activeFile = (filesByScope[scope] ?? []).find(
     (f) => f.id === activeFileIdByScope[scope],
@@ -194,6 +207,12 @@ export function QAPanel() {
         <div className="px-3 py-1 border-t border-line/40 flex items-center justify-between text-[10px] text-ink-mute">
           <span>
             {messages.filter((m) => m.role === 'user').length} 问
+            <span
+              className="ml-2 cursor-help"
+              title={`Coach 会按模型上下文窗口动态裁剪历史；当前主模型 ${primaryModel.model}，窗口 ${formatTokenWindow(contextWindowTokens)}，预计最多携带约 ${estimatedRounds} 轮。若路由到本地 FastLane，会按本地模型窗口重新裁剪。`}
+            >
+              · 约带 {estimatedRounds} 轮上下文
+            </span>
             {isPending && (
               <span className="ml-2 inline-flex items-center gap-1 text-accent">
                 <Loader2 size={10} className="animate-spin" /> AI 思考中

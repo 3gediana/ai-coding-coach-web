@@ -198,10 +198,38 @@ cd ai-coding-coach-web
 npm install
 ```
 
+`npm install` 会按 `package-lock.json` 安装前端运行所需依赖，不需要手工逐个安装。当前项目比较关键的依赖包括：
+
+- **React / Vite / TypeScript / Tailwind CSS**：主应用、开发服务和样式系统。
+- **Monaco Editor**：`@monaco-editor/react`，用于核心代码编辑器。
+- **Remotion 算法动画**：`@remotion/player` + `remotion`。项目在 `AlgoVizPanel` 中用 `<Player>` 播放 AI 生成的动画，并把 `remotion` 的 `useCurrentFrame`、`interpolate`、`spring`、`AbsoluteFill`、`Easing` 暴露给动画组件。Remotion 官方要求 `remotion` 和所有 `@remotion/*` 包版本保持一致，所以这里固定为同一个精确版本 `4.0.454`，不要只装 `@remotion/player` 或把其中一个单独升级。Remotion GitHub 仓库也提示其 License 有特殊条款，正式商用或公司内部使用前应阅读 Remotion License。
+- **LLM 组件沙箱编译**：`@babel/standalone`，用于把模型生成的 React 可视化组件在浏览器侧编译成可渲染组件。
+- **动效与图标**：`framer-motion`、`lucide-react`。
+- **图表与学习面板**：`recharts`。
+- **Markdown / 数学公式渲染**：`react-markdown`、`remark-gfm`、`remark-math`、`rehype-katex`、`katex`。
+- **状态、本地存储与工具函数**：`zustand`、`idb`、`nanoid`、`clsx`、`tailwind-merge`。
+- **运行面板与终端体验**：`xterm`、`@xterm/addon-fit`。
+- **Toast 通知**：`sonner`。
+- **浏览器内 Python 运行**：运行时会从 Pyodide CDN 懒加载 `pyodide.js` 和 WASM 资源；首次使用 Python 运行需要联网或可访问 CDN。
+- **测试工具**：`vitest` 用于单元测试，`playwright` / `@playwright/test` 用于 E2E；测试脚本和产物统一放在 `dev-workspace/`。
+
+因此，正常情况下不要执行类似 `npm install @remotion/player` 这种单包补装命令；如果确实要升级 Remotion，请同时升级并精确锁定：
+
+```bash
+npm install --save-exact @remotion/player@<same-version> remotion@<same-version>
+```
+
 如果你需要 Playwright E2E 测试：
 
 ```bash
 npx playwright install
+```
+
+如果你只运行产品本身，通常只需要：
+
+```bash
+npm install
+npm run dev -- --host 127.0.0.1 --port 3333
 ```
 
 ### 3. 配置环境变量
@@ -372,7 +400,7 @@ scripts/userscripts/aicc-probe.user.js
 - 将快照回传到：
 
 ```text
-logs/dom-snapshots/
+dev-workspace/artifacts/logs/dom-snapshots/
 ```
 
 安装方式与正式脚本相同，但它只用于侦查页面结构，不会自动提交代码。

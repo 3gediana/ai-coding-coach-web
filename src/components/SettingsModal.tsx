@@ -40,6 +40,11 @@ import { toast } from 'sonner';
 import { DEFAULT_ROUTER_HINTS } from '../core/ai/router';
 import { ModelRegistrySection, ModelPicker } from './ModelRegistry';
 import { resolveFastLaneModel, resolvePrimaryModel } from '../lib/modelRegistry';
+import {
+  estimateCoachHistoryRounds,
+  formatTokenWindow,
+  inferModelContextWindowTokens,
+} from '../core/coach/contextBudget';
 import { collectLocalOllamaTargets, getLocalOllamaTargetConflict } from '../core/ai/warmup';
 import { applyTheme, getStoredTheme, THEMES, type Theme } from '../lib/theme';
 import { setForcedOffline, useOnlineStatus } from '../lib/offlineMode';
@@ -165,6 +170,10 @@ export function SettingsModal() {
       provider: id,
       baseUrl: p.baseUrl,
       model: p.defaultModel || draft.model,
+      contextWindowTokens:
+        p.modelContextTokens?.[p.defaultModel] ??
+        p.defaultContextWindowTokens ??
+        inferModelContextWindowTokens(id, p.defaultModel),
     });
   };
 
@@ -283,6 +292,12 @@ export function SettingsModal() {
   };
 
   const currentPreset = PRESETS.find((p) => p.id === draft.provider);
+  const previewPrimary = resolvePrimaryModel(draft);
+  const previewContextWindow =
+    previewPrimary.contextWindowTokens ??
+    draft.contextWindowTokens ??
+    inferModelContextWindowTokens(previewPrimary.provider, previewPrimary.model);
+  const estimatedCoachRounds = estimateCoachHistoryRounds(previewContextWindow);
 
   return (
     <AnimatePresence>
@@ -542,7 +557,16 @@ export function SettingsModal() {
                 <ModelDropdown
                   preset={currentPreset}
                   value={draft.model}
-                  onChange={(model) => setDraft({ ...draft, model })}
+                  onChange={(model) =>
+                    setDraft({
+                      ...draft,
+                      model,
+                      contextWindowTokens:
+                        currentPreset?.modelContextTokens?.[model] ??
+                        currentPreset?.defaultContextWindowTokens ??
+                        inferModelContextWindowTokens(draft.provider, model),
+                    })
+                  }
                 />
               </Field>
               )}
@@ -555,7 +579,8 @@ export function SettingsModal() {
                   <strong className="ml-1">
                     {(() => {
                       const r = resolvePrimaryModel(draft);
-                      return `${r.model}（${r.provider}）`;
+                      const ctx = r.contextWindowTokens ?? inferModelContextWindowTokens(r.provider, r.model);
+                      return `${r.model}（${r.provider} · ${formatTokenWindow(ctx)}）`;
                     })()}
                   </strong>
                 </div>
@@ -641,6 +666,24 @@ export function SettingsModal() {
                     max="2"
                     value={draft.temperature ?? 0.3}
                     onChange={(e) => setDraft({ ...draft, temperature: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field
+                  label="上下文窗口 tokens"
+                  hint={`问教练预计可带约 ${estimatedCoachRounds} 轮`}
+                >
+                  <input
+                    className="input font-mono"
+                    type="number"
+                    min="1024"
+                    placeholder={String(inferModelContextWindowTokens(draft.provider, draft.model))}
+                    value={draft.contextWindowTokens ?? ''}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        contextWindowTokens: e.target.value ? Number(e.target.value) : undefined,
+                      })
+                    }
                   />
                 </Field>
                 <Field label="超时（毫秒）" hint="推理模型建议 ≥ 120000">

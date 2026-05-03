@@ -68,6 +68,7 @@ export function QuickSetupCard() {
       baseUrl: preset.baseUrl,
       apiKey: trimmedKey,
       model: preset.defaultModel,
+      contextWindowTokens: preset.modelContextTokens?.[preset.defaultModel] ?? preset.defaultContextWindowTokens,
       primaryModelId: undefined,
     };
     try {

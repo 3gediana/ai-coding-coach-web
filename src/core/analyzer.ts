@@ -38,6 +38,7 @@ import {
 import { isEffectivelyOffline } from '../lib/offlineMode';
 import { formatFeaturesForPrompt } from './astLite';
 import { buildCoachPrompt } from './coach/prompts';
+import { effectiveContextWindowTokens } from './coach/contextBudget';
 import type { CoachRoute } from './coach/types';
 import type {
   AnalysisHistoryEntry,
@@ -970,7 +971,6 @@ export class Coach {
     },
     opts: StreamOpts = {},
   ): Promise<string> {
-    const { messages, maxTokens } = buildCoachPrompt(args);
     const { client } = this.pick({
       taskKind: 'ask',
       problem: args.problem,
@@ -978,6 +978,15 @@ export class Coach {
       codeLineCount: args.code?.split('\n').length,
       questionLength: args.userText.length,
     });
+    const { messages, maxTokens, historyMeta } = buildCoachPrompt({
+      ...args,
+      contextWindowTokens: effectiveContextWindowTokens(client.getConfig()),
+    });
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug(
+        `[Coach.askCoach] context=${historyMeta.contextWindowTokens}, history=${historyMeta.selectedMessages} msgs/${historyMeta.selectedRounds} rounds, budget=${historyMeta.historyTokenBudget}`,
+      );
+    }
     let acc = '';
     for await (const _ of client.chatStream({
       messages,

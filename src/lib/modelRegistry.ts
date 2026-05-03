@@ -9,6 +9,7 @@
  *   - 找不到时返回 null → 调用方自行 fallback 旧字段
  */
 import type { AIConfig, AIProvider, AlgoVizAgentOverride, ModelEntry } from '../core/types';
+import { inferModelContextWindowTokens } from '../core/coach/contextBudget';
 
 /** 从注册表中按 id 查找 */
 export function lookupModel(registry: ModelEntry[] | undefined, id: string | undefined): ModelEntry | null {
@@ -45,6 +46,7 @@ export function resolvePrimaryModel(cfg: AIConfig): {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindowTokens?: number;
   numCtx?: number;
 } {
   const entry = lookupModel(cfg.modelRegistry, cfg.primaryModelId);
@@ -54,6 +56,7 @@ export function resolvePrimaryModel(cfg: AIConfig): {
       baseUrl: entry.baseUrl,
       apiKey: inheritedApiKey(cfg, entry),
       model: entry.model,
+      contextWindowTokens: entry.contextWindowTokens ?? inferModelContextWindowTokens(entry.provider, entry.model),
       numCtx: entry.numCtx,
     };
   }
@@ -62,6 +65,7 @@ export function resolvePrimaryModel(cfg: AIConfig): {
     baseUrl: cfg.baseUrl,
     apiKey: cfg.apiKey,
     model: cfg.model,
+    contextWindowTokens: cfg.contextWindowTokens ?? inferModelContextWindowTokens(cfg.provider, cfg.model),
     numCtx: cfg.numCtx,
   };
 }
@@ -71,6 +75,7 @@ export function resolveQualityModel(cfg: AIConfig): {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindowTokens?: number;
   numCtx?: number;
 } {
   const entry = lookupModel(cfg.modelRegistry, cfg.qualityModelId);
@@ -80,6 +85,7 @@ export function resolveQualityModel(cfg: AIConfig): {
       baseUrl: entry.baseUrl,
       apiKey: inheritedApiKey(cfg, entry),
       model: entry.model,
+      contextWindowTokens: entry.contextWindowTokens ?? inferModelContextWindowTokens(entry.provider, entry.model),
       numCtx: entry.numCtx,
     };
   }
@@ -93,16 +99,27 @@ export function resolveQualityModel(cfg: AIConfig): {
 export function resolveFastLaneModel(cfg: AIConfig): {
   baseUrl: string;
   model: string;
+  contextWindowTokens?: number;
   numCtx?: number;
 } | null {
   const fl = cfg.fastLane;
   if (!fl?.enabled) return null;
   const entry = lookupModel(cfg.modelRegistry, fl.modelId);
   if (entry) {
-    return { baseUrl: entry.baseUrl, model: entry.model, numCtx: entry.numCtx };
+    return {
+      baseUrl: entry.baseUrl,
+      model: entry.model,
+      contextWindowTokens: entry.contextWindowTokens ?? inferModelContextWindowTokens(entry.provider, entry.model),
+      numCtx: entry.numCtx,
+    };
   }
   if (!fl.baseUrl?.trim() || !fl.model?.trim()) return null;
-  return { baseUrl: fl.baseUrl, model: fl.model, numCtx: fl.numCtx };
+  return {
+    baseUrl: fl.baseUrl,
+    model: fl.model,
+    contextWindowTokens: fl.numCtx ?? inferModelContextWindowTokens('ollama', fl.model),
+    numCtx: fl.numCtx,
+  };
 }
 
 /**
@@ -113,6 +130,7 @@ export function resolveIntentRouterModel(cfg: AIConfig): {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindowTokens?: number;
 } | null {
   const ir = cfg.intentRouter;
   if (!ir?.enabled) return null;
@@ -124,6 +142,7 @@ export function resolveIntentRouterModel(cfg: AIConfig): {
       // 与 primary / quality / algoViz override 保持一致：entry 未填 apiKey 时走继承
       apiKey: inheritedApiKey(cfg, entry),
       model: entry.model,
+      contextWindowTokens: entry.contextWindowTokens ?? inferModelContextWindowTokens(entry.provider, entry.model),
     };
   }
   if (!ir.baseUrl?.trim() || !ir.model?.trim()) return null;
@@ -132,6 +151,7 @@ export function resolveIntentRouterModel(cfg: AIConfig): {
     baseUrl: ir.baseUrl,
     apiKey: ir.apiKey ?? '',
     model: ir.model,
+    contextWindowTokens: inferModelContextWindowTokens(ir.provider ?? cfg.provider, ir.model),
   };
 }
 
@@ -175,6 +195,7 @@ export function migrateConfigToRegistry(cfg: AIConfig): AIConfig {
       baseUrl: cfg.baseUrl,
       apiKey: cfg.apiKey,
       model: cfg.model,
+      contextWindowTokens: cfg.contextWindowTokens ?? inferModelContextWindowTokens(cfg.provider, cfg.model),
       numCtx: cfg.numCtx,
     });
   }
@@ -187,6 +208,7 @@ export function migrateConfigToRegistry(cfg: AIConfig): AIConfig {
       baseUrl: fl.baseUrl,
       apiKey: '',
       model: fl.model,
+      contextWindowTokens: fl.numCtx ?? inferModelContextWindowTokens('ollama', fl.model),
       numCtx: fl.numCtx,
     });
     out.fastLane = { ...fl, modelId: id };
@@ -200,6 +222,7 @@ export function migrateConfigToRegistry(cfg: AIConfig): AIConfig {
       baseUrl: ir.baseUrl,
       apiKey: ir.apiKey ?? '',
       model: ir.model,
+      contextWindowTokens: inferModelContextWindowTokens(ir.provider ?? cfg.provider, ir.model),
     });
     out.intentRouter = { ...ir, modelId: id };
   }
@@ -216,6 +239,7 @@ export function migrateConfigToRegistry(cfg: AIConfig): AIConfig {
           baseUrl: ov.baseUrl,
           apiKey: ov.apiKey,
           model: ov.model,
+          contextWindowTokens: inferModelContextWindowTokens(ov.provider ?? 'custom', ov.model),
         });
         newAv[role] = { ...ov, modelId: id };
       }
@@ -233,7 +257,7 @@ export function migrateConfigToRegistry(cfg: AIConfig): AIConfig {
 export function resolveAlgoVizOverride(
   cfg: AIConfig,
   override: AlgoVizAgentOverride | undefined,
-): { provider: AIProvider; baseUrl: string; apiKey: string; model: string } | null {
+): { provider: AIProvider; baseUrl: string; apiKey: string; model: string; contextWindowTokens?: number; numCtx?: number } | null {
   if (!override?.enabled) return null;
   const entry = lookupModel(cfg.modelRegistry, override.modelId);
   if (entry) {
@@ -242,6 +266,8 @@ export function resolveAlgoVizOverride(
       baseUrl: entry.baseUrl,
       apiKey: inheritedApiKey(cfg, entry),
       model: entry.model,
+      contextWindowTokens: entry.contextWindowTokens ?? inferModelContextWindowTokens(entry.provider, entry.model),
+      numCtx: entry.numCtx,
     };
   }
   if (!override.baseUrl?.trim() || !override.model?.trim()) return null;
@@ -255,5 +281,6 @@ export function resolveAlgoVizOverride(
         ? primary.apiKey
         : ''),
     model: override.model,
+    contextWindowTokens: inferModelContextWindowTokens(override.provider ?? 'custom', override.model),
   };
 }

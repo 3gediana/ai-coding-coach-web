@@ -1,4 +1,11 @@
 import { SYSTEM_CODING_COACH } from '../ai/prompts';
+import {
+  COACH_SYSTEM_PROMPT_ESTIMATE_TOKENS,
+  estimateMessagesTokens,
+  mergeAdjacentMessages,
+  planCoachHistoryBudget,
+  selectRecentHistoryByBudget,
+} from './contextBudget';
 import type { CoachIntent, CoachRoute } from './types';
 
 interface IntentProfile {
@@ -49,9 +56,17 @@ export function buildCoachPrompt(args: {
   context: string;
   userText: string;
   history?: { role: 'user' | 'assistant'; content: string }[];
+  contextWindowTokens?: number;
 }): {
   messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
   maxTokens: number;
+  historyMeta: {
+    contextWindowTokens: number;
+    selectedMessages: number;
+    selectedRounds: number;
+    historyTokenBudget: number;
+    basePromptTokens: number;
+  };
 } {
   const profile = INTENT_PROFILES[args.route.intent] ?? INTENT_PROFILES.general_question;
   const system = `${SYSTEM_CODING_COACH}
@@ -65,13 +80,38 @@ ${profile.instruction}
 - 结论要用“我目前怀疑 / 先验证”这种措辞，避免替学生完成思考
 - markdown 短列表 / 行号引用 / 行内 code 都可用
 - 不要写「希望对你有帮助」之类的客套结尾`;
-  const messages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
+  const baseMessages: { role: 'system' | 'user' | 'assistant'; content: string }[] = [
     { role: 'system', content: system },
     { role: 'user', content: `当前上下文：\n${args.context}` },
   ];
-  for (const item of args.history?.slice(-6) ?? []) {
+  const finalUserMessage = { role: 'user' as const, content: args.userText };
+  const contextWindowTokens = args.contextWindowTokens ?? 200_000;
+  const basePromptTokens =
+    COACH_SYSTEM_PROMPT_ESTIMATE_TOKENS + estimateMessagesTokens([...baseMessages, finalUserMessage]);
+  const budget = planCoachHistoryBudget({
+    contextWindowTokens,
+    basePromptTokens,
+    responseTokens: profile.maxTokens,
+  });
+  const selectedHistory = selectRecentHistoryByBudget(
+    args.history,
+    budget.maxHistoryMessages,
+    budget.historyTokenBudget,
+  );
+  const messages = [...baseMessages];
+  for (const item of selectedHistory) {
     messages.push({ role: item.role, content: item.content });
   }
-  messages.push({ role: 'user', content: args.userText });
-  return { messages, maxTokens: profile.maxTokens };
+  messages.push(finalUserMessage);
+  return {
+    messages: mergeAdjacentMessages(messages),
+    maxTokens: profile.maxTokens,
+    historyMeta: {
+      contextWindowTokens,
+      selectedMessages: selectedHistory.length,
+      selectedRounds: Math.ceil(selectedHistory.length / 2),
+      historyTokenBudget: budget.historyTokenBudget,
+      basePromptTokens,
+    },
+  };
 }

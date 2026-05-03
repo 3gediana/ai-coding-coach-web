@@ -401,6 +401,7 @@ export interface ModelEntry {
   baseUrl: string;
   apiKey: string;
   model: string;
+  contextWindowTokens?: number;
   /** Ollama 专用：上下文窗口大小 */
   numCtx?: number;
 }
@@ -412,6 +413,7 @@ export interface AIConfig {
   apiKey: string;
   model: string;
   maxTokens: number;
+  contextWindowTokens?: number;
   /**
    * Ollama 总开关 — 见 {@link OllamaMode}。
    * 'disabled' 时所有 ollama 触点（fastLane / detect / 嗅探 / OCR）全部 noop，

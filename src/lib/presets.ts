@@ -6,6 +6,7 @@
  *   - MiniMax 原生：https://api.minimaxi.com/v1/text/chatcompletion_v2（也兼容）
  */
 import type { AIConfig, AIProvider } from '../core/types';
+import { DEFAULT_CLOUD_CONTEXT_TOKENS, DEFAULT_OLLAMA_CONTEXT_TOKENS } from '../core/coach/contextBudget';
 
 export interface AIPreset {
   id: AIProvider;
@@ -15,6 +16,8 @@ export interface AIPreset {
   defaultModel: string;
   modelExamples: string[];
   apiKeyPage?: string;
+  defaultContextWindowTokens?: number;
+  modelContextTokens?: Record<string, number>;
 }
 
 /**
@@ -44,6 +47,13 @@ export const PRESETS: AIPreset[] = [
       'deepseek-reasoner',
     ],
     apiKeyPage: 'https://platform.deepseek.com/api_keys',
+    defaultContextWindowTokens: 1_000_000,
+    modelContextTokens: {
+      'deepseek-v4-flash': 1_000_000,
+      'deepseek-v4-pro': 1_000_000,
+      'deepseek-chat': 64_000,
+      'deepseek-reasoner': 64_000,
+    },
   },
   {
     id: 'minimax',
@@ -53,6 +63,14 @@ export const PRESETS: AIPreset[] = [
     defaultModel: 'MiniMax-M2.7',
     modelExamples: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed', 'MiniMax-M2.5', 'MiniMax-M2.5-highspeed', 'MiniMax-M2'],
     apiKeyPage: 'https://platform.minimaxi.com/user-center/basic-information/interface-key',
+    defaultContextWindowTokens: 196_000,
+    modelContextTokens: {
+      'MiniMax-M2.7': 196_000,
+      'MiniMax-M2.7-highspeed': 196_000,
+      'MiniMax-M2.5': 196_000,
+      'MiniMax-M2.5-highspeed': 196_000,
+      'MiniMax-M2': 196_000,
+    },
   },
   {
     id: 'openai',
@@ -62,6 +80,14 @@ export const PRESETS: AIPreset[] = [
     defaultModel: 'gpt-5.5',
     modelExamples: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5.1-codex'],
     apiKeyPage: 'https://platform.openai.com/api-keys',
+    defaultContextWindowTokens: 1_050_000,
+    modelContextTokens: {
+      'gpt-5.5': 1_050_000,
+      'gpt-5.4': 400_000,
+      'gpt-5.4-mini': 400_000,
+      'gpt-5.4-nano': 400_000,
+      'gpt-5.1-codex': 400_000,
+    },
   },
   {
     id: 'qwen',
@@ -71,6 +97,14 @@ export const PRESETS: AIPreset[] = [
     defaultModel: 'qwen3.5-plus',
     modelExamples: ['qwen3.5-plus', 'qwen3.5-flash', 'qwen-plus-latest', 'qwen-flash', 'qwen3-coder-32b-instruct'],
     apiKeyPage: 'https://dashscope.console.aliyun.com/apiKey',
+    defaultContextWindowTokens: DEFAULT_CLOUD_CONTEXT_TOKENS,
+    modelContextTokens: {
+      'qwen3.5-plus': DEFAULT_CLOUD_CONTEXT_TOKENS,
+      'qwen3.5-flash': DEFAULT_CLOUD_CONTEXT_TOKENS,
+      'qwen-plus-latest': DEFAULT_CLOUD_CONTEXT_TOKENS,
+      'qwen-flash': DEFAULT_CLOUD_CONTEXT_TOKENS,
+      'qwen3-coder-32b-instruct': 128_000,
+    },
   },
   {
     id: 'zhipu',
@@ -80,6 +114,14 @@ export const PRESETS: AIPreset[] = [
     defaultModel: 'glm-5.1',
     modelExamples: ['glm-5.1', 'glm-5', 'glm-5-flash', 'glm-4.7-flash', 'glm-4.5-flash'],
     apiKeyPage: 'https://bigmodel.cn/usercenter/apikeys',
+    defaultContextWindowTokens: 200_000,
+    modelContextTokens: {
+      'glm-5.1': 200_000,
+      'glm-5': 200_000,
+      'glm-5-flash': 200_000,
+      'glm-4.7-flash': 128_000,
+      'glm-4.5-flash': 128_000,
+    },
   },
   {
     id: 'moonshot',
@@ -89,6 +131,13 @@ export const PRESETS: AIPreset[] = [
     defaultModel: 'kimi-k2.6',
     modelExamples: ['kimi-k2.6', 'moonshot-v1-128k', 'moonshot-v1-32k', 'moonshot-v1-8k'],
     apiKeyPage: 'https://platform.moonshot.cn/console/api-keys',
+    defaultContextWindowTokens: 256_000,
+    modelContextTokens: {
+      'kimi-k2.6': 256_000,
+      'moonshot-v1-128k': 128_000,
+      'moonshot-v1-32k': 32_000,
+      'moonshot-v1-8k': 8_000,
+    },
   },
   {
     id: 'anthropic',
@@ -98,6 +147,13 @@ export const PRESETS: AIPreset[] = [
     defaultModel: 'claude-sonnet-4.6',
     modelExamples: ['claude-opus-4.7', 'claude-opus-4.6', 'claude-sonnet-4.6', 'claude-haiku-4.5'],
     apiKeyPage: 'https://console.anthropic.com/settings/keys',
+    defaultContextWindowTokens: 200_000,
+    modelContextTokens: {
+      'claude-opus-4.7': 1_000_000,
+      'claude-opus-4.6': 1_000_000,
+      'claude-sonnet-4.6': 200_000,
+      'claude-haiku-4.5': 200_000,
+    },
   },
   {
     id: 'google',
@@ -107,6 +163,13 @@ export const PRESETS: AIPreset[] = [
     defaultModel: 'gemini-3.1-pro',
     modelExamples: ['gemini-3.1-pro', 'gemini-3.1-flash', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview-customtools'],
     apiKeyPage: 'https://aistudio.google.com/apikey',
+    defaultContextWindowTokens: 1_000_000,
+    modelContextTokens: {
+      'gemini-3.1-pro': 1_000_000,
+      'gemini-3.1-flash': 1_000_000,
+      'gemini-3.1-flash-lite': 1_000_000,
+      'gemini-3.1-pro-preview-customtools': 1_000_000,
+    },
   },
   {
     id: 'ollama',
@@ -115,6 +178,16 @@ export const PRESETS: AIPreset[] = [
     baseUrl: 'http://localhost:11434/v1/chat/completions',
     defaultModel: 'qwen3.5:4b',
     modelExamples: ['qwen3.5:4b', 'qwen3-coder:7b', 'qwen2.5-coder:7b', 'deepseek-r1:7b', 'deepseek-coder:6.7b', 'llama3.2:3b', 'gemma3:4b'],
+    defaultContextWindowTokens: DEFAULT_OLLAMA_CONTEXT_TOKENS,
+    modelContextTokens: {
+      'qwen3.5:4b': DEFAULT_OLLAMA_CONTEXT_TOKENS,
+      'qwen3-coder:7b': DEFAULT_OLLAMA_CONTEXT_TOKENS,
+      'qwen2.5-coder:7b': DEFAULT_OLLAMA_CONTEXT_TOKENS,
+      'deepseek-r1:7b': DEFAULT_OLLAMA_CONTEXT_TOKENS,
+      'deepseek-coder:6.7b': DEFAULT_OLLAMA_CONTEXT_TOKENS,
+      'llama3.2:3b': DEFAULT_OLLAMA_CONTEXT_TOKENS,
+      'gemma3:4b': DEFAULT_OLLAMA_CONTEXT_TOKENS,
+    },
   },
   {
     id: 'custom',
@@ -123,6 +196,7 @@ export const PRESETS: AIPreset[] = [
     baseUrl: 'https://your-endpoint.com/v1/chat/completions',
     defaultModel: '',
     modelExamples: [],
+    defaultContextWindowTokens: DEFAULT_CLOUD_CONTEXT_TOKENS,
   },
 ];
 
@@ -131,6 +205,7 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
   baseUrl: PRESETS[0].baseUrl,
   apiKey: '',
   model: PRESETS[0].defaultModel,
+  contextWindowTokens: 1_000_000,
   qualityModelId: 'deepseek-v4-pro',
   modelRegistry: [
     {
@@ -140,6 +215,7 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
       baseUrl: PRESETS[0].baseUrl,
       apiKey: '',
       model: 'deepseek-v4-flash',
+      contextWindowTokens: 1_000_000,
     },
     {
       id: 'deepseek-v4-pro',
@@ -148,6 +224,7 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
       baseUrl: PRESETS[0].baseUrl,
       apiKey: '',
       model: 'deepseek-v4-pro',
+      contextWindowTokens: 1_000_000,
     },
   ],
   maxTokens: 8000,

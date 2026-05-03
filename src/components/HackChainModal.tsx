@@ -30,6 +30,7 @@ import type {
   ExecutorOutput,
   ExplainerOutput,
   FixSuggestorOutput,
+  AgentTraceEvent,
   HackChainStep,
   HackChainStepState,
 } from '../lib/store';
@@ -71,6 +72,16 @@ const STEP_META: Record<
 export function HackChainModal() {
   const state = useStore((s) => s.hackChainState);
   const dismiss = useStore((s) => s.dismissHackChain);
+  const events = useStore((s) => {
+    const cur = s.hackChainState;
+    if (!cur) return [];
+    return s.agentTrace.filter(
+      (e) =>
+        e.ts >= cur.startedAt - 1000 &&
+        e.problemId === cur.problemId &&
+        (e.agentName?.startsWith('HackChain/') || e.title.includes('Hack Chain')),
+    );
+  });
   const running = !!state?.steps.some((s) => s.status === 'running' || s.status === 'idle');
   const [now, setNow] = useState(Date.now());
 
@@ -91,24 +102,72 @@ export function HackChainModal() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed right-4 bottom-4 z-50 w-[min(42rem,calc(100vw-2rem))] max-h-[70vh]"
+          className="fixed right-4 bottom-4 z-50 w-[min(56rem,calc(100vw-2rem))] max-h-[80vh]"
         >
           <motion.div
             initial={{ scale: 0.96, opacity: 0, y: 8 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.96, opacity: 0 }}
             onClick={(e) => e.stopPropagation()}
-            className="glass-card w-full max-h-[70vh] flex flex-col overflow-hidden shadow-2xl"
+            className="glass-card w-full max-h-[80vh] flex flex-col overflow-hidden shadow-2xl"
           >
             <Header onClose={dismiss} steps={state.steps} startedAt={state.startedAt} now={now} />
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               <Timeline steps={state.steps} now={now} />
+              <LiveTrace events={events} />
               <Outputs />
             </div>
           </motion.div>
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+function LiveTrace({ events }: { events: AgentTraceEvent[] }) {
+  const levelClass: Record<AgentTraceEvent['level'], string> = {
+    info: 'border-line/60 bg-bg-elev/35 text-ink-dim',
+    success: 'border-ok/45 bg-ok/5 text-ok',
+    warn: 'border-warn/45 bg-warn/5 text-warn',
+    error: 'border-bad/45 bg-bad/5 text-bad',
+  };
+  const kindLabel: Record<AgentTraceEvent['kind'], string> = {
+    perceive: '感知',
+    decide: '决策',
+    act: '行动',
+    feedback: '反馈',
+  };
+  return (
+    <div className="rounded-md border border-line/60 bg-bg-card/70 overflow-hidden">
+      <div className="px-3 py-1.5 border-b border-line/50 bg-bg-elev/35 flex items-center gap-2">
+        <Swords size={13} className="text-warn" />
+        <span className="text-[12px] font-semibold text-ink">实时信息流</span>
+        <span className="text-[10px] text-ink-mute">每个 Agent 的输入、输出、失败和执行反馈</span>
+      </div>
+      <div className="max-h-64 overflow-y-auto px-3 py-2 space-y-2">
+        {events.length === 0 ? (
+          <div className="text-[11px] text-ink-mute">等待 Attacker 接收题目和代码上下文…</div>
+        ) : (
+          events.map((e) => (
+            <div key={e.id} className={cn('rounded border px-2.5 py-2', levelClass[e.level])}>
+              <div className="flex items-center gap-2 text-[10.5px]">
+                <span className="chip text-[9px] px-1 py-0">{kindLabel[e.kind]}</span>
+                {e.agentName && <span className="font-mono text-[10px] opacity-80">{e.agentName}</span>}
+                <span className="font-semibold text-ink">{e.title}</span>
+                <span className="ml-auto font-mono text-[9px] opacity-70">
+                  {new Date(e.ts).toLocaleTimeString()}
+                </span>
+              </div>
+              {e.detail && (
+                <pre className="mt-1.5 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded bg-bg-base/45 px-2 py-1.5 text-[10px] leading-relaxed text-ink-dim">
+                  {e.detail}
+                </pre>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
 

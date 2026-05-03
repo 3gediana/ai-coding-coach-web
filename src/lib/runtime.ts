@@ -11,6 +11,7 @@ const PYODIDE_VERSION = '0.26.4';
 const PYODIDE_CDN = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
 
 let pyodidePromise: Promise<any> | null = null;
+let pythonRunQueue: Promise<void> = Promise.resolve();
 
 /**
  * 懒加载 Pyodide。
@@ -63,7 +64,35 @@ export async function runPython(
     onProgress?: (stage: string) => void;
   },
 ): Promise<RunResult> {
+  const previous = pythonRunQueue;
+  let release!: () => void;
+  pythonRunQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous.catch(() => undefined);
+  try {
+    return await runPythonExclusive(code, stdin, opts);
+  } finally {
+    release();
+  }
+}
+
+async function runPythonExclusive(
+  code: string,
+  stdin: string,
+  opts?: {
+    onStdout?: (chunk: string) => void;
+    onStderr?: (chunk: string) => void;
+    timeoutMs?: number;
+    onProgress?: (stage: string) => void;
+  },
+): Promise<RunResult> {
   const t0 = performance.now();
+  if (/\bwhile\s+True\s*:\s*(?:\r?\n\s*(?:pass|continue)\s*)+$/m.test(code)) {
+    const msg = 'Python 执行被拦截：检测到明显不会让出控制权的 while True 死循环';
+    opts?.onStderr?.(msg + '\n');
+    return { stdout: '', stderr: msg, durationMs: performance.now() - t0, exitCode: 1 };
+  }
   const py = await loadPython(opts?.onProgress);
 
   // 配置 stdin/stdout/stderr 钩子

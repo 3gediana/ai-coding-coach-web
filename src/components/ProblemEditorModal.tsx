@@ -14,6 +14,7 @@ export function ProblemEditorModal() {
   const enqueueParseProblem = useStore((s) => s.enqueueParseProblem);
   const aiOk = useStore((s) => hasUsableAIConfig(s.aiConfig));
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
+  const problems = useStore((s) => s.problems);
 
   const [text, setText] = useState('');
   const [url, setUrl] = useState('');
@@ -51,6 +52,15 @@ export function ProblemEditorModal() {
     setFetching(true);
     try {
       const p = await fetchAndParseProblem(u);
+      const existing = problems.find((item) => item.source === p.source.url);
+      if (existing) {
+        await setActiveProblem(existing.id);
+        toast.info(`已存在：${existing.title}`, {
+          description: '已切换到现有题目，未重复入库',
+        });
+        setOpen(false);
+        return;
+      }
       // 直接转为 Problem 并入库（跳过 LLM）
       const problem: Problem = {
         id: nanoid(),

@@ -78,6 +78,10 @@ export class AIClient {
     this.cfg = cfg;
   }
 
+  getConfig(): AIConfig {
+    return this.cfg;
+  }
+
   /** 非流式 chat，返回完整文本 */
   async chat(req: ChatRequest): Promise<string> {
     const body = this.buildBody(req, false);
@@ -371,10 +375,14 @@ export class AIClient {
     while (attempt <= maxRetries) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      let abortForwarder: (() => void) | null = null;
       const linkSig = (s: AbortSignal | undefined) => {
         if (!s) return;
         if (s.aborted) ctrl.abort();
-        else s.addEventListener('abort', () => ctrl.abort());
+        else {
+          abortForwarder = () => ctrl.abort();
+          s.addEventListener('abort', abortForwarder);
+        }
       };
       linkSig(req.signal);
 
@@ -420,6 +428,9 @@ export class AIClient {
       } catch (e: any) {
         clearTimeout(timer);
         const isAbort = e?.name === 'AbortError';
+        if (isAbort && req.signal?.aborted) {
+          throw e;
+        }
         const isTransient = isAbort || /fetch failed|network|ECONN|ETIMED/i.test(e?.message || '');
 
         if (e instanceof AIError && !e.retryable) {
@@ -441,6 +452,7 @@ export class AIClient {
         lastError = e;
       } finally {
         clearTimeout(timer);
+        if (abortForwarder) req.signal?.removeEventListener('abort', abortForwarder);
       }
     }
 
