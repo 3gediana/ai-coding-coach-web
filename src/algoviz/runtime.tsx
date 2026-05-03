@@ -15,6 +15,7 @@
  */
 import * as Babel from '@babel/standalone';
 import * as React from 'react';
+import * as RemotionShapes from '@remotion/shapes';
 
 export interface CompileSuccess {
   Component: React.ComponentType<Record<string, unknown>>;
@@ -102,6 +103,7 @@ export function compileLLMComponent(
   const requireShim = (name: string): unknown => {
     if (name === 'react') return globals.React ?? React;
     if (name === 'remotion' && globals.Remotion) return globals.Remotion;
+    if (name === '@remotion/shapes') return globals.RemotionShapes ?? RemotionShapes;
     throw new Error(`不支持的 import: ${name}`);
   };
   // 全局注入：让 LLM 代码可以写 const { useCurrentFrame } = Remotion 拿到我们注入的全局

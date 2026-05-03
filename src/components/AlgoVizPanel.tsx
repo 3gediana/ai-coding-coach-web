@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { Player, type PlayerRef } from '@remotion/player';
 import * as Remotion from 'remotion';
+import * as RemotionShapes from '@remotion/shapes';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { useOnlineStatus } from '../lib/offlineMode';
@@ -45,6 +46,10 @@ const REMOTION_GLOBALS = {
     AbsoluteFill: Remotion.AbsoluteFill,
     Easing: Remotion.Easing,
   },
+  RemotionShapes,
+  Arrow: RemotionShapes.Arrow,
+  Rect: RemotionShapes.Rect,
+  Circle: RemotionShapes.Circle,
 };
 
 const STATUS_GLOBALS = { React };

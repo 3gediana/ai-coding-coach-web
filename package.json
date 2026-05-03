@@ -20,6 +20,7 @@
     "@babel/standalone": "7.27.7",
     "@monaco-editor/react": "^4.6.0",
     "@remotion/player": "4.0.454",
+    "@remotion/shapes": "4.0.454",
     "@xterm/addon-fit": "^0.11.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.15.0",

@@ -586,8 +586,10 @@ If there are 5 modules, use this layout structure:
 - No external imports. Use globals only:
   const { useCurrentFrame, interpolate, spring, AbsoluteFill, Easing } = Remotion;
   const { useMemo } = React;
+  const { Arrow, Rect, Circle } = RemotionShapes;
 - Plain JavaScript/JSX only.
 - NO imports. Do not write "import React from 'react'".
+- Do not import @remotion/shapes; use the global RemotionShapes object shown above.
 - NO TypeScript annotations. Do not write React.FC, React.CSSProperties, : number, : boolean, or interfaces.
 - JSX text safety: never put raw < or > in JSX text; for comparisons use {"<"}, {">"}, {"<="}, {">="}, or text like "less than".
 
@@ -644,6 +646,9 @@ Use these primitives:
 - Avoid low-contrast disabled placeholder text panels. If a formula or explanation is not active, keep the latest useful message readable or remove/combine the panel.
 - Routine DP writes are intermediate state, not final confirmation. Do not color every computed DP cell green. Use neutral fill for written cells, amber for dependency comparison cells, blue for the current write/focus cell, and green only for the final answer badge or one final answer cell.
 - Persistent core data opacity must be constant 1. Animate only highlight opacity/glow/outline/scale overlays. Never compute cell opacity from beat.start, currentBeat.start, or a per-beat targetFrame.
+- Semantic relation marks may use RemotionShapes Arrow/Rect/Circle only when they clarify dependency flow, interval bounds, lookup direction, or traversal direction.
+- Every Arrow must explicitly set headLength, headWidth, and shaftWidth; keep length >= 24 and never rely on Arrow defaults.
+- Shapes are inner-layer semantic marks only. Keep them inside clipped regions and away from text.
 
 All interpolate outputs MUST include extrapolateLeft:'clamp' and extrapolateRight:'clamp'.
 Every spring() call MUST include fps: 30.
@@ -655,6 +660,11 @@ Layout-critical spring MUST use overshootClamping:true.
 - Do not maintain multiple conflicting current variables.
 - The visual highlight and text must agree in every frame.
 - For bounded-interval / pointer-bound visuals, do not display a stale mid/probe as current after a boundary shrink. If trace.data.mid/probe is null or stale, hide/dim the probe label until the next recomputed-probe state. The pointer summary, highlighted cell, and invariant must all refer to the same left/right/mid/probe values.
+- TRACE_JSON is authoritative. Numeric arrays, pointers, ranges, map entries, and result values must match trace states when provided.
+- Never display NaN, undefined, Infinity, null as a user-facing value, or any out-of-range index such as nums[n], dp[n], arr[-1].
+- Before rendering any formula using nums[i], dp[i], map key, low/mid/high, ensure that index/key exists in the displayed data. If uncertain, omit that formula and show the invariant/result text instead.
+- If a beat is a final/result/return state, do not show active recurrence formulas or next-index computation; show only the validated result from TRACE_JSON.
+- Do not put semantic text within 32px of the progress row or canvas bottom. Final result belongs in a side/result panel or centered inside an existing safe region.
 
 ════════ PROBLEM-AWARE STORY REQUIREMENTS — GENERIC ════════
 Derive the story from the actual problem statement, examples, Status TSX, and schema.
@@ -793,7 +803,7 @@ export function parseAnimationOutput(raw: string): string | null {
   const m = raw.match(/<ANIMATION_TSX>([\s\S]*?)<\/ANIMATION_TSX>/);
   const source = m?.[1] ?? extractFallbackTsx(raw);
   if (!source) return null;
-  const code = sanitizeGeneratedTsx(source);
+  const code = ensureSafeStateIndexing(ensureSafeArrowProps(sanitizeGeneratedTsx(source)));
   if (!code || !looksLikeAnimationCode(code)) return null;
   return code;
 }
@@ -1121,6 +1131,26 @@ function sanitizeGeneratedTsx(source: string): string {
   code = code.replace(/\s*(transition|animation)\s*:\s*(['"`])[^'"`]*\2\s*,?/gim, '');
   code = code.replace(/^\s*@keyframes\b[\s\S]*?^\s*}\s*$/gim, '');
   return code.trim();
+}
+
+function ensureSafeArrowProps(source: string): string {
+  return source.replace(/<Arrow\b([^>]*?)(\/?)>/g, (_match, rawAttrs: string, close: string) => {
+    let attrs = rawAttrs
+      .replace(/\s+headLength=(?:\{[^}]*\}|"[^"]*"|'[^']*')/g, '')
+      .replace(/\s+headWidth=(?:\{[^}]*\}|"[^"]*"|'[^']*')/g, '')
+      .replace(/\s+shaftWidth=(?:\{[^}]*\}|"[^"]*"|'[^']*')/g, '')
+      .replace(/\s+length=\{([0-9]+)\}/g, (_m, n: string) => ` length={${Math.max(24, Number(n))}}`)
+      .replace(/\s+length="([0-9]+)"/g, (_m, n: string) => ` length={${Math.max(24, Number(n))}}`)
+      .replace(/\s+length='([0-9]+)'/g, (_m, n: string) => ` length={${Math.max(24, Number(n))}}`);
+    if (!/\s+length=/.test(attrs)) attrs += ' length={24}';
+    return `<Arrow${attrs} headLength={8} headWidth={8} shaftWidth={3}${close}>`;
+  });
+}
+
+function ensureSafeStateIndexing(source: string): string {
+  return source
+    .replace(/return\s+STATES\s*\[\s*i\s*\]\s*;/g, 'return STATES[Math.min(i, STATES.length - 1)];')
+    .replace(/return\s+states\s*\[\s*i\s*\]\s*;/g, 'return states[Math.min(i, states.length - 1)];');
 }
 
 function looksLikeAnimationCode(code: string): boolean {
