@@ -186,19 +186,32 @@ export async function runCpp(
     const compilerErr = (j.compiler_error ?? '').trim();
     const programOut = j.program_output ?? '';
     const programErr = j.program_error ?? '';
-    const exitCode = j.status ? parseInt(j.status, 10) : 0;
+    const programMsg = (j.program_message ?? '').trim();
+    const signalMsg = (j.signal ?? '').trim();
+    const runtimeMeta = [
+      signalMsg ? `Signal: ${signalMsg}` : '',
+      programMsg,
+    ].filter(Boolean).join('\n');
+    const parsedStatus = j.status ? parseInt(j.status, 10) : 0;
+    const exitCode = compilerErr ? 1 : signalMsg ? 1 : isNaN(parsedStatus) ? 0 : parsedStatus;
+    const stderr = [
+      compilerErr ? '=== 编译错误 ===\n' + compilerErr : '',
+      programErr,
+      runtimeMeta,
+    ].filter(Boolean).join('\n');
 
     if (compilerErr) {
       opts?.onStderr?.('=== 编译错误 ===\n' + compilerErr + '\n');
     }
     if (programOut) opts?.onStdout?.(programOut);
     if (programErr) opts?.onStderr?.(programErr);
+    if (runtimeMeta) opts?.onStderr?.(runtimeMeta + '\n');
 
     return {
       stdout: programOut,
-      stderr: (compilerErr ? '=== 编译错误 ===\n' + compilerErr + '\n' : '') + programErr,
+      stderr,
       durationMs: performance.now() - t0,
-      exitCode: compilerErr ? 1 : isNaN(exitCode) ? 0 : exitCode,
+      exitCode,
     };
   } catch (e: any) {
     clearTimeout(timer);

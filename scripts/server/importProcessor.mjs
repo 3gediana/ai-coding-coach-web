@@ -10,11 +10,11 @@
  *
  * CLI 用法：
  *   node scripts/server/importProcessor.mjs <raw.json>
- *   node scripts/server/importProcessor.mjs --watch logs/imports
+ *   node scripts/server/importProcessor.mjs --watch dev-workspace/artifacts/logs/imports
  *
  * 编程接口（被 vite plugin 调用）：
  *   import { processImportFile } from './importProcessor.mjs'
- *   const out = await processImportFile('logs/imports/xxx.raw.json')
+ *   const out = await processImportFile('dev-workspace/artifacts/logs/imports/xxx.raw.json')
  *   // out: { processedPath, payload }
  */
 import { readFile, writeFile, readdir } from 'node:fs/promises';
@@ -209,7 +209,7 @@ if (isCLI) {
   const args = process.argv.slice(2);
 
   if (args[0] === '--watch') {
-    const dir = pathResolve(args[1] || 'logs/imports');
+    const dir = pathResolve(args[1] || 'dev-workspace/artifacts/logs/imports');
     log(`监听目录 ${dir}`);
     const seen = new Set();
     // 启动时扫一遍未处理的

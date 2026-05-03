@@ -98,16 +98,28 @@ export function compileLLMComponent(
   if (!transformed) {
     return { Component: null, error: '编译产物为空' };
   }
+  const moduleObj: { exports: { default?: unknown } } = { exports: {} };
+  const requireShim = (name: string): unknown => {
+    if (name === 'react') return globals.React ?? React;
+    if (name === 'remotion' && globals.Remotion) return globals.Remotion;
+    throw new Error(`不支持的 import: ${name}`);
+  };
   // 全局注入：让 LLM 代码可以写 const { useCurrentFrame } = Remotion 拿到我们注入的全局
-  const globalNames = ['module', 'exports', 'React', ...Object.keys(globals).filter((k) => k !== 'React')];
+  const globalNames = [
+    'module',
+    'exports',
+    'require',
+    'React',
+    ...Object.keys(globals).filter((k) => k !== 'React' && k !== 'require'),
+  ];
   const globalValues = [
     /* module */ { exports: {} },
     /* exports */ {},
+    /* require */ requireShim,
     /* React */ globals.React ?? React,
-    ...globalNames.slice(3).map((k) => globals[k]),
+    ...globalNames.slice(4).map((k) => globals[k]),
   ];
   // 修正：let module + exports 共享
-  const moduleObj: { exports: { default?: unknown } } = { exports: {} };
   globalValues[0] = moduleObj;
   globalValues[1] = moduleObj.exports;
   try {

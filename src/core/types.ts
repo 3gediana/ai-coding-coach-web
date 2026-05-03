@@ -440,7 +440,7 @@ export interface AIConfig {
   /**
    * Ollama 上下文窗口大小（num_ctx，仅 provider=ollama 时生效）
    * - 越大幻觉越少（占比低），但 KV cache 越大可能 CPU offload 导致掉速
-   * - 不填默认 20480（实测 GPU 安全上限，参考 bench-results/longctx-ceiling）
+   * - 不填默认 20480（实测 GPU 安全上限，参考 dev-workspace/artifacts/bench-results/longctx-ceiling）
    * - 显存小的机器建议 8192–16384；大显存（≥12GB）可拉到 32768
    */
   numCtx?: number;

@@ -8,26 +8,20 @@ test-output*.log
 .env.local
 
 # 实验产物 / 临时数据
-logs/
-screenshots-*/
-bench-results/
+dev-workspace/artifacts/
 tsconfig.tsbuildinfo
-scripts/_tmp-*.mjs
-scripts/_tmp-*.mts
+dev-workspace/scripts/_tmp-*.mjs
+dev-workspace/scripts/_tmp-*.mts
 _commit_msg.tmp
-.tmp/
+screenshots/screenshots-*/
 # Playwright 失败现场（截图 / trace.zip / video）—— 跑完测试自动生成，不入库
-test-results/
-playwright-report/
+dev-workspace/playwright-report/
 # 工具状态目录（oh-my-claude-code 等本地工具）
 .omc/
 # 测试文件 / 测试配置（按个人偏好不入库；本地保留可跑）
-tests/*
-!tests/e2e/
-tests/e2e/*
-!tests/e2e/no-ollama.spec.ts
+dev-workspace/tests/e2e/*
+!dev-workspace/tests/e2e/no-ollama.spec.ts
 playwright.config.ts
 # 文档 / codebase 笔记（本地保留，不入库）
 docs/
 cb/
-dev-workspace/artifacts/
