@@ -11,6 +11,17 @@
  */
 import type { AIConfig } from '../types';
 
+/**
+ * 鉴别 AbortError：用户主动 abort 或上层 signal.aborted 引起的错误。
+ * 浏览器把 fetch/AbortController 的中断包成 DOMException(name='AbortError')。
+ * 重试逻辑命中此判断时立刻抛出，不再消耗 attempts、不再做退避。
+ */
+function isAbortError(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false;
+  const name = (e as { name?: unknown }).name;
+  return name === 'AbortError';
+}
+
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
@@ -193,9 +204,17 @@ export class AIClient {
     const attempts = Math.max(1, req.jsonAttempts ?? 3);
     let lastErr: unknown;
     for (let i = 0; i < attempts; i++) {
+      // 用户已 abort：直接 throw，不再消耗 attempts。否则 abort 后还要等 1-2s 用户才看到"已停止"
+      if (req.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
       const r = await runOnce();
       if (r.ok) return r.value;
       lastErr = r.err;
+      // 失败本身就是 abort 引起的 → 立刻向上抛，避免又退避又重试
+      if (isAbortError(r.err) || req.signal?.aborted) {
+        throw r.err;
+      }
       if (typeof console !== 'undefined') {
         console.debug(
           `[AIClient.chatJsonStream] attempt ${i + 1}/${attempts} failed: ${(r.err as any)?.message?.slice?.(0, 80)}; ${i < attempts - 1 ? 'retrying' : 'giving up'}`,
@@ -230,9 +249,15 @@ export class AIClient {
     const attempts = Math.max(1, req.jsonAttempts ?? 3);
     let lastErr: unknown;
     for (let i = 0; i < attempts; i++) {
+      if (req.signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
       const r = await runOnce();
       if (r.ok) return r.value;
       lastErr = r.err;
+      if (isAbortError(r.err) || req.signal?.aborted) {
+        throw r.err;
+      }
       if (typeof console !== 'undefined') {
         console.debug(
           `[AIClient.chatJson] attempt ${i + 1}/${attempts} failed: ${(r.err as any)?.message?.slice?.(0, 80)}; ${i < attempts - 1 ? 'retrying' : 'giving up'}`,

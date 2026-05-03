@@ -9,7 +9,7 @@
  *   - 顶部右侧"清空"按钮
  *   - 折叠时只显示输入框，展开时显示历史 + 输入
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Loader2,
   Trash2,
@@ -57,54 +57,57 @@ export function QAPanel() {
     (f) => f.id === activeFileIdByScope[scope],
   );
 
-  /** 把 markdown 里 ```cpp ```python ```c 等 fence lang 映射到我们 FileLang */
-  const mapFenceLangToFileLang = (lang: string | undefined): FileLang | null => {
-    if (!lang) return null;
-    const l = lang.toLowerCase();
-    if (l === 'cpp' || l === 'c++' || l === 'cxx') return 'cpp';
-    if (l === 'c') return 'c';
-    if (l === 'py' || l === 'python' || l === 'python3') return 'python';
-    if (l === 'md' || l === 'markdown') return 'markdown';
-    if (l === 'txt' || l === 'plaintext' || l === 'text') return 'plaintext';
-    return null;
-  };
-
-  /** 代码块按钮：复制 / 替换当前 / 新建文件 */
-  const codeActions: CodeBlockActions = {
-    onCopy: async (code) => {
-      try {
-        await navigator.clipboard.writeText(code);
-        toast.success('已复制');
-      } catch {
-        toast.error('复制失败');
-      }
-    },
-    // 仅在有 active file 且语言兼容时才提供"替换当前"
-    onApplyToCurrent: activeFile
-      ? (code, lang) => {
-          const inferred = mapFenceLangToFileLang(lang);
-          // 语言不一致时弹确认；一致直接替换
-          if (
-            inferred &&
-            inferred !== activeFile.language &&
-            !confirm(`AI 代码语言是 ${inferred}，当前文件是 ${activeFile.language}，仍要替换吗？`)
-          ) {
-            return;
-          }
-          updateFileContent(activeFile.id, code);
-          toast.success(`已替换到 ${activeFile.name}`);
+  /**
+   * 代码块按钮：复制 / 替换当前 / 新建文件。
+   * 用 useMemo 锁定引用：codeActions 只随 activeFile.id / activeFile.language / scope 变化，
+   * 否则流式中每个 token chunk 都会让 MathMarkdown 的 memo 失效，导致历史所有消息的 markdown 重 parse。
+   */
+  const codeActions = useMemo<CodeBlockActions>(() => {
+    const mapFenceLangToFileLang = (lang: string | undefined): FileLang | null => {
+      if (!lang) return null;
+      const l = lang.toLowerCase();
+      if (l === 'cpp' || l === 'c++' || l === 'cxx') return 'cpp';
+      if (l === 'c') return 'c';
+      if (l === 'py' || l === 'python' || l === 'python3') return 'python';
+      if (l === 'md' || l === 'markdown') return 'markdown';
+      if (l === 'txt' || l === 'plaintext' || l === 'text') return 'plaintext';
+      return null;
+    };
+    return {
+      onCopy: async (code) => {
+        try {
+          await navigator.clipboard.writeText(code);
+          toast.success('已复制');
+        } catch {
+          toast.error('复制失败');
         }
-      : undefined,
-    // 在草稿 scope 也允许新建（createFile 已经支持 DRAFT_SCOPE）
-    onCreateNew: (code, lang) => {
-      const inferred = mapFenceLangToFileLang(lang) ?? activeFile?.language ?? 'cpp';
-      void createFile({ scope, content: code, language: inferred, activate: true }).then(
-        (file) => {
-          if (file) toast.success(`已建文件 ${file.name}`);
-        },
-      );
-    },
-  };
+      },
+      // 仅在有 active file 时才提供"替换当前"；语言不一致时再 confirm
+      onApplyToCurrent: activeFile
+        ? (code, lang) => {
+            const inferred = mapFenceLangToFileLang(lang);
+            if (
+              inferred &&
+              inferred !== activeFile.language &&
+              !confirm(`AI 代码语言是 ${inferred}，当前文件是 ${activeFile.language}，仍要替换吗？`)
+            ) {
+              return;
+            }
+            updateFileContent(activeFile.id, code);
+            toast.success(`已替换到 ${activeFile.name}`);
+          }
+        : undefined,
+      // 在草稿 scope 也允许新建（createFile 已经支持 DRAFT_SCOPE）
+      onCreateNew: (code, lang) => {
+        const inferred = mapFenceLangToFileLang(lang) ?? activeFile?.language ?? 'cpp';
+        void createFile({ scope, content: code, language: inferred, activate: true }).then(
+          (file) => {
+            if (file) toast.success(`已建文件 ${file.name}`);
+          },
+        );
+      },
+    };
+  }, [activeFile?.id, activeFile?.language, activeFile?.name, scope, createFile, updateFileContent]);
 
   const [input, setInput] = useState('');
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -200,7 +203,7 @@ export function QAPanel() {
           <div className="flex items-center gap-3">
             {isPending && (
               <button
-                onClick={() => abortCoach()}
+                onClick={() => abortCoach(scope)}
                 className="hover:text-bad transition flex items-center gap-1"
                 title="停止当前流式生成"
               >

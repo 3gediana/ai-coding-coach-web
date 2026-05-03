@@ -505,13 +505,13 @@ const abortersById = new Map<string, AbortController>();
 const MAX_CONCURRENT = 3;
 
 /**
- * 当前正在跑的 askCoach 流式 AbortController（ref 形式避开 TS narrow 误报为 never）。
- * - askCoach 启动时 new 一个赋给 .current，把 signal 传给 coach.askCoach
- * - 用户点 UI 上的"停止"按钮 → abortCoach action → .current?.abort()
- * - askCoach 的 finally 里清回 null，避免悬挂引用
- * 同一时刻只允许一个 askCoach 在跑（qaPendingProblemId 已经做了门禁），所以单 ref 足够。
+ * 每个 scope 一个 AbortController：跨 scope 并发流式（用户在 A 题问完没等回答就切到 B 题再问）
+ * 时也能各自独立 abort。
+ * - askCoach(scope) 启动时 new 一个 ctrl，写到 map[scope]，把 signal 传给 coach.askCoach
+ * - abortCoach(scope?) 拿 map[scope] 调 abort；不传 scope 时 abort 所有（兜底）
+ * - askCoach finally 里仅当 map[scope] === ctrl 时才删，避免误删后续新建的 ctrl
  */
-const coachAbortRef: { current: AbortController | null } = { current: null };
+const coachAbortByScope = new Map<string, AbortController>();
 
 /** algoViz 实时检测的 debounce timer：每个 problemId 一个 */
 const algoVizDetectTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -893,8 +893,8 @@ interface State {
   /** 学生在做题时问问题：流式回答到 qaByProblem[scope] */
   askQuestion: (question: string) => Promise<void>;
   askCoach: (input: CoachAskInput) => Promise<void>;
-  /** 取消当前流式中的 askCoach（如果在跑）；不在跑就 noop */
-  abortCoach: () => void;
+  /** 取消流式中的 askCoach；不传 scope 就 abort 所有正在跑的（兜底） */
+  abortCoach: (scope?: string) => void;
   /** 重答：复用上一条 user message 重新跑一遍（删掉旧 assistant 后追加新的） */
   retryLastCoach: (scope: string) => Promise<void>;
   /** 清空当前 scope 的提问历史 */
@@ -3420,10 +3420,14 @@ export const useStore = create<State>((set, get) => {
 
     askQuestion: async (question) => get().askCoach({ text: question, source: 'manual' }),
 
-    abortCoach: () => {
-      // 直接 try abort；非 null 才生效。
-      // ref 在 askCoach 的 finally 里会被清回 null，这里不动。
-      coachAbortRef.current?.abort();
+    abortCoach: (scope) => {
+      // 不传 scope：abort 所有正在跑的（极端兜底，正常场景不该走这）
+      // 传 scope：仅 abort 该 scope 上的流式
+      if (!scope) {
+        for (const c of coachAbortByScope.values()) c.abort();
+        return;
+      }
+      coachAbortByScope.get(scope)?.abort();
     },
 
     retryLastCoach: async (scope) => {
@@ -3554,10 +3558,12 @@ export const useStore = create<State>((set, get) => {
         .slice(0, -2)
         .map((m) => ({ role: m.role, content: m.content }));
 
-      // 流式可中断：每次 askCoach 启动时新建一个 AbortController；
-      // 用户在 UI 点"停止"会调 abortCoach() → ctrl.abort() → fetch 中断 → catch 走 abort 分支。
+      // 流式可中断：每个 scope 维护一个 AbortController。
+      // 同 scope 重复调（理论上 UI 已通过 qaPendingProblemId 门禁拦住，但保险起见）→ 先 abort 旧的再新建。
+      // 跨 scope 并发：互不干扰，各自能停。
+      coachAbortByScope.get(scope)?.abort();
       const ctrl = new AbortController();
-      coachAbortRef.current = ctrl;
+      coachAbortByScope.set(scope, ctrl);
 
       try {
         if (
@@ -3653,6 +3659,7 @@ export const useStore = create<State>((set, get) => {
               astFeatures: astFeatures2,
             },
             {
+              signal: ctrl.signal,
               onChunk: (_delta, accumulated) => {
                 const tokens = accumulated.length;
                 const phase =
@@ -3799,8 +3806,8 @@ export const useStore = create<State>((set, get) => {
         });
         if (!isAbort) toast.error('AI 提问失败', { description: msg });
       } finally {
-        // 清 ref，避免悬挂引用让下次的 abortCoach 误中已经结束的 controller
-        if (coachAbortRef.current === ctrl) coachAbortRef.current = null;
+        // 仅当 map[scope] 仍是本次 ctrl 时才清；避免误删之后新建的 ctrl
+        if (coachAbortByScope.get(scope) === ctrl) coachAbortByScope.delete(scope);
       }
     },
 
