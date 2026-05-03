@@ -279,6 +279,8 @@ export class BrowserStorage implements CoachStorage {
       tx.objectStore('files').clear(),
     ]);
     await tx.done;
+    safeSetItem(LS_DELETED_PROBLEMS, '[]');
+    mirroredProblemIds.clear();
   }
 }
 

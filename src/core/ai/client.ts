@@ -94,7 +94,12 @@ export class AIClient {
     const content = this.isOllamaNative()
       ? (json?.message?.content ?? '')
       : (json?.choices?.[0]?.message?.content ?? json?.choices?.[0]?.text ?? '');
-    return typeof content === 'string' ? content : JSON.stringify(content);
+    const reasoningContent = this.isOllamaNative()
+      ? ''
+      : (json?.choices?.[0]?.message?.reasoning_content ?? '');
+    const value = typeof content === 'string' ? content : JSON.stringify(content);
+    if (value.trim()) return value;
+    return typeof reasoningContent === 'string' ? reasoningContent : '';
   }
 
   /** 流式 chat，AsyncIterable + onChunk 回调 */

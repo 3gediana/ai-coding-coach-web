@@ -304,8 +304,11 @@ export function SettingsModal() {
         maxTokens: 10,
         timeoutMs: 30_000,
         maxRetries: 0,
+        disableThinking: true,
       });
-      setTestResult({ ok: true, msg: `成功：${text.trim().slice(0, 60) || '(空响应)'}` });
+      const trimmed = text.trim();
+      if (!trimmed) throw new Error('模型连接成功但返回空内容，请检查模型名或关闭思考模式');
+      setTestResult({ ok: true, msg: `成功：${trimmed.slice(0, 60)}` });
       toast.success('主模型连接测试通过', { description: '配置已保存，可以开始用了' });
       // 留 600ms 让用户看到绿条，再关闭
       setTimeout(() => setOpen(false), 600);

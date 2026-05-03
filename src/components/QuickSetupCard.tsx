@@ -124,7 +124,7 @@ export function QuickSetupCard() {
     };
     try {
       const client = new AIClient(draft);
-      await client.chat({
+      const text = await client.chat({
         messages: [
           { role: 'system', content: 'reply with single word: OK' },
           { role: 'user', content: 'ping' },
@@ -132,7 +132,9 @@ export function QuickSetupCard() {
         maxTokens: 10,
         timeoutMs: 30_000,
         maxRetries: 0,
+        disableThinking: true,
       });
+      if (!text.trim()) throw new Error('模型连接成功但返回空内容，请检查模型名或关闭思考模式');
       setCfg(draft);
       toast.success('AI 配置已保存', { description: '可以开始做题了' });
     } catch (e: any) {

@@ -50,6 +50,13 @@ export interface RunResult {
   exitCode: number;
 }
 
+interface PythonRunOptions {
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
+  timeoutMs?: number;
+  onProgress?: (stage: string) => void;
+}
+
 /**
  * 执行 Python 代码，返回 stdout/stderr。
  * stdin 如果给了，就预先 push 到 sys.stdin。
@@ -57,12 +64,7 @@ export interface RunResult {
 export async function runPython(
   code: string,
   stdin: string,
-  opts?: {
-    onStdout?: (chunk: string) => void;
-    onStderr?: (chunk: string) => void;
-    timeoutMs?: number;
-    onProgress?: (stage: string) => void;
-  },
+  opts?: PythonRunOptions,
 ): Promise<RunResult> {
   const previous = pythonRunQueue;
   let release!: () => void;
@@ -80,69 +82,141 @@ export async function runPython(
 async function runPythonExclusive(
   code: string,
   stdin: string,
-  opts?: {
-    onStdout?: (chunk: string) => void;
-    onStderr?: (chunk: string) => void;
-    timeoutMs?: number;
-    onProgress?: (stage: string) => void;
-  },
+  opts?: PythonRunOptions,
 ): Promise<RunResult> {
   const t0 = performance.now();
-  if (/\bwhile\s+True\s*:\s*(?:\r?\n\s*(?:pass|continue)\s*)+$/m.test(code)) {
-    const msg = 'Python 执行被拦截：检测到明显不会让出控制权的 while True 死循环';
+  if (typeof Worker === 'undefined' || typeof Blob === 'undefined' || typeof URL === 'undefined') {
+    const msg = '当前环境不支持 Web Worker，无法安全运行 Python';
     opts?.onStderr?.(msg + '\n');
     return { stdout: '', stderr: msg, durationMs: performance.now() - t0, exitCode: 1 };
   }
-  const py = await loadPython(opts?.onProgress);
-
-  // 配置 stdin/stdout/stderr 钩子
   let outBuf = '';
   let errBuf = '';
-  py.setStdout({
-    batched: (s: string) => {
-      outBuf += s + '\n';
-      opts?.onStdout?.(s + '\n');
-    },
+  const timeoutMs = opts?.timeoutMs ?? 10_000;
+  const worker = createPythonWorker();
+  let settled = false;
+  return await new Promise<RunResult>((resolve) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (result: RunResult) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      worker.terminate();
+      resolve(result);
+    };
+    const armTimeout = (ms: number, text: string) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        errBuf += text + '\n';
+        opts?.onStderr?.(text + '\n');
+        finish({ stdout: outBuf, stderr: errBuf, durationMs: performance.now() - t0, exitCode: 1 });
+      }, ms);
+    };
+    armTimeout(Math.max(timeoutMs, 60_000), 'Python 运行时加载超时');
+    worker.onmessage = (event: MessageEvent) => {
+      const msg = event.data as
+        | { type: 'progress'; stage: string }
+        | { type: 'stdout'; chunk: string }
+        | { type: 'stderr'; chunk: string }
+        | { type: 'done'; stdout: string; stderr: string; exitCode: number }
+        | { type: 'error'; message: string };
+      if (msg.type === 'progress') {
+        opts?.onProgress?.(msg.stage);
+        if (msg.stage === 'ready') armTimeout(timeoutMs, `Python 执行超时（${timeoutMs}ms）`);
+        return;
+      }
+      if (msg.type === 'stdout') {
+        outBuf += msg.chunk;
+        opts?.onStdout?.(msg.chunk);
+        return;
+      }
+      if (msg.type === 'stderr') {
+        errBuf += msg.chunk;
+        opts?.onStderr?.(msg.chunk);
+        return;
+      }
+      if (msg.type === 'done') {
+        finish({
+          stdout: msg.stdout,
+          stderr: msg.stderr,
+          durationMs: performance.now() - t0,
+          exitCode: msg.exitCode,
+        });
+        return;
+      }
+      errBuf += msg.message + '\n';
+      opts?.onStderr?.(msg.message + '\n');
+      finish({ stdout: outBuf, stderr: errBuf, durationMs: performance.now() - t0, exitCode: 1 });
+    };
+    worker.onerror = (event) => {
+      const msg = event.message || 'Python Worker 执行失败';
+      errBuf += msg + '\n';
+      opts?.onStderr?.(msg + '\n');
+      finish({ stdout: outBuf, stderr: errBuf, durationMs: performance.now() - t0, exitCode: 1 });
+    };
+    worker.postMessage({ code, stdin, indexURL: PYODIDE_CDN });
   });
-  py.setStderr({
-    batched: (s: string) => {
-      errBuf += s + '\n';
-      opts?.onStderr?.(s + '\n');
-    },
-  });
+}
 
-  // stdin：把整段输入按行喂
-  let stdinIdx = 0;
-  const stdinLines = stdin.split('\n');
-  py.setStdin({
-    stdin: () => {
-      if (stdinIdx >= stdinLines.length) return null; // EOF
-      return stdinLines[stdinIdx++];
-    },
-  });
-
-  let exitCode = 0;
+function createPythonWorker(): Worker {
+  const source = `
+let pyodidePromise = null;
+self.onmessage = async (event) => {
+  const { code, stdin, indexURL } = event.data;
+  let outBuf = '';
+  let errBuf = '';
   try {
-    const timeoutMs = opts?.timeoutMs ?? 10_000;
-    await Promise.race([
-      py.runPythonAsync(code),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error(`Python 执行超时（${timeoutMs}ms）`)), timeoutMs),
-      ),
-    ]);
-  } catch (e: any) {
-    exitCode = 1;
-    const msg = String(e?.message ?? e);
-    errBuf += msg + '\n';
-    opts?.onStderr?.(msg + '\n');
+    self.postMessage({ type: 'progress', stage: 'loading-script' });
+    if (!self.loadPyodide) {
+      self.importScripts(indexURL + 'pyodide.js');
+    }
+    self.postMessage({ type: 'progress', stage: 'loading-runtime' });
+    if (!pyodidePromise) {
+      pyodidePromise = self.loadPyodide({ indexURL });
+    }
+    const py = await pyodidePromise;
+    self.postMessage({ type: 'progress', stage: 'ready' });
+    py.setStdout({
+      batched: (s) => {
+        const chunk = s + '\\n';
+        outBuf += chunk;
+        self.postMessage({ type: 'stdout', chunk });
+      },
+    });
+    py.setStderr({
+      batched: (s) => {
+        const chunk = s + '\\n';
+        errBuf += chunk;
+        self.postMessage({ type: 'stderr', chunk });
+      },
+    });
+    let stdinIdx = 0;
+    const stdinLines = String(stdin || '').split('\\n');
+    py.setStdin({
+      stdin: () => {
+        if (stdinIdx >= stdinLines.length) return null;
+        return stdinLines[stdinIdx++];
+      },
+    });
+    let exitCode = 0;
+    try {
+      await py.runPythonAsync(code);
+    } catch (e) {
+      exitCode = 1;
+      const text = String((e && e.message) || e);
+      errBuf += text + '\\n';
+      self.postMessage({ type: 'stderr', chunk: text + '\\n' });
+    }
+    self.postMessage({ type: 'done', stdout: outBuf, stderr: errBuf, exitCode });
+  } catch (e) {
+    self.postMessage({ type: 'error', message: String((e && e.message) || e) });
   }
-
-  return {
-    stdout: outBuf,
-    stderr: errBuf,
-    durationMs: performance.now() - t0,
-    exitCode,
-  };
+};
+`;
+  const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+  const worker = new Worker(url);
+  URL.revokeObjectURL(url);
+  return worker;
 }
 
 /**
