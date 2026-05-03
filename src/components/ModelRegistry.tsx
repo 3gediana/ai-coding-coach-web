@@ -193,7 +193,7 @@ export function ModelRegistrySection({
                     ...editing,
                     provider: p.id,
                     baseUrl: p.baseUrl,
-                    model: p.defaultModel,
+                    model: p.id === 'ollama' ? '' : p.defaultModel,
                     label: editing.label || p.label,
                   })
                 }
@@ -283,15 +283,17 @@ function RegistryModelSelector({
   const [ollamaModels, setOllamaModels] = useState<Array<{ name: string; size: number }> | null>(null);
   const [probing, setProbing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
 
-  const probeOllama = useCallback(async () => {
+  const probeOllama = useCallback(async (autoPick = false) => {
     if (editing.provider !== 'ollama' || !editing.baseUrl.trim()) return;
     setProbing(true);
     setError(null);
     try {
       const models = await fetchOllamaModels(editing.baseUrl);
       setOllamaModels(models);
-      if (!editing.id && models[0]?.name && !models.some((m) => m.name === editing.model)) {
+      setLastLoadedAt(Date.now());
+      if (autoPick && !editing.id && models[0]?.name && !models.some((m) => m.name === editing.model)) {
         setEditing({ ...editing, model: models[0].name });
       }
     } catch (e: any) {
@@ -306,8 +308,11 @@ function RegistryModelSelector({
     setShowCustom(false);
     setOllamaModels(null);
     setError(null);
+    setLastLoadedAt(null);
     if (editing.provider === 'ollama' && editing.baseUrl.trim()) {
-      void probeOllama();
+      void probeOllama(true);
+      const timer = window.setInterval(() => void probeOllama(false), 10_000);
+      return () => window.clearInterval(timer);
     }
   }, [editing.provider, editing.baseUrl]);
 
@@ -320,6 +325,7 @@ function RegistryModelSelector({
             <select
               className="input font-mono text-xs flex-1"
               value={editing.model}
+              onFocus={() => void probeOllama(false)}
               onChange={(e) => setEditing({ ...editing, model: e.target.value })}
             >
               {editing.model && !ollamaModels!.some((m) => m.name === editing.model) && (
@@ -331,29 +337,44 @@ function RegistryModelSelector({
                 </option>
               ))}
             </select>
+          ) : probing && !error ? (
+            <select className="input font-mono text-xs flex-1" value="" disabled>
+              <option value="">正在实时读取本机 ollama list...</option>
+            </select>
           ) : (
             <input
               className="input font-mono text-xs flex-1"
-              placeholder="点击右侧探测本机 ollama list"
+              placeholder="未读取到本机 ollama list，可临时手填"
               value={editing.model}
               onChange={(e) => setEditing({ ...editing, model: e.target.value })}
             />
           )}
           <button
             type="button"
-            onClick={probeOllama}
+            onClick={() => void probeOllama(false)}
             disabled={probing || !editing.baseUrl.trim()}
             className="btn text-xs shrink-0"
             title="读取本机 Ollama 已安装模型列表"
           >
             {probing ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
-            探测
+            刷新
           </button>
         </div>
+        {lastLoadedAt && (
+          <div className="text-[10px] text-ok">
+            已实时读取本机 ollama list：{ollamaModels?.length ?? 0} 个模型 · {new Date(lastLoadedAt).toLocaleTimeString()}
+          </div>
+        )}
         {error && (
           <div className="rounded border border-warn/40 bg-warn/10 px-2 py-1 text-[10px] text-warn flex items-start gap-1.5">
             <AlertTriangle size={10} className="shrink-0 mt-0.5" />
             <span>未读到本机 Ollama 模型：{error}</span>
+          </div>
+        )}
+        {ollamaModels !== null && ollamaModels.length === 0 && (
+          <div className="rounded border border-warn/40 bg-warn/10 px-2 py-1 text-[10px] text-warn flex items-start gap-1.5">
+            <AlertTriangle size={10} className="shrink-0 mt-0.5" />
+            <span>已连上 Ollama，但 `ollama list` 为空。请先 pull 一个模型。</span>
           </div>
         )}
       </div>

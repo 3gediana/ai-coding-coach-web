@@ -4,7 +4,7 @@ import { useStore } from '../lib/store';
 import { PRESETS, DEFAULT_AI_CONFIG, RECOMMENDED_OLLAMA_MODELS } from '../lib/presets';
 import type { AIConfig, AIProvider } from '../core/types';
 import { cn } from '../lib/cn';
-import { isLocalOllamaUrl } from '../lib/ollama';
+import { fetchOllamaModels, formatModelSize, isLocalOllamaUrl } from '../lib/ollama';
 import {
   X,
   Eye,
@@ -1548,30 +1548,22 @@ function OllamaModelPicker({
   value: string;
   onChange: (model: string) => void;
 }) {
-  const [models, setModels] = useState<string[] | null>(null);
+  const [models, setModels] = useState<Array<{ name: string; size: number }> | null>(null);
   const [probing, setProbing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
 
-  const probe = useCallback(async () => {
+  const probe = useCallback(async (autoPick = false) => {
     if (!baseUrl?.trim()) return;
     setProbing(true);
     setError(null);
     try {
-      const target = baseUrl.replace(/\/+$/, '') + '/api/tags';
-      const url = import.meta.env.DEV
-        ? `/ai-proxy/${encodeURIComponent(target)}`
-        : target;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 4000);
-      const r = await fetch(url, { signal: ctrl.signal });
-      clearTimeout(timer);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
-      if (!Array.isArray(data?.models)) throw new Error('响应格式异常');
-      const names: string[] = data.models
-        .map((m: any) => m?.name)
-        .filter((n: any): n is string => typeof n === 'string');
+      const names = await fetchOllamaModels(baseUrl);
       setModels(names);
+      setLastLoadedAt(Date.now());
+      if (autoPick && names[0]?.name && !names.some((m) => m.name === value)) {
+        onChange(names[0].name);
+      }
     } catch (e: any) {
       const msg =
         e?.name === 'AbortError'
@@ -1582,12 +1574,17 @@ function OllamaModelPicker({
     } finally {
       setProbing(false);
     }
-  }, [baseUrl]);
+  }, [baseUrl, onChange, value]);
 
-  // baseUrl 变化时清空旧探测结果（避免误导）
   useEffect(() => {
     setModels(null);
     setError(null);
+    setLastLoadedAt(null);
+    if (baseUrl?.trim()) {
+      void probe(true);
+      const timer = window.setInterval(() => void probe(false), 10_000);
+      return () => window.clearInterval(timer);
+    }
   }, [baseUrl]);
 
   const hasOptions = models !== null && models.length > 0;
@@ -1599,40 +1596,50 @@ function OllamaModelPicker({
           <select
             className="input font-mono text-xs flex-1"
             value={value}
+            onFocus={() => void probe(false)}
             onChange={(e) => onChange(e.target.value)}
           >
-            {value && !models!.includes(value) && (
+            {value && !models!.some((m) => m.name === value) && (
               <option value={value}>{value}（未安装）</option>
             )}
             {models!.map((m) => (
-              <option key={m} value={m}>
-                {m}
+              <option key={m.name} value={m.name}>
+                {m.name} · {formatModelSize(m.size)}
               </option>
             ))}
+          </select>
+        ) : probing && !error ? (
+          <select className="input font-mono text-xs flex-1" value="" disabled>
+            <option value="">正在实时读取本机 ollama list...</option>
           </select>
         ) : (
           <input
             className="input font-mono text-xs flex-1"
-            placeholder={DEFAULT_AI_CONFIG.fastLane!.model}
+            placeholder="未读取到本机 ollama list，可临时手填"
             value={value}
             onChange={(e) => onChange(e.target.value)}
           />
         )}
         <button
           type="button"
-          onClick={probe}
+          onClick={() => void probe(false)}
           disabled={probing || !baseUrl?.trim()}
           className="btn shrink-0"
-          title="探测本地 Ollama 已 pull 的模型"
+          title="刷新本机 Ollama 已 pull 的模型"
         >
           {probing ? (
             <Loader2 size={12} className="animate-spin" />
           ) : (
             <RefreshCw size={12} />
           )}
-          探测
+          刷新
         </button>
       </div>
+      {lastLoadedAt && (
+        <div className="text-[10px] text-ok">
+          已实时读取本机 ollama list：{models?.length ?? 0} 个模型 · {new Date(lastLoadedAt).toLocaleTimeString()}
+        </div>
+      )}
       {error && (
         <div className="rounded-md border border-warn/40 bg-warn/10 px-2 py-1.5 text-[11px] text-warn flex items-start gap-2">
           <AlertTriangle size={11} className="shrink-0 mt-0.5" />
