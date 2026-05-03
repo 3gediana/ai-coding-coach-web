@@ -11,7 +11,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Sparkles, ExternalLink, Check, Loader2, Settings2, AlertCircle } from 'lucide-react';
-import { useStore } from '../lib/store';
+import { hasUsableAIConfig, useStore } from '../lib/store';
 import { PRESETS } from '../lib/presets';
 import type { AIConfig, AIProvider } from '../core/types';
 import { AIClient } from '../core/ai/client';
@@ -27,10 +27,8 @@ export function QuickSetupCard() {
   const settingsOpen = useStore((s) => s.settingsOpen);
 
   // 只在还没配置 + Settings 没打开时显示（避免和 SettingsModal 同时存在）
-  const usable =
-    cfg.provider === 'ollama'
-      ? cfg.ollamaMode !== 'disabled' && !!cfg.baseUrl?.trim()
-      : !!cfg.apiKey?.trim();
+  // 走 hasUsableAIConfig，确保用户用「模型注册表」配好的情况下也认可，不再死循环浮现。
+  const usable = hasUsableAIConfig(cfg);
 
   // 用户「先不填，关掉看看」的本会话隐藏标记
   const [dismissed, setDismissed] = useState(false);
@@ -62,12 +60,15 @@ export function QuickSetupCard() {
     }
     setTesting(true);
     setError(null);
+    // QuickSetup 是「最简一键配」入口；既要写顶层字段（兼容老路径），也要清掉 primaryModelId
+    // 否则注册制下 resolvePrimaryModel 仍走旧 registry 条目，新填的 apiKey 形同虚设、卡片继续浮现。
     const draft: AIConfig = {
       ...cfg,
       provider,
       baseUrl: preset.baseUrl,
       apiKey: trimmedKey,
       model: preset.defaultModel,
+      primaryModelId: undefined,
     };
     try {
       const client = new AIClient(draft);

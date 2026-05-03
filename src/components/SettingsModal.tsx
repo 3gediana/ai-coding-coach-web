@@ -226,7 +226,19 @@ export function SettingsModal() {
           ? `本地模型：${localOllamaTargets[0].model}。请稍等，预热完成后会占用显存。`
           : '连接测试将在后台继续执行。',
     });
-    const shouldTestPrimary = primary.provider === 'ollama' || !!primary.apiKey.trim();
+    // primary 是本地 Ollama → 跳过 ping，避免和 warmup 并发把按钮卡 30s；warmup 自身会 toast 成功/失败
+    const primaryIsLocalOllama =
+      primary.provider === 'ollama' && isLocalOllamaUrl(primary.baseUrl);
+    if (primaryIsLocalOllama) {
+      setTestResult({
+        ok: true,
+        msg: '配置已保存。本地 Ollama 主模型不再前台 ping，预热结果会以 toast 形式反馈。',
+      });
+      setTesting(false);
+      setTimeout(() => setOpen(false), 600);
+      return;
+    }
+    const shouldTestPrimary = !!primary.apiKey.trim();
     if (!shouldTestPrimary) {
       setTestResult({
         ok: true,
@@ -1582,7 +1594,8 @@ function OllamaModelPicker({
     setLastLoadedAt(null);
     if (baseUrl?.trim()) {
       void probe(true);
-      const timer = window.setInterval(() => void probe(false), 10_000);
+      // 30s 一次足够；10s 会让 ollama 日志一直滚
+      const timer = window.setInterval(() => void probe(false), 30_000);
       return () => window.clearInterval(timer);
     }
   }, [baseUrl]);

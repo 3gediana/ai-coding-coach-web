@@ -13,7 +13,7 @@
 import { useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { CalendarCheck, X, ArrowRight, Clock } from 'lucide-react';
-import { useStore } from '../lib/store';
+import { hasUsableAIConfig, useStore } from '../lib/store';
 import { pickDailyReview } from '../core/recommend';
 
 function todayStr(): string {
@@ -39,10 +39,7 @@ export function DailyReviewCard() {
   const pendingAcReview = useStore((s) => s.pendingAcReview);
 
   // 没配 AI 别打扰（QuickSetupCard 优先）
-  const aiUsable =
-    aiConfig.provider === 'ollama'
-      ? aiConfig.ollamaMode !== 'disabled' && !!aiConfig.baseUrl?.trim()
-      : !!aiConfig.apiKey?.trim();
+  const aiUsable = hasUsableAIConfig(aiConfig);
 
   // 今天已关过 → 不显示
   const today = todayStr();

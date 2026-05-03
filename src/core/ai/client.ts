@@ -264,6 +264,8 @@ export class AIClient {
     }
     let u = this.cfg.baseUrl.trim();
     u = u.replace(/\/v1\/chat\/completions\/?$/, '/api/chat');
+    // 容忍用户只填到 /v1（Ollama 自身没有 /v1/api/chat 这种路径，必须先剥）
+    u = u.replace(/\/v1\/?$/, '');
     if (!/\/api\/chat\/?$/.test(u)) {
       // 容忍用户填了 base 域名（例如 http://localhost:11434）
       u = u.replace(/\/+$/, '') + '/api/chat';

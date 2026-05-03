@@ -24,7 +24,7 @@ import {
   Sparkles,
   RotateCcw,
 } from 'lucide-react';
-import { useStore } from '../lib/store';
+import { hasUsableAIConfig, useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import {
   runFeynmanStudentTurn,
@@ -115,10 +115,7 @@ export function FeynmanModal() {
     );
   }
 
-  const aiUsable =
-    aiConfig.provider === 'ollama'
-      ? aiConfig.ollamaMode !== 'disabled' && !!aiConfig.baseUrl?.trim()
-      : !!aiConfig.apiKey?.trim();
+  const aiUsable = hasUsableAIConfig(aiConfig);
 
   if (!aiUsable) {
     return (

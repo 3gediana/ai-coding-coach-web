@@ -10,7 +10,7 @@ import {
   Brain,
   ChevronDown,
 } from 'lucide-react';
-import { useStore } from '../lib/store';
+import { hasUsableAIConfig, useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 
 export function TopBar() {
@@ -35,10 +35,7 @@ export function TopBar() {
   );
 
   const activeProblem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
-  const apiOk =
-    aiConfig.provider === 'ollama'
-      ? aiConfig.ollamaMode !== 'disabled' && !!aiConfig.baseUrl
-      : !!aiConfig.apiKey;
+  const apiOk = hasUsableAIConfig(aiConfig);
   const scope = activeProblemId ?? '__draft__';
   const activeFile = (filesByScope[scope] ?? []).find(
     (f) => f.id === activeFileIdByScope[scope],

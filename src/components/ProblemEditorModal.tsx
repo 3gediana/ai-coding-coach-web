@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useEffect, useState } from 'react';
-import { useStore } from '../lib/store';
+import { hasUsableAIConfig, useStore } from '../lib/store';
 import { X, ScrollText, Wand2, Loader2, Link as LinkIcon, Download } from 'lucide-react';
 import { toast } from 'sonner';
 import { fetchAndParseProblem, detectSite, isFetchableSite, FetchProblemError } from '../lib/fetchProblem';
@@ -12,11 +12,7 @@ export function ProblemEditorModal() {
   const open = useStore((s) => s.problemEditorOpen);
   const setOpen = useStore((s) => s.setProblemEditorOpen);
   const enqueueParseProblem = useStore((s) => s.enqueueParseProblem);
-  const aiOk = useStore((s) =>
-    s.aiConfig.provider === 'ollama'
-      ? s.aiConfig.ollamaMode !== 'disabled' && !!s.aiConfig.baseUrl
-      : !!s.aiConfig.apiKey,
-  );
+  const aiOk = useStore((s) => hasUsableAIConfig(s.aiConfig));
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
 
   const [text, setText] = useState('');

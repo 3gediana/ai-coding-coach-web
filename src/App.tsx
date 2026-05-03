@@ -24,13 +24,12 @@ import { ProblemOverviewCard } from './components/ProblemOverviewCard';
 import { RuntimePane } from './components/RuntimePane';
 import { OnboardingOverlay } from './components/OnboardingOverlay';
 import { OllamaIntroModal } from './components/OllamaIntroModal';
-import { useStore } from './lib/store';
+import { hasUsableAIConfig, useStore } from './lib/store';
 import { startImportReceiver, stopImportReceiver } from './lib/importReceiver';
 import { startOjBridgeReceiver, stopOjBridgeReceiver } from './lib/ojBridge';
 import { loadDemoSeed } from './lib/demoSeed';
 import {
   collectLocalOllamaTargets,
-  requestUnloadLocalModels,
   unloadLocalModels,
   warmupLocalModels,
 } from './core/ai/warmup';
@@ -47,6 +46,15 @@ export default function App() {
   const pendingHackCase = useStore((s) => s.pendingHackCase);
   const warmTargetsRef = useRef<ReturnType<typeof collectLocalOllamaTargets>>([]);
   const lastWarmResultKeyRef = useRef<string>('');
+  // 派生 key：只有本地 Ollama 目标 / ollamaMode 变化时才重新 warm，避免 temperature 等无关字段触发
+  const warmDepKey = (() => {
+    const mode = aiConfig.ollamaMode === 'disabled' ? 'disabled' : 'enabled';
+    const targets =
+      mode === 'disabled'
+        ? []
+        : collectLocalOllamaTargets(aiConfig).map((t) => `${t.baseUrl}|${t.model}`);
+    return `${mode}:${targets.sort().join(',')}`;
+  })();
   const dailyPlanBlocksOverlay =
     (dailyPlanGenerating && !dailyPlan) || dailyPlan?.status === 'pending';
   const hackCaseBlocksOverlay =
@@ -61,28 +69,25 @@ export default function App() {
     const nextKeys = new Set(targets.map(targetKey));
     const removedTargets = warmTargetsRef.current.filter((t) => !nextKeys.has(targetKey(t)));
     warmTargetsRef.current = targets;
-    if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
+    if (typeof window !== 'undefined') {
       const mode = aiConfig.ollamaMode === 'disabled' ? 'disabled' : 'enabled';
-      if (mode === 'disabled' && removedTargets.length > 0) {
-        void unloadLocalModels(removedTargets).finally(() => {
-          void fetch('/__aicc-ollama-mode', {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ mode }),
-          }).catch(() => undefined);
-        });
-      } else {
-        void fetch('/__aicc-ollama-mode', {
+      // dev / preview 都挂了 /__aicc-ollama-mode 中间件；生产部署没有也不会影响业务，fetch catch 静默
+      const notifyMode = () =>
+        fetch('/__aicc-ollama-mode', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode }),
         }).catch(() => undefined);
+      if (mode === 'disabled' && removedTargets.length > 0) {
+        void unloadLocalModels(removedTargets).finally(() => {
+          void notifyMode();
+        });
+      } else {
+        void notifyMode();
         if (removedTargets.length > 0) {
           void unloadLocalModels(removedTargets);
         }
       }
-    } else if (removedTargets.length > 0) {
-      void unloadLocalModels(removedTargets);
     }
     const timer = setTimeout(() => {
       if (cancelled) return;
@@ -110,15 +115,12 @@ export default function App() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [aiConfig]);
+    // 仅依赖派生 key + ollamaMode：改 temperature/timeoutMs/maxTokens 等无关字段不会反复预热
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warmDepKey]);
 
-  useEffect(() => {
-    const onPageHide = () => requestUnloadLocalModels(warmTargetsRef.current);
-    window.addEventListener('pagehide', onPageHide);
-    return () => {
-      window.removeEventListener('pagehide', onPageHide);
-    };
-  }, []);
+  // 注意：以前这里监听 pagehide 自动卸载本地模型，导致每次刷新/关 tab 都要冷启 3-5s。
+  // 现在交给 Ollama 自己的 keep_alive=24h 管理；用户可在设置里显式切到"无 Ollama 模式"来释放显存。
 
   // ?seed=demo：清空 IndexedDB 并注入 5 题 + 错题 + 7 天学习记录，然后 reload
   useEffect(() => {
@@ -153,11 +155,7 @@ export default function App() {
   // 已配置 AI 且没完成过 onboarding → 1.5s 后启动引导。
   // 未配置时不弹 toast 了 —— QuickSetupCard 会在编辑器中央自己浮现，更醒目。
   useEffect(() => {
-    const usable =
-      aiConfig.provider === 'ollama'
-        ? !!aiConfig.baseUrl?.trim()
-        : !!aiConfig.apiKey?.trim();
-    if (!usable) return;
+    if (!hasUsableAIConfig(aiConfig)) return;
     if (safeGetItem('aicc.onboarding.v1') !== 'done') {
       const t = setTimeout(() => {
         void startOnboarding();
@@ -169,11 +167,7 @@ export default function App() {
 
   // B 路线：每天首次开 app 触发学习规划 Agent（已配 AI + 今日 plan 缺失时）
   useEffect(() => {
-    const usable =
-      aiConfig.provider === 'ollama'
-        ? !!aiConfig.baseUrl?.trim()
-        : !!aiConfig.apiKey?.trim();
-    if (!usable) return;
+    if (!hasUsableAIConfig(aiConfig)) return;
     // 等其它 effect / mount 稳定后再触发，避免和 onboarding 抢焦点
     const t = setTimeout(() => {
       void useStore.getState().requestDailyPlan();

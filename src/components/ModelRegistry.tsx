@@ -293,7 +293,8 @@ function RegistryModelSelector({
       const models = await fetchOllamaModels(editing.baseUrl);
       setOllamaModels(models);
       setLastLoadedAt(Date.now());
-      if (autoPick && !editing.id && models[0]?.name && !models.some((m) => m.name === editing.model)) {
+      // autoPick 只在「新建条目 + 用户还没手输 model」时生效，避免覆盖用户已经填好的临时模型名
+      if (autoPick && !editing.id && !editing.model.trim() && models[0]?.name) {
         setEditing({ ...editing, model: models[0].name });
       }
     } catch (e: any) {
@@ -311,7 +312,8 @@ function RegistryModelSelector({
     setLastLoadedAt(null);
     if (editing.provider === 'ollama' && editing.baseUrl.trim()) {
       void probeOllama(true);
-      const timer = window.setInterval(() => void probeOllama(false), 10_000);
+      // 30s 一次足够同步本机 ollama list 增删；之前 10s 太频繁，会让 ollama 日志一直滚
+      const timer = window.setInterval(() => void probeOllama(false), 30_000);
       return () => window.clearInterval(timer);
     }
   }, [editing.provider, editing.baseUrl]);

@@ -11,7 +11,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { Loader2, Trash2, User, Sparkles, Send, AlertTriangle, MessageCircle } from 'lucide-react';
-import { useStore } from '../lib/store';
+import { hasUsableAIConfig, useStore } from '../lib/store';
 import { MathMarkdown } from './MathMarkdown';
 import { cn } from '../lib/cn';
 import type { CoachRoute } from '../core/coach/types';
@@ -24,11 +24,7 @@ export function QAPanel() {
   const askCoach = useStore((s) => s.askCoach);
   const clearQA = useStore((s) => s.clearQA);
   const pending = useStore((s) => s.qaPendingProblemId);
-  const aiOk = useStore((s) =>
-    s.aiConfig.provider === 'ollama'
-      ? s.aiConfig.ollamaMode !== 'disabled' && !!s.aiConfig.baseUrl.trim()
-      : !!s.aiConfig.apiKey.trim(),
-  );
+  const aiOk = useStore((s) => hasUsableAIConfig(s.aiConfig));
   const askPrefill = useStore((s) => s.askPrefill);
   const setAskPrefill = useStore((s) => s.setAskPrefill);
   const coachDraft = useStore((s) => s.coachDraft);

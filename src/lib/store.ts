@@ -155,7 +155,7 @@ function deriveFastConfig(cfg: AIConfig): AIConfig | null {
   };
 }
 
-function hasUsableAIConfig(cfg: AIConfig): boolean {
+export function hasUsableAIConfig(cfg: AIConfig): boolean {
   const resolved = resolvePrimaryModel(cfg);
   if (cfg.ollamaMode === 'disabled' && resolved.provider === 'ollama') return false;
   return resolved.provider === 'ollama' ? !!resolved.baseUrl.trim() : !!resolved.apiKey.trim();
@@ -529,7 +529,7 @@ function scheduleImportedProblemParsing(
   if (!hasUsableAIConfig(get().aiConfig)) return;
   void (async () => {
     const startedAt = Date.now();
-    const route = get().aiConfig.provider === 'ollama' ? 'fast' : 'cloud';
+    const route = resolvePrimaryModel(get().aiConfig).provider === 'ollama' ? 'fast' : 'cloud';
     get().recordAgentTrace({
       kind: 'act',
       level: 'info',
