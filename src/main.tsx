@@ -11,6 +11,15 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 // 启动时应用主题（必须在 render 前，避免闪烁）
 initTheme();
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (event) => {
+    console.error('[global-error]', event.error ?? event.message);
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    console.error('[global-unhandledrejection]', event.reason);
+  });
+}
+
 // dev / e2e：把 store 挂到 window 方便 Playwright 直接注入数据，避免 mock LLM
 if (import.meta.env.DEV) {
   (window as any).__aiccStore = useStore;
@@ -42,6 +51,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
     <Toaster
       position="bottom-right"
+      duration={3000}
       richColors
       closeButton
       // 让 sonner 跟随主题

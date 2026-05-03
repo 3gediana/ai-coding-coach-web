@@ -23,6 +23,10 @@ export interface Problem {
   difficulty?: 'easy' | 'medium' | 'hard';
   tags?: string[];
   createdAt: number;
+  importRawText?: string;
+  importParseStatus?: 'pending' | 'parsing' | 'parsed' | 'failed';
+  importParseError?: string;
+  importParseUpdatedAt?: number;
   /**
    * 用户主动归档时间戳。归档后的题：
    *   - 不在 Sidebar「题目」Tab 默认列表里出现（避免主流量列表越拖越长）
@@ -93,6 +97,8 @@ export interface Problem {
     traceGeneratedAt?: number;
     visualPlanGeneratedAt?: number;
     errorMessage?: string;
+    generationStartedAt?: number | null;
+    generationStage?: 'status' | 'animation' | null;
   };
 }
 
@@ -432,6 +438,7 @@ export interface AIConfig {
    * 未设置时仍按旧的顶层字段工作（兼容迁移）。
    */
   primaryModelId?: string;
+  primaryModelIdExplicit?: boolean;
   qualityModelId?: string;
   /** 单次请求超时（毫秒）；不填用 client 默认 */
   timeoutMs?: number;
@@ -623,6 +630,7 @@ export interface CoachStorage {
   // 事件（追加写）
   appendEvent(e: CoachEvent): Promise<void>;
   listEvents(opts?: { sessionId?: string; sinceTs?: number; limit?: number }): Promise<CoachEvent[]>;
+  deleteEventsByProblem(problemId: string): Promise<void>;
 
   // 文件（每题挂多个）
   saveFile(f: CodeFile): Promise<void>;

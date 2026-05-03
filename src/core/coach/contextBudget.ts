@@ -144,7 +144,7 @@ export function selectRecentHistoryByBudget<T extends { role: 'user' | 'assistan
   for (let i = items.length - 1; i >= 0 && selected.length < maxMessages; i--) {
     const item = items[i];
     const cost = estimateTextTokens(item.content) + 4;
-    if (selected.length > 0 && used + cost > tokenBudget) break;
+    if (used + cost > tokenBudget) break;
     selected.unshift(item);
     used += cost;
   }

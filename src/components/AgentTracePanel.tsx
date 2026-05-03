@@ -18,7 +18,7 @@ import {
   BarChart3,
   Minimize2,
 } from 'lucide-react';
-import { lazy, Suspense, startTransition, useState } from 'react';
+import { lazy, Suspense, startTransition, useMemo, useState } from 'react';
 import { useStore } from '../lib/store';
 import type { AgentTraceEvent, AgentTraceKind, AgentTraceLevel } from '../lib/store';
 import { cn } from '../lib/cn';
@@ -52,6 +52,13 @@ function formatTime(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+function filterTraceForProblem(trace: AgentTraceEvent[], activeProblemId: string | null): AgentTraceEvent[] {
+  if (!activeProblemId) {
+    return trace.filter((ev) => !ev.problemId);
+  }
+  return trace.filter((ev) => !ev.problemId || ev.problemId === activeProblemId);
+}
+
 export function AgentTracePanel({
   onToggleCollapsed,
   defaultView = 'list',
@@ -60,9 +67,14 @@ export function AgentTracePanel({
   defaultView?: View;
 }) {
   const trace = useStore((s) => s.agentTrace);
+  const activeProblemId = useStore((s) => s.activeProblemId);
   const clear = useStore((s) => s.clearAgentTrace);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [view, setView] = useState<View>(defaultView);
+  const visibleTrace = useMemo(
+    () => filterTraceForProblem(trace, activeProblemId),
+    [trace, activeProblemId],
+  );
 
   return (
     <div className="flex flex-col min-h-0 h-full bg-bg-elev/40">
@@ -70,7 +82,12 @@ export function AgentTracePanel({
       <div className="h-7 px-2 flex items-center gap-1.5 border-b border-line/60 shrink-0 bg-bg-elev">
         <Activity size={11} className="text-accent" />
         <span className="text-[11px] font-semibold text-accent-glow">Agent</span>
-        <span className="text-[10px] text-ink-mute">{trace.length}</span>
+        <span
+          className="text-[10px] text-ink-mute"
+          title={activeProblemId ? `当前题目事件 ${visibleTrace.length} / 全局 ${trace.length}` : `全局事件 ${visibleTrace.length} / 全部 ${trace.length}`}
+        >
+          {visibleTrace.length}
+        </span>
         {/* 视图切换 */}
         <div className="ml-auto flex items-center bg-bg-elev2 rounded border border-line/60 p-0.5">
           <ViewBtn icon={List} active={view === 'list'} onClick={() => startTransition(() => setView('list'))} title="时间线" />
@@ -99,16 +116,16 @@ export function AgentTracePanel({
       {/* Body */}
       {view === 'list' && (
         <div className="flex-1 overflow-y-auto min-h-0">
-          {trace.length === 0 ? (
+          {visibleTrace.length === 0 ? (
             // 空状态紧凑化：避免占据右下大片屏幕。提示一行就够，详细解释挪到 title。
             <div
               className="text-[10.5px] text-ink-mute px-3 py-2 italic"
               title="激活一道题、点「问教练」或跑一次代码，Coach 的每一步决策（哪个 agent / 走云端还是本地 / 耗时多少）都会出现在这里。"
             >
-              暂无行动 · 跑一次代码或问一次教练即可激活
+              暂无当前题目行动 · 跑一次代码或问一次教练即可激活
             </div>
           ) : (
-            trace.map((ev) => (
+            visibleTrace.map((ev) => (
               <TraceItem
                 key={ev.id}
                 ev={ev}
@@ -124,14 +141,14 @@ export function AgentTracePanel({
       {view === 'graph' && (
         <ErrorBoundary title="Agent 拓扑异常" compact>
           <Suspense fallback={<div className="p-2 text-[10px] text-ink-mute">加载拓扑…</div>}>
-            <AgentGraph />
+            <AgentGraph trace={visibleTrace} />
           </Suspense>
         </ErrorBoundary>
       )}
       {view === 'stats' && (
         <ErrorBoundary title="Agent 统计异常" compact>
           <Suspense fallback={<div className="p-2 text-[10px] text-ink-mute">加载统计…</div>}>
-            <AgentDashboard />
+            <AgentDashboard trace={visibleTrace} />
           </Suspense>
         </ErrorBoundary>
       )}

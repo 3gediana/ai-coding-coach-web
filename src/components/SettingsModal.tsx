@@ -48,6 +48,7 @@ import {
 import { collectLocalOllamaTargets, getLocalOllamaTargetConflict } from '../core/ai/warmup';
 import { applyTheme, getStoredTheme, THEMES, type Theme } from '../lib/theme';
 import { setForcedOffline, useOnlineStatus } from '../lib/offlineMode';
+import { canEditLocalSettings, getSettingsAccessHost } from '../lib/settingsAccess';
 
 export function SettingsModal() {
   const open = useStore((s) => s.settingsOpen);
@@ -89,6 +90,8 @@ export function SettingsModal() {
     !!fastLaneModel?.baseUrl &&
     !!fastLaneModel?.model;
   const forcedOffline = onlineStatus === 'forced-offline';
+  const settingsEditable = canEditLocalSettings();
+  const settingsAccessHost = getSettingsAccessHost();
 
   const onPickTheme = (theme: Theme) => {
     applyTheme(theme);
@@ -170,6 +173,8 @@ export function SettingsModal() {
       provider: id,
       baseUrl: p.baseUrl,
       model: p.defaultModel || draft.model,
+      primaryModelId: undefined,
+      primaryModelIdExplicit: true,
       contextWindowTokens:
         p.modelContextTokens?.[p.defaultModel] ??
         p.defaultContextWindowTokens ??
@@ -184,6 +189,13 @@ export function SettingsModal() {
    * 这是「主体」最关键的操作：用户填一个 apikey 点一下 → 立刻知道行不行。
    */
   const onSaveAndTest = async () => {
+    if (!settingsEditable) {
+      setTestResult({
+        ok: false,
+        msg: '远程访问已禁止修改设置。请用 localhost / 127.0.0.1 / ::1 打开应用后再保存。',
+      });
+      return;
+    }
     // 校验"实际生效的主模型"——若分配了 primaryModelId 就走 registry，否则走顶层字段
     const primary = resolvePrimaryModel(draft);
     if (localOllamaConflicts.length > 1) {
@@ -298,6 +310,55 @@ export function SettingsModal() {
     draft.contextWindowTokens ??
     inferModelContextWindowTokens(previewPrimary.provider, previewPrimary.model);
   const estimatedCoachRounds = estimateCoachHistoryRounds(previewContextWindow);
+
+  if (!settingsEditable) {
+    return (
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setOpen(false)}
+            className="fixed inset-0 z-50 modal-overlay flex items-center justify-center p-6"
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0, y: 8 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="glass-card w-full max-w-lg flex flex-col"
+            >
+              <div className="px-6 py-4 border-b border-line flex items-center gap-3">
+                <AlertTriangle size={18} className="text-warn" />
+                <h2 className="text-lg font-semibold">设置已锁定</h2>
+                <button onClick={() => setOpen(false)} className="btn-ghost ml-auto p-1.5">
+                  <X size={16} />
+                </button>
+              </div>
+              <div className="px-6 py-5 space-y-3">
+                <div className="rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm leading-relaxed">
+                  <div className="font-semibold text-warn mb-1">远程访问不能修改 AI 配置</div>
+                  <div className="text-ink-dim">
+                    当前访问地址是 <span className="font-mono text-ink">{settingsAccessHost}</span>。为了避免隧道访问者修改
+                    Base URL、API Key 或模型参数，请在本机使用 localhost / 127.0.0.1 / ::1 打开应用后再进入设置。
+                  </div>
+                </div>
+                <div className="text-[12px] text-ink-mute leading-relaxed">
+                  远程页面仍可查看和使用已配置能力，但不会渲染可编辑表单，也无法通过底层保存函数写入新配置。
+                </div>
+              </div>
+              <div className="px-6 py-3 border-t border-line flex justify-end">
+                <button onClick={() => setOpen(false)} className="btn">
+                  我知道了
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    );
+  }
 
   return (
     <AnimatePresence>
@@ -459,7 +520,7 @@ export function SettingsModal() {
                 <div className="label">主模型（默认走云端的所有任务）</div>
                 <ModelPicker
                   value={draft.primaryModelId}
-                  onChange={(id) => setDraft({ ...draft, primaryModelId: id })}
+                  onChange={(id) => setDraft({ ...draft, primaryModelId: id, primaryModelIdExplicit: true })}
                   config={draft}
                   placeholder="— 未分配 / 用下方手填字段 —"
                 />
@@ -640,7 +701,7 @@ export function SettingsModal() {
                       className="input font-mono text-xs"
                       placeholder="https://api.deepseek.com/v1/chat/completions"
                       value={draft.baseUrl}
-                      onChange={(e) => setDraft({ ...draft, baseUrl: e.target.value })}
+                      onChange={(e) => setDraft({ ...draft, primaryModelId: undefined, primaryModelIdExplicit: true, baseUrl: e.target.value })}
                     />
                   </Field>
 

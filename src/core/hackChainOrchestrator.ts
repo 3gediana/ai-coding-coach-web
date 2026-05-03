@@ -60,6 +60,8 @@ export interface HackChainDeps {
     stdin: string,
     language: HackChainContext['language'],
   ) => Promise<SandboxRunResult>;
+  /** Step 2 可选：运行 Python 朴素解 oracle，用于小规模对拍 */
+  runOracle?: (code: string, stdin: string) => Promise<SandboxRunResult>;
   /** Step 3：调 LLM 解释为啥挂 */
   generateExplanation: (args: {
     ctx: HackChainContext;
@@ -136,33 +138,17 @@ export async function orchestrateHackChain(
         durationMs: now() - t0,
       };
     }
-    const expected = (cand.expectedOutput ?? '').trim();
-    const actual = (runRes.stdout ?? '').trim();
-    const matchesExpected = expected ? expected === actual : undefined;
-    let hacked = false;
-    let reason: string | undefined;
-    if (runRes.exitCode !== 0) {
-      hacked = true;
-      reason =
-        `exit ${runRes.exitCode}` +
-        (runRes.stderr ? ` · ${runRes.stderr.slice(0, 80)}` : '');
-    } else if (matchesExpected === false) {
-      hacked = true;
-      reason = `期望 ${expected.slice(0, 30)} 实际 ${actual.slice(0, 30)}`;
-    }
     const result: ExecutorRunResult = {
       candidateIndex: i,
       exitCode: runRes.exitCode,
       stdout: runRes.stdout.slice(0, 600),
       stderr: runRes.stderr.slice(0, 600),
       durationMs: runRes.durationMs,
-      matchesExpected,
-      hacked,
-      reason,
+      ...(await validateCandidate(ctx, deps, cand, runRes, now)),
     };
     executor.results.push(result);
     obs.onExecutorProgress?.(result);
-    if (hacked && executor.winningIndex === null) {
+    if (result.hacked && executor.winningIndex === null) {
       executor.winningIndex = i;
     }
   }
@@ -230,4 +216,144 @@ export async function orchestrateHackChain(
     endedAt: now(),
     failedSteps,
   };
+}
+
+async function validateCandidate(
+  ctx: HackChainContext,
+  deps: HackChainDeps,
+  cand: AttackerCandidate,
+  runRes: SandboxRunResult,
+  now: () => number,
+): Promise<Pick<
+  ExecutorRunResult,
+  | 'validationMethod'
+  | 'matchesExpected'
+  | 'oracleOutput'
+  | 'transformedStdout'
+  | 'metamorphicPassed'
+  | 'hacked'
+  | 'reason'
+>> {
+  const validationMethod = resolveValidationMethod(cand, deps);
+  if (runRes.exitCode !== 0) {
+    return {
+      validationMethod,
+      hacked: true,
+      reason:
+        `exit ${runRes.exitCode}` +
+        (runRes.stderr ? ` · ${runRes.stderr.slice(0, 80)}` : ''),
+    };
+  }
+
+  if (validationMethod === 'oracle' && cand.oracle?.code && deps.runOracle) {
+    const oracleStart = now();
+    let oracleRes: SandboxRunResult;
+    try {
+      oracleRes = await deps.runOracle(cand.oracle.code, cand.stdin);
+    } catch (e: unknown) {
+      oracleRes = {
+        stdout: '',
+        stderr: e instanceof Error ? e.message : String(e),
+        exitCode: 1,
+        durationMs: now() - oracleStart,
+      };
+    }
+    if (oracleRes.exitCode !== 0) {
+      return {
+        validationMethod,
+        oracleOutput: oracleRes.stderr.slice(0, 600),
+        hacked: false,
+        reason: `oracle 失败：${oracleRes.stderr.slice(0, 80)}`,
+      };
+    }
+    const oracleOutput = normalizeOutput(oracleRes.stdout);
+    const actual = normalizeOutput(runRes.stdout);
+    const matchesExpected = oracleOutput === actual;
+    return {
+      validationMethod,
+      matchesExpected,
+      oracleOutput: oracleRes.stdout.slice(0, 600),
+      hacked: !matchesExpected,
+      reason: matchesExpected
+        ? undefined
+        : `oracle 对拍不一致：期望 ${oracleOutput.slice(0, 30)} 实际 ${actual.slice(0, 30)}`,
+    };
+  }
+
+  if (validationMethod === 'metamorphic' && cand.metamorphic?.transformedStdin) {
+    const t0 = now();
+    let transformedRes: SandboxRunResult;
+    try {
+      transformedRes = await deps.runCode(ctx.code, cand.metamorphic.transformedStdin, ctx.language);
+    } catch (e: unknown) {
+      transformedRes = {
+        stdout: '',
+        stderr: e instanceof Error ? e.message : String(e),
+        exitCode: 1,
+        durationMs: now() - t0,
+      };
+    }
+    if (transformedRes.exitCode !== 0) {
+      return {
+        validationMethod,
+        transformedStdout: transformedRes.stderr.slice(0, 600),
+        metamorphicPassed: false,
+        hacked: true,
+        reason:
+          `变形输入 exit ${transformedRes.exitCode}` +
+          (transformedRes.stderr ? ` · ${transformedRes.stderr.slice(0, 80)}` : ''),
+      };
+    }
+    const actual = normalizeOutput(runRes.stdout);
+    const transformed = normalizeOutput(transformedRes.stdout);
+    const relation = cand.metamorphic.relation;
+    const metamorphicPassed =
+      relation === 'same_output' ? actual === transformed : actual !== transformed;
+    return {
+      validationMethod,
+      transformedStdout: transformedRes.stdout.slice(0, 600),
+      metamorphicPassed,
+      hacked: !metamorphicPassed,
+      reason: metamorphicPassed
+        ? undefined
+        : `变形关系失败：${relation === 'same_output' ? '应相同' : '应不同'}，实际 ${actual.slice(0, 30)} vs ${transformed.slice(0, 30)}`,
+    };
+  }
+
+  const expected = (cand.expectedOutput ?? '').trim();
+  const actual = normalizeOutput(runRes.stdout);
+  const matchesExpected = expected ? normalizeOutput(expected) === actual : undefined;
+  if (matchesExpected === false) {
+    return {
+      validationMethod: expected ? 'expected_output' : validationMethod,
+      matchesExpected,
+      hacked: true,
+      reason: `期望 ${normalizeOutput(expected).slice(0, 30)} 实际 ${actual.slice(0, 30)}`,
+    };
+  }
+  return {
+    validationMethod,
+    matchesExpected,
+    hacked: false,
+  };
+}
+
+function resolveValidationMethod(
+  cand: AttackerCandidate,
+  deps: HackChainDeps,
+): NonNullable<AttackerCandidate['validationMethod']> {
+  if (cand.validationMethod === 'oracle' && cand.oracle?.code && deps.runOracle) {
+    return 'oracle';
+  }
+  if (cand.validationMethod === 'metamorphic' && cand.metamorphic?.transformedStdin) {
+    return 'metamorphic';
+  }
+  if ((cand.validationMethod === 'expected_output' || cand.expectedOutput) && cand.expectedOutput?.trim()) {
+    return 'expected_output';
+  }
+  return 'runtime_only';
+}
+
+function normalizeOutput(text: string): string {
+  return text.replace(/\r\n/g, '\n').trim();
 }

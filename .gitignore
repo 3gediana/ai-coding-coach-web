@@ -9,6 +9,7 @@ test-output*.log
 
 # 实验产物 / 临时数据
 dev-workspace/artifacts/
+dev-workspace/problem-bank/
 tsconfig.tsbuildinfo
 dev-workspace/scripts/_tmp-*.mjs
 dev-workspace/scripts/_tmp-*.mts

@@ -9,7 +9,7 @@
  * 由 store.runHackChain 驱动；用户点 RuntimePane 上的「Hack Chain」按钮触发。
  */
 import { motion, AnimatePresence } from 'framer-motion';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Swords,
   PlayCircle,
@@ -42,14 +42,14 @@ const STEP_META: Record<
   attacker: {
     idx: 1,
     title: 'Attacker',
-    subtitle: '产候选攻击 case',
+    subtitle: '对抗式验证任务',
     icon: Swords,
     route: 'cloud',
   },
   executor: {
     idx: 2,
     title: 'Executor',
-    subtitle: '本地沙箱跑用户代码',
+    subtitle: '沙箱 + oracle / 变形验证',
     icon: PlayCircle,
     route: 'fast',
   },
@@ -72,16 +72,16 @@ const STEP_META: Record<
 export function HackChainModal() {
   const state = useStore((s) => s.hackChainState);
   const dismiss = useStore((s) => s.dismissHackChain);
-  const events = useStore((s) => {
-    const cur = s.hackChainState;
-    if (!cur) return [];
-    return s.agentTrace.filter(
+  const agentTrace = useStore((s) => s.agentTrace);
+  const events = useMemo(() => {
+    if (!state) return [];
+    return agentTrace.filter(
       (e) =>
-        e.ts >= cur.startedAt - 1000 &&
-        e.problemId === cur.problemId &&
+        e.ts >= state.startedAt - 1000 &&
+        e.problemId === state.problemId &&
         (e.agentName?.startsWith('HackChain/') || e.title.includes('Hack Chain')),
     );
-  });
+  }, [agentTrace, state?.problemId, state?.startedAt]);
   const running = !!state?.steps.some((s) => s.status === 'running' || s.status === 'idle');
   const [now, setNow] = useState(Date.now());
 
@@ -346,14 +346,32 @@ function AttackerSection({
           >
             <div className="flex items-center gap-2 text-[10.5px] mb-1">
               <span className="chip text-[9px] px-1 py-0">{c.kind}</span>
+              <span className="chip text-[9px] px-1 py-0">{c.validationMethod ?? 'runtime_only'}</span>
               <span className="text-ink">{c.description}</span>
+              {c.targetBugType && <span className="text-ink-mute">· {c.targetBugType}</span>}
               {i === winningIndex && (
                 <span className="ml-auto text-[10px] text-bad font-semibold">✗ 成功 hack</span>
               )}
             </div>
+            {c.expectedRisk && (
+              <div className="mb-1 text-[10px] text-warn/90">
+                攻击意图：{c.expectedRisk}
+              </div>
+            )}
+            {c.metamorphic?.expectedRelation && (
+              <div className="mb-1 text-[10px] text-cyan/90">
+                变形关系：{c.metamorphic.expectedRelation}
+              </div>
+            )}
             <pre className="font-mono text-[10px] text-ink-dim bg-bg-base/40 rounded p-1.5 max-h-20 overflow-y-auto whitespace-pre-wrap">
               {c.stdin}
             </pre>
+            {c.metamorphic?.transformedStdin && (
+              <pre className="mt-1 font-mono text-[10px] text-ink-dim bg-bg-base/40 rounded p-1.5 max-h-20 overflow-y-auto whitespace-pre-wrap">
+                变形输入：{'\n'}
+                {c.metamorphic.transformedStdin}
+              </pre>
+            )}
           </div>
         ))}
       </div>
@@ -374,6 +392,7 @@ function ExecutorSection({
           <tr>
             <th className="text-left py-1">case</th>
             <th className="text-left">exit</th>
+            <th className="text-left">验证</th>
             <th className="text-left">耗时</th>
             <th className="text-left">结果</th>
           </tr>
@@ -383,9 +402,20 @@ function ExecutorSection({
             <tr key={i} className="border-t border-line/30">
               <td className="py-1">#{i + 1}</td>
               <td>{r.exitCode}</td>
+              <td>{r.validationMethod ?? 'runtime_only'}</td>
               <td>{r.durationMs}ms</td>
               <td className={r.hacked ? 'text-bad' : 'text-ok'}>
                 {r.hacked ? `✗ ${r.reason ?? 'hacked'}` : '✓ ok'}
+                {r.matchesExpected !== undefined && (
+                  <span className="ml-1 text-ink-mute">
+                    expected:{r.matchesExpected ? 'ok' : 'bad'}
+                  </span>
+                )}
+                {r.metamorphicPassed !== undefined && (
+                  <span className="ml-1 text-ink-mute">
+                    meta:{r.metamorphicPassed ? 'ok' : 'bad'}
+                  </span>
+                )}
               </td>
             </tr>
           ))}

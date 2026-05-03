@@ -2,12 +2,267 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
-import { writeFile, mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join, resolve, extname, resolve as pathResolve } from 'node:path';
+import { dirname, join, resolve, extname, resolve as pathResolve } from 'node:path';
 import type { Connect } from 'vite';
 
 const devArtifactPath = (...parts: string[]) => resolve(process.cwd(), 'dev-workspace', 'artifacts', ...parts);
+const localProblemBankPath = (...parts: string[]) => resolve(process.cwd(), 'dev-workspace', 'problem-bank', ...parts);
+const localFeedbackPath = (...parts: string[]) => resolve(process.cwd(), 'dev-workspace', 'feedback', ...parts);
+
+type ProblemBankItem = {
+  id: string;
+  title: string;
+  statement: string;
+  source?: string;
+  createdAt: number;
+  [key: string]: unknown;
+};
+
+type ProblemBankBundle = {
+  kind?: string;
+  version?: number;
+  savedAt?: number;
+  problem: ProblemBankItem;
+  [key: string]: unknown;
+};
+
+function safePathPart(value: unknown): string {
+  return String(value ?? 'unknown')
+    .replace(/^https?:\/\//, '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80) || 'unknown';
+}
+
+function localDatePart(ts = Date.now()): string {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function classifyProblemBankItem(problem: ProblemBankItem): string[] {
+  const source = typeof problem.source === 'string' ? problem.source : '';
+  if (!source) return ['manual'];
+  try {
+    const u = new URL(source);
+    const host = u.hostname.toLowerCase();
+    if (host.includes('luogu.com.cn')) return ['oj', 'luogu'];
+    if (host === 'atcoder.jp') return ['oj', 'atcoder'];
+    if (host === 'poj.org') return ['oj', 'poj'];
+    if (host === 'acm.hdu.edu.cn') return ['oj', 'hdu'];
+    return ['oj', safePathPart(host)];
+  } catch {
+    return ['manual'];
+  }
+}
+
+function isProblemBankItem(value: unknown): value is ProblemBankItem {
+  const v = value as Partial<ProblemBankItem>;
+  return !!v && typeof v.id === 'string' && typeof v.title === 'string' && typeof v.statement === 'string';
+}
+
+function normalizeProblemBankBundle(value: unknown): ProblemBankBundle | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as { problem?: unknown };
+  if (isProblemBankItem(v.problem)) {
+    return value as ProblemBankBundle;
+  }
+  if (isProblemBankItem(value)) {
+    return {
+      kind: 'aicc.problem.bundle',
+      version: 1,
+      savedAt: Date.now(),
+      problem: value,
+    };
+  }
+  return null;
+}
+
+async function readJsonRequest<T>(req: any): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => chunks.push(c));
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as T);
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+async function listJsonFiles(dir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const p = pathResolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...await listJsonFiles(p));
+      } else if (entry.isFile() && entry.name.endsWith('.json')) {
+        files.push(p);
+      }
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}
+
+async function removeProblemBankFilesById(id: string): Promise<void> {
+  const root = localProblemBankPath('problems');
+  const prefix = `${safePathPart(id)}__`;
+  const files = await listJsonFiles(root);
+  await Promise.all(
+    files
+      .filter((f) => f.split(/[\\/]/).pop()?.startsWith(prefix))
+      .map((f) => unlink(f).catch(() => undefined)),
+  );
+}
+
+async function readLocalProblemBank(): Promise<ProblemBankBundle[]> {
+  const root = localProblemBankPath('problems');
+  const files = await listJsonFiles(root);
+  const bundles: ProblemBankBundle[] = [];
+  for (const file of files) {
+    try {
+      const parsed = JSON.parse(await readFile(file, 'utf8'));
+      const bundle = normalizeProblemBankBundle(parsed);
+      if (bundle) {
+        bundles.push({
+          ...bundle,
+          problem: {
+            ...bundle.problem,
+            createdAt: typeof bundle.problem.createdAt === 'number' ? bundle.problem.createdAt : Date.now(),
+          },
+        });
+      }
+    } catch {
+      /* ignore broken problem file */
+    }
+  }
+  bundles.sort((a, b) => b.problem.createdAt - a.problem.createdAt);
+  return bundles;
+}
+
+async function writeLocalProblemBankBundle(bundle: ProblemBankBundle): Promise<string> {
+  const problem = bundle.problem;
+  const existing = (await readLocalProblemBank()).find((item) => item.problem.id === problem.id);
+  const state = bundle.state && typeof bundle.state === 'object'
+    ? bundle.state
+    : existing?.state;
+  const merged: ProblemBankBundle = {
+    ...existing,
+    ...bundle,
+    problem: {
+      ...(existing?.problem ?? {}),
+      ...bundle.problem,
+    },
+    state,
+    savedAt: bundle.savedAt ?? Date.now(),
+  };
+  const parts = classifyProblemBankItem(problem);
+  const target = localProblemBankPath('problems', ...parts, `${safePathPart(problem.id)}__${safePathPart(problem.title)}.json`);
+  await removeProblemBankFilesById(problem.id);
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(target, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+  return target;
+}
+
+function installLocalProblemBankMiddleware(middlewares: Connect.Server) {
+  middlewares.use('/__problem-bank/problems', async (req, res) => {
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    if (req.method === 'GET') {
+      const bundles = await readLocalProblemBank();
+      const problems = bundles.map((b) => b.problem);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, root: localProblemBankPath('problems'), bundles, problems }));
+      return;
+    }
+    if (req.method === 'POST') {
+      try {
+        const payload = await readJsonRequest<{ bundle?: unknown; problem?: unknown }>(req);
+        const bundle = normalizeProblemBankBundle(payload.bundle ?? payload.problem);
+        if (!bundle) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ ok: false, error: 'invalid problem bundle' }));
+          return;
+        }
+        const path = await writeLocalProblemBankBundle({
+          ...bundle,
+          kind: 'aicc.problem.bundle',
+          version: 1,
+          savedAt: Date.now(),
+        });
+        res.statusCode = 200;
+        res.end(JSON.stringify({ ok: true, path }));
+      } catch (err: any) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
+      }
+      return;
+    }
+    if (req.method === 'DELETE') {
+      const url = new URL(req.url || '', 'http://127.0.0.1');
+      const id = url.searchParams.get('id');
+      if (!id) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: 'missing id' }));
+        return;
+      }
+      await removeProblemBankFilesById(id);
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    res.statusCode = 405;
+    res.end(JSON.stringify({ ok: false, error: 'method not allowed' }));
+  });
+}
+
+async function writeLocalFeedback(payload: Record<string, unknown>): Promise<string> {
+  const now = Date.now();
+  const createdAt = typeof payload.createdAt === 'number' ? payload.createdAt : now;
+  const category = safePathPart(payload.category ?? 'feedback');
+  const title = safePathPart(payload.summary ?? payload.content ?? 'feedback').slice(0, 48);
+  const target = localFeedbackPath(localDatePart(createdAt), `${createdAt}__${category}__${title}.json`);
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(
+    target,
+    `${JSON.stringify({ ...payload, createdAt, savedAt: now }, null, 2)}\n`,
+    'utf8',
+  );
+  return target;
+}
+
+function installFeedbackMiddleware(middlewares: Connect.Server) {
+  middlewares.use('/__aicc-feedback', async (req, res) => {
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    if (req.method !== 'POST') {
+      res.statusCode = 405;
+      res.end(JSON.stringify({ ok: false, error: 'method not allowed' }));
+      return;
+    }
+    try {
+      const payload = await readJsonRequest<Record<string, unknown>>(req);
+      const content = typeof payload.content === 'string' ? payload.content.trim() : '';
+      if (content.length < 2) {
+        res.statusCode = 400;
+        res.end(JSON.stringify({ ok: false, error: 'feedback content is empty' }));
+        return;
+      }
+      const path = await writeLocalFeedback({ ...payload, content });
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, path }));
+    } catch (err: any) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
+    }
+  });
+}
 
 /**
  * Dev 时通过自定义中间件转发到真实 AI endpoint，绕开 CORS。
@@ -19,8 +274,14 @@ const devArtifactPath = (...parts: string[]) => resolve(process.cwd(), 'dev-work
 
 let managedOllama: ChildProcess | null = null;
 let ensuringPromise: Promise<boolean> | null = null;
+let warmupPromise: Promise<Array<{ label: string; model: string; ok: boolean; latencyMs: number; error?: string }>> | null = null;
+let lastWarmupAt = 0;
 let serverOllamaMode: 'enabled' | 'disabled' =
   process.env.AICC_OLLAMA === '0' ? 'disabled' : 'enabled';
+const ollamaAutostartEnv = process.env.AICC_OLLAMA_AUTOSTART?.toLowerCase();
+const serverOllamaAutostart =
+  ollamaAutostartEnv !== '0' && ollamaAutostartEnv !== 'false';
+let loggedExternalOllama = false;
 
 function probePort(host: string, port: number, timeoutMs = 400): Promise<boolean> {
   return new Promise((resolve) => {
@@ -42,20 +303,23 @@ function probePort(host: string, port: number, timeoutMs = 400): Promise<boolean
 async function waitOllamaReady(maxMs = 20_000): Promise<boolean> {
   const start = Date.now();
   while (Date.now() - start < maxMs) {
-    if (await probePort('127.0.0.1', 11434, 300)) {
-      try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 1500);
-        const r = await fetch('http://127.0.0.1:11434/api/version', { signal: ctrl.signal });
-        clearTimeout(timer);
-        if (r.ok) return true;
-      } catch {
-        /* not yet */
-      }
-    }
+    if (await probeOllamaServe(1500)) return true;
     await new Promise((r) => setTimeout(r, 400));
   }
   return false;
+}
+
+async function probeOllamaServe(timeoutMs = 1500): Promise<boolean> {
+  if (!(await probePort('127.0.0.1', 11434, Math.min(timeoutMs, 500)))) return false;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const r = await fetch('http://127.0.0.1:11434/api/version', { signal: ctrl.signal });
+    clearTimeout(timer);
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -65,12 +329,26 @@ async function waitOllamaReady(maxMs = 20_000): Promise<boolean> {
  * 当网页端 Ollama 模式为 enabled 时自动 spawn；disabled 时不触碰本地服务。
  */
 async function ensureOllamaRunning(): Promise<boolean> {
-  if (await probePort('127.0.0.1', 11434, 300)) return true;
-  if (serverOllamaMode === 'disabled') {
+  if (await probeOllamaServe(1200)) {
+    if (!loggedExternalOllama && !managedOllama) {
+      console.log('\x1b[32m[aicc-ollama]\x1b[0m 检测到后台已有 ollama serve，直接复用');
+      loggedExternalOllama = true;
+    }
+    return true;
+  }
+  if (serverOllamaMode === 'disabled' || !serverOllamaAutostart) {
     return false;
   }
   if (ensuringPromise) return ensuringPromise;
   ensuringPromise = (async () => {
+    if (await probeOllamaServe(1200)) return true;
+    if (await probePort('127.0.0.1', 11434, 300)) {
+      const ready = await waitOllamaReady(5_000);
+      if (ready) return true;
+      console.warn('\x1b[31m[aicc-ollama]\x1b[0m 端口 11434 已被占用，但不是可用的 Ollama API，跳过自动启动');
+      ensuringPromise = null;
+      return false;
+    }
     console.log('\x1b[33m[aicc-ollama]\x1b[0m 端口 11434 未在监听，自动启动 `ollama serve` ...');
     try {
       managedOllama = spawn(
@@ -96,11 +374,19 @@ async function ensureOllamaRunning(): Promise<boolean> {
     }
     const ready = await waitOllamaReady(20_000);
     if (ready) console.log('\x1b[32m[aicc-ollama]\x1b[0m ✓ ollama 已就绪 (auto-managed)');
-    else console.warn('\x1b[31m[aicc-ollama]\x1b[0m ⚠ 20s 内 ollama 未就绪，跳过');
+    else {
+      console.warn('\x1b[31m[aicc-ollama]\x1b[0m ⚠ 20s 内 ollama 未就绪，跳过');
+      ensuringPromise = null;
+    }
     // ensuringPromise 保持已 resolve，下次直接复用结果（避免重复 spawn）
     return ready;
   })();
   return ensuringPromise;
+}
+
+function ensureOllamaOnServerStart(): void {
+  if (serverOllamaMode === 'disabled' || !serverOllamaAutostart) return;
+  void ensureOllamaRunning();
 }
 
 function killManagedOllama() {
@@ -134,6 +420,85 @@ async function unloadOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
     }
   }
 }
+
+async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: string; label?: string }>) {
+  const unique = targets
+    .filter((t) => t.baseUrl?.trim() && t.model?.trim())
+    .filter((t, i, arr) => arr.findIndex((x) => x.baseUrl?.trim() === t.baseUrl?.trim() && x.model?.trim() === t.model?.trim()) === i);
+  if (unique.length === 0) return [];
+  if (unique.length > 1) {
+    return unique.map((t) => ({
+      label: t.label ?? 'ollama',
+      model: t.model!,
+      ok: false,
+      latencyMs: 0,
+      error: '本地 Ollama 只允许同时预热一种模型',
+    }));
+  }
+  if (warmupPromise) return warmupPromise;
+  if (Date.now() - lastWarmupAt < 60_000) {
+    return unique.map((t) => ({
+      label: t.label ?? 'ollama',
+      model: t.model!,
+      ok: true,
+      latencyMs: 0,
+    }));
+  }
+  warmupPromise = (async () => {
+    const target = unique[0];
+    const model = target.model!.trim();
+    const startedAt = Date.now();
+    try {
+      if (!(await probePort('127.0.0.1', 11434, 300))) {
+        const ok = await ensureOllamaRunning();
+        if (!ok) {
+          return [{
+            label: target.label ?? 'ollama',
+            model,
+            ok: false,
+            latencyMs: Date.now() - startedAt,
+            error: serverOllamaMode === 'disabled'
+              ? 'ollama 模式已关闭'
+              : 'ollama 未就绪；已尝试自动启动，请确认本机已安装 Ollama 且 11434 未被其它程序占用',
+          }];
+        }
+      }
+      const upstream = await fetch('http://127.0.0.1:11434/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'hi /no_think' }],
+          stream: false,
+          keep_alive: '24h',
+          options: { num_predict: 1, temperature: 0 },
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      const text = upstream.ok ? '' : await upstream.text().catch(() => '');
+      lastWarmupAt = Date.now();
+      return [{
+        label: target.label ?? 'ollama',
+        model,
+        ok: upstream.ok,
+        latencyMs: Date.now() - startedAt,
+        error: upstream.ok ? undefined : `HTTP ${upstream.status}: ${text.slice(0, 160)}`,
+      }];
+    } catch (err: any) {
+      return [{
+        label: target.label ?? 'ollama',
+        model,
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        error: String(err?.message || err).slice(0, 160),
+      }];
+    } finally {
+      warmupPromise = null;
+    }
+  })();
+  return warmupPromise;
+}
+
 process.on('exit', killManagedOllama);
 process.on('SIGINT', () => { killManagedOllama(); process.exit(0); });
 process.on('SIGTERM', () => { killManagedOllama(); process.exit(0); });
@@ -168,7 +533,9 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
         res.statusCode = 503;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({
-          error: 'ollama 未就绪：请检查 PATH 中是否有 `ollama` 命令，或手动 `ollama serve`',
+          error: serverOllamaMode === 'disabled'
+            ? 'ollama 模式已关闭'
+            : 'ollama 未就绪：平台已尝试自动启动 `ollama serve`，请确认本机已安装 Ollama，且 11434 端口未被其它程序占用',
         }));
         return;
       }
@@ -222,11 +589,11 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
 const ollamaAutostartPlugin: Plugin = {
   name: 'aicc-ollama-autostart',
   configureServer(server) {
-    // 启动 vite 时不立即拉起 ollama（lazy）：第一次有 ollama 请求才 spawn
-    // 这样不依赖 ollama 的项目 / 用户也不会被影响
+    ensureOllamaOnServerStart();
     server.httpServer?.on('close', killManagedOllama);
   },
   configurePreviewServer(server) {
+    ensureOllamaOnServerStart();
     server.httpServer?.on('close', killManagedOllama);
   },
 };
@@ -241,9 +608,13 @@ export default defineConfig({
       name: 'aicc-ai-proxy',
       configureServer(server) {
         installAiProxyMiddleware(server.middlewares);
+        installLocalProblemBankMiddleware(server.middlewares);
+        installFeedbackMiddleware(server.middlewares);
       },
       configurePreviewServer(server) {
         installAiProxyMiddleware(server.middlewares);
+        installLocalProblemBankMiddleware(server.middlewares);
+        installFeedbackMiddleware(server.middlewares);
       },
     },
     {
@@ -493,6 +864,9 @@ export default defineConfig({
             const payload = await readJsonBody<{ mode?: 'enabled' | 'disabled' }>(req);
             serverOllamaMode = payload.mode === 'disabled' ? 'disabled' : 'enabled';
             process.env.AICC_OLLAMA = serverOllamaMode === 'disabled' ? '0' : '1';
+            if (serverOllamaMode === 'enabled') {
+              void ensureOllamaRunning();
+            }
             res.statusCode = 200;
             res.setHeader('content-type', 'application/json');
             res.end(JSON.stringify({ ok: true, mode: serverOllamaMode }));
@@ -522,6 +896,32 @@ export default defineConfig({
             res.statusCode = 200;
             res.setHeader('content-type', 'application/json');
             res.end(JSON.stringify({ ok: true, count: targets.length }));
+          } catch (e: any) {
+            res.statusCode = 400;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ error: String(e?.message || e) }));
+          }
+        });
+
+        server.middlewares.use('/__aicc-ollama-warmup', async (req, res) => {
+          setCors(res, 'POST, OPTIONS');
+          if (req.method === 'OPTIONS') {
+            res.statusCode = 204;
+            res.end();
+            return;
+          }
+          if (req.method !== 'POST') {
+            res.statusCode = 405;
+            res.end(JSON.stringify({ error: 'method not allowed' }));
+            return;
+          }
+          try {
+            const payload = await readJsonBody<{ targets?: Array<{ baseUrl?: string; model?: string; label?: string }> }>(req);
+            const targets = Array.isArray(payload.targets) ? payload.targets : [];
+            const results = await warmupOllamaTargets(targets);
+            res.statusCode = 200;
+            res.setHeader('content-type', 'application/json');
+            res.end(JSON.stringify({ ok: true, results }));
           } catch (e: any) {
             res.statusCode = 400;
             res.setHeader('content-type', 'application/json');

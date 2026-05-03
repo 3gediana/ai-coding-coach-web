@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock, Plus, Search, Archive, ArchiveRestore, X, Layers } from 'lucide-react';
+import { ClipboardList, History, LayoutDashboard, ChevronLeft, Trash2, Download, CheckCircle2, Clock, Plus, Search, Archive, ArchiveRestore, X, Layers, BookOpenCheck } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { getArea } from '../core/taxonomy';
@@ -7,6 +7,7 @@ import { lazy, Suspense, startTransition, useMemo, useState } from 'react';
 import { ResizeHandle } from './ResizeHandle';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
 import { ErrorBoundary } from './ErrorBoundary';
+import { UserFeedbackButton } from './UserFeedbackButton';
 import type { SubmissionVerdict } from '../core/types';
 
 const Dashboard = lazy(() => import('./Dashboard').then((m) => ({ default: m.Dashboard })));
@@ -152,10 +153,10 @@ export function Sidebar() {
   const hiddenSessionCount = Math.max(0, sessions.length - visibleSessions.length);
 
   const items = [
-    { id: 'problems' as const, icon: Library, label: '题目库', shortLabel: '题库', count: activeProblems.length },
-    { id: 'mistakes' as const, icon: BookOpen, label: '错题本', shortLabel: '错题', count: mistakes.length },
+    { id: 'problems' as const, icon: ClipboardList, label: '题目库', shortLabel: '题库', count: activeProblems.length },
+    { id: 'mistakes' as const, icon: BookOpenCheck, label: '错题本', shortLabel: '错题', count: mistakes.length },
     { id: 'sessions' as const, icon: History, label: '学习记录', shortLabel: '记录', count: sessions.length },
-    { id: 'dashboard' as const, icon: BarChart3, label: '学习空间', shortLabel: '看板', count: undefined },
+    { id: 'dashboard' as const, icon: LayoutDashboard, label: '学习空间', shortLabel: '看板', count: undefined },
   ];
 
   return (
@@ -193,6 +194,8 @@ export function Sidebar() {
             </button>
           );
         })}
+        <div className="flex-1" />
+        <UserFeedbackButton variant="rail" />
       </div>
 
       {/* Panel */}
@@ -231,7 +234,7 @@ export function Sidebar() {
                           )}
                           title="日常做的题"
                         >
-                          <Library size={12} />
+                          <ClipboardList size={12} />
                           日常 ({activeProblems.length})
                         </button>
                         <button

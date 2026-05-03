@@ -265,4 +265,103 @@ describe('orchestrateHackChain', () => {
       'fix-out',
     ]);
   });
+
+  it('9. oracle 对拍不一致 — 视为 hack 成功', async () => {
+    const deps = makeHappyDeps({
+      generateAttacker: vi.fn(async () => ({
+        hypothesis: '小规模可用朴素解对拍',
+        candidates: [
+          {
+            kind: 'random_stress' as const,
+            description: '小规模随机压力',
+            stdin: '3\n1 2 3\n',
+            validationMethod: 'oracle' as const,
+            oracle: {
+              language: 'python' as const,
+              code: 'print(6)',
+            },
+          },
+        ],
+      })),
+      runCode: vi.fn(async () => ({
+        stdout: '5\n',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 50,
+      })),
+      runOracle: vi.fn(async () => ({
+        stdout: '6\n',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 20,
+      })),
+    });
+    const result = await orchestrateHackChain(CTX, deps);
+
+    expect(result.executor!.winningIndex).toBe(0);
+    expect(result.executor!.results[0].validationMethod).toBe('oracle');
+    expect(result.executor!.results[0].oracleOutput).toBe('6\n');
+    expect(result.executor!.results[0].matchesExpected).toBe(false);
+    expect(result.executor!.results[0].reason).toMatch(/oracle 对拍不一致/);
+  });
+
+  it('10. metamorphic 关系失败 — 视为 hack 成功', async () => {
+    const deps = makeHappyDeps({
+      generateAttacker: vi.fn(async () => ({
+        hypothesis: '排序类输入打乱后答案应一致',
+        candidates: [
+          {
+            kind: 'special_structure' as const,
+            description: '打乱输入顺序',
+            stdin: '3\n1 2 3\n',
+            validationMethod: 'metamorphic' as const,
+            metamorphic: {
+              transformedStdin: '3\n3 2 1\n',
+              relation: 'same_output' as const,
+              expectedRelation: '输入顺序不影响答案',
+            },
+          },
+        ],
+      })),
+      runCode: vi.fn(async (_code, stdin) => ({
+        stdout: stdin.includes('1 2 3') ? '6\n' : '5\n',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 50,
+      })),
+    });
+    const result = await orchestrateHackChain(CTX, deps);
+
+    expect(result.executor!.winningIndex).toBe(0);
+    expect(result.executor!.results[0].validationMethod).toBe('metamorphic');
+    expect(result.executor!.results[0].metamorphicPassed).toBe(false);
+    expect(result.executor!.results[0].reason).toMatch(/变形关系失败/);
+  });
+
+  it('11. oracle 缺少朴素解代码 — 降级为 runtime_only', async () => {
+    const deps = makeHappyDeps({
+      generateAttacker: vi.fn(async () => ({
+        hypothesis: '模型返回了不完整 oracle 任务',
+        candidates: [
+          {
+            kind: 'random_stress' as const,
+            description: '缺少 oracle code',
+            stdin: '3\n1 2 3\n',
+            validationMethod: 'oracle' as const,
+          },
+        ],
+      })),
+      runCode: vi.fn(async () => ({
+        stdout: '6\n',
+        stderr: '',
+        exitCode: 0,
+        durationMs: 50,
+      })),
+    });
+    const result = await orchestrateHackChain(CTX, deps);
+
+    expect(result.executor!.winningIndex).toBeNull();
+    expect(result.executor!.results[0].validationMethod).toBe('runtime_only');
+    expect(result.executor!.results[0].hacked).toBe(false);
+  });
 });

@@ -78,7 +78,7 @@ export interface FeynmanDeps {
 
 // ───────── Helpers ─────────
 
-const STUDENT_FALLBACK_TEXT = '（AI 学生暂时没听懂，可以换种说法再讲一遍吗？）';
+const STUDENT_FALLBACK_TEXT = '（AI 暂时没整理出合适追问点，可以换个角度再讲一遍吗？）';
 
 /** 用户至少讲过几轮才允许 evaluate */
 export const FEYNMAN_MIN_USER_TURNS = 2;

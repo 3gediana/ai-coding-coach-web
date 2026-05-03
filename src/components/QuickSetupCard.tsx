@@ -17,6 +17,7 @@ import type { AIConfig, AIProvider } from '../core/types';
 import { AIClient } from '../core/ai/client';
 import { toast } from 'sonner';
 import { cn } from '../lib/cn';
+import { canEditLocalSettings, getSettingsAccessHost } from '../lib/settingsAccess';
 
 const QUICK_SETUP_PROVIDERS: AIProvider[] = ['deepseek', 'minimax', 'openai'];
 
@@ -25,6 +26,8 @@ export function QuickSetupCard() {
   const setCfg = useStore((s) => s.setAIConfig);
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const settingsOpen = useStore((s) => s.settingsOpen);
+  const settingsEditable = canEditLocalSettings();
+  const settingsAccessHost = getSettingsAccessHost();
 
   // 只在还没配置 + Settings 没打开时显示（避免和 SettingsModal 同时存在）
   // 走 hasUsableAIConfig，确保用户用「模型注册表」配好的情况下也认可，不再死循环浮现。
@@ -52,7 +55,54 @@ export function QuickSetupCard() {
 
   const preset = PRESETS.find((p) => p.id === provider)!;
 
+  if (!settingsEditable) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.2 }}
+        className="absolute inset-0 z-20 flex items-center justify-center bg-bg/70 backdrop-blur-sm"
+      >
+        <motion.div
+          initial={{ y: 12, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ duration: 0.25, delay: 0.05 }}
+          className="glass-card max-w-md w-full mx-6 p-6 space-y-4"
+        >
+          <div className="flex items-start gap-2">
+            <AlertCircle size={20} className="text-warn shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <h2 className="text-base font-semibold mb-1">远程访问已锁定设置</h2>
+              <p className="text-[12px] text-ink-mute leading-relaxed">
+                当前地址 <span className="font-mono text-ink">{settingsAccessHost}</span> 不能填写或保存 API Key。
+                请在本机用 localhost / 127.0.0.1 / ::1 打开应用后配置 AI。
+              </p>
+            </div>
+            <button
+              onClick={() => setDismissed(true)}
+              className="text-ink-mute hover:text-ink text-[11px]"
+              title="本次会话隐藏"
+            >
+              先不
+            </button>
+          </div>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="btn w-full justify-center"
+            type="button"
+          >
+            <Settings2 size={13} /> 查看设置锁定说明
+          </button>
+        </motion.div>
+      </motion.div>
+    );
+  }
+
   const onConnect = async () => {
+    if (!settingsEditable) {
+      setError('远程访问已禁止保存 AI 配置。请用 localhost / 127.0.0.1 / ::1 打开应用后再填写 API Key。');
+      return;
+    }
     const trimmedKey = apiKey.trim();
     if (!trimmedKey) {
       setError('请填 API Key');
@@ -70,6 +120,7 @@ export function QuickSetupCard() {
       model: preset.defaultModel,
       contextWindowTokens: preset.modelContextTokens?.[preset.defaultModel] ?? preset.defaultContextWindowTokens,
       primaryModelId: undefined,
+      primaryModelIdExplicit: true,
     };
     try {
       const client = new AIClient(draft);

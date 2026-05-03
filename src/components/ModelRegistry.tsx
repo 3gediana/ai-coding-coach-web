@@ -14,7 +14,7 @@ import { Plus, Pencil, Trash2, X, Check, Database, Loader2, RefreshCw, AlertTria
 import { cn } from '../lib/cn';
 import { useStore } from '../lib/store';
 import type { AIConfig, AIProvider, ModelEntry } from '../core/types';
-import { PRESETS } from '../lib/presets';
+import { DEFAULT_AI_CONFIG, PRESETS } from '../lib/presets';
 import { fetchOllamaModels, formatModelSize } from '../lib/ollama';
 import { formatTokenWindow, inferModelContextWindowTokens } from '../core/coach/contextBudget';
 
@@ -30,6 +30,8 @@ const PROVIDER_LABELS: Record<AIProvider, string> = {
   ollama: 'Ollama 本地',
   custom: '自定义',
 };
+
+const DEFAULT_MODEL_IDS = new Set((DEFAULT_AI_CONFIG.modelRegistry ?? []).map((m) => m.id));
 
 interface FormState {
   id?: string;
@@ -54,6 +56,12 @@ const EMPTY_FORM: FormState = {
 function inferContextForForm(provider: AIProvider, model: string, fallback?: number): number {
   const preset = PRESETS.find((p) => p.id === provider);
   return preset?.modelContextTokens?.[model] ?? preset?.defaultContextWindowTokens ?? inferModelContextWindowTokens(provider, model, fallback);
+}
+
+function parsePositiveIntInput(value: string): number | undefined {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
 }
 
 /** Settings 顶部的"已注册模型"区块：列表 + 新建表单 */
@@ -102,19 +110,31 @@ export function ModelRegistrySection({
       apiKey: editing.apiKey.trim(),
       model: editing.model.trim(),
       contextWindowTokens: editing.contextWindowTokens ?? inferContextForForm(editing.provider, editing.model),
-      numCtx: editing.numCtx,
+      numCtx: editing.provider === 'ollama' ? editing.numCtx : undefined,
     };
     const nextRegistry = editing.id
       ? registry.map((m) => (m.id === editing.id ? entry : m))
       : [...registry, entry];
-    persistConfig({ ...effectiveConfig, modelRegistry: nextRegistry });
+    const shouldPromoteToPrimary =
+      !editing.id &&
+      !effectiveConfig.primaryModelIdExplicit &&
+      (!effectiveConfig.primaryModelId || DEFAULT_MODEL_IDS.has(effectiveConfig.primaryModelId));
+    persistConfig({
+      ...effectiveConfig,
+      modelRegistry: nextRegistry,
+      primaryModelId: shouldPromoteToPrimary ? id : effectiveConfig.primaryModelId,
+      primaryModelIdExplicit: shouldPromoteToPrimary ? true : effectiveConfig.primaryModelIdExplicit,
+    });
     setEditing(null);
   };
 
   const removeModel = (id: string) => {
     const nextRegistry = registry.filter((m) => m.id !== id);
     const cleaned: AIConfig = { ...effectiveConfig, modelRegistry: nextRegistry };
-    if (cleaned.primaryModelId === id) cleaned.primaryModelId = undefined;
+    if (cleaned.primaryModelId === id) {
+      cleaned.primaryModelId = undefined;
+      cleaned.primaryModelIdExplicit = false;
+    }
     if (cleaned.qualityModelId === id) cleaned.qualityModelId = undefined;
     if (cleaned.fastLane?.modelId === id) cleaned.fastLane = { ...cleaned.fastLane, modelId: undefined };
     if (cleaned.intentRouter?.modelId === id) cleaned.intentRouter = { ...cleaned.intentRouter, modelId: undefined };
@@ -154,32 +174,38 @@ export function ModelRegistrySection({
           {registry.map((m) => (
             <li
               key={m.id}
-              className="flex items-center gap-2 px-2 py-1.5 rounded border border-line/40 bg-bg-base/50 text-[12px]"
+              className="flex items-start gap-2 px-2 py-2 rounded border border-line/40 bg-bg-base/50 text-[12px]"
             >
-              <span className="font-medium text-ink truncate flex-1" title={`${m.baseUrl} · ${m.model}`}>
-                {m.label}
-              </span>
-              <span className="chip text-[10px] px-1.5 py-0">{PROVIDER_LABELS[m.provider]}</span>
-              <span className="text-[10px] text-ink-mute font-mono truncate max-w-[140px]" title={m.model}>
-                {m.model}
-              </span>
-              <span className="text-[10px] text-ink-mute font-mono shrink-0">
-                {formatTokenWindow(m.contextWindowTokens ?? inferContextForForm(m.provider, m.model))}
-              </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-medium text-ink truncate" title={`${m.baseUrl} · ${m.model}`}>
+                    {m.label}
+                  </span>
+                  <span className="chip text-[10px] px-1.5 py-0 shrink-0">{PROVIDER_LABELS[m.provider]}</span>
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-[10px] text-ink-mute font-mono min-w-0">
+                  <span className="truncate" title={m.model}>{m.model}</span>
+                  <span className="shrink-0">{formatTokenWindow(m.contextWindowTokens ?? inferContextForForm(m.provider, m.model))}</span>
+                  {m.numCtx && <span className="shrink-0">num_ctx {m.numCtx}</span>}
+                </div>
+                <div className="mt-0.5 text-[10px] text-ink-mute font-mono truncate" title={m.baseUrl}>
+                  {m.baseUrl}
+                </div>
+              </div>
               <button
                 type="button"
                 onClick={() => startEdit(m)}
-                className="btn-ghost p-1"
-                title="编辑"
+                className="chip cursor-pointer hover:border-accent/60 text-[10px] px-2 py-0.5 shrink-0 flex items-center gap-1"
+                title="编辑 URL / API Key / 模型参数"
               >
-                <Pencil size={11} />
+                <Pencil size={11} /> 编辑
               </button>
               <button
                 type="button"
                 onClick={() => {
                   if (confirm(`删除「${m.label}」？引用该模型的 Agent 会回到未配置状态。`)) removeModel(m.id);
                 }}
-                className="btn-ghost p-1 hover:text-bad"
+                className="btn-ghost p-1 hover:text-bad shrink-0"
                 title="删除"
               >
                 <Trash2 size={11} />
@@ -191,8 +217,15 @@ export function ModelRegistrySection({
 
       {editing && (
         <div className="mt-3 border-t border-line/40 pt-3 space-y-2">
-          <div className="text-[11px] font-semibold text-accent">
-            {editing.id ? '编辑模型' : '注册新模型'}
+          <div className="flex items-center gap-2">
+            <div className="text-[11px] font-semibold text-accent">
+              {editing.id ? `编辑模型：${editing.label || editing.model}` : '注册新模型'}
+            </div>
+            {onChange && (
+              <div className="text-[10px] text-ink-mute ml-auto">
+                应用后还需点击设置底部「保存并测试」
+              </div>
+            )}
           </div>
 
           {/* Provider 预设 chip */}
@@ -238,21 +271,39 @@ export function ModelRegistrySection({
             </FormField>
           </div>
 
-          <FormField label="上下文窗口 tokens">
-            <input
-              className="input font-mono text-xs"
-              type="number"
-              min="1024"
-              placeholder={String(inferContextForForm(editing.provider, editing.model))}
-              value={editing.contextWindowTokens ?? ''}
-              onChange={(e) =>
-                setEditing({
-                  ...editing,
-                  contextWindowTokens: e.target.value ? Number(e.target.value) : undefined,
-                })
-              }
-            />
-          </FormField>
+          <div className="grid grid-cols-2 gap-2">
+            <FormField label="上下文窗口 tokens">
+              <input
+                className="input font-mono text-xs"
+                type="number"
+                min="1024"
+                placeholder={String(inferContextForForm(editing.provider, editing.model))}
+                value={editing.contextWindowTokens ?? ''}
+                onChange={(e) =>
+                  setEditing({
+                    ...editing,
+                    contextWindowTokens: parsePositiveIntInput(e.target.value),
+                  })
+                }
+              />
+            </FormField>
+            <FormField label="Ollama num_ctx">
+              <input
+                className="input font-mono text-xs"
+                type="number"
+                min="1024"
+                placeholder={editing.provider === 'ollama' ? '例如 20480' : '仅 Ollama 生效'}
+                value={editing.numCtx ?? ''}
+                disabled={editing.provider !== 'ollama'}
+                onChange={(e) =>
+                  setEditing({
+                    ...editing,
+                    numCtx: parsePositiveIntInput(e.target.value),
+                  })
+                }
+              />
+            </FormField>
+          </div>
 
           <FormField label="Base URL（完整 chat-completions endpoint）">
             <input
@@ -283,7 +334,7 @@ export function ModelRegistrySection({
               disabled={!editing.label.trim() || !editing.baseUrl.trim() || !editing.model.trim()}
               className="btn-primary text-xs ml-auto"
             >
-              <Check size={12} /> 保存
+              <Check size={12} /> {editing.id ? '保存修改' : '保存模型'}
             </button>
           </div>
         </div>

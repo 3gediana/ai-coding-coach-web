@@ -11,6 +11,7 @@ import type {
   Problem,
   Session,
 } from '../core/types';
+import { safeGetItem, safeSetItem } from './safeLocalStorage';
 
 const DB_NAME = 'ai-coding-coach';
 const DB_VERSION = 2; // v2: 加 files store
@@ -24,6 +25,34 @@ interface Schema {
 }
 
 let dbPromise: Promise<IDBPDatabase<Schema>> | null = null;
+let problemBankImportPromise: Promise<void> | null = null;
+const mirroredProblemIds = new Set<string>();
+const LS_DELETED_PROBLEMS = 'aicc.deletedProblems.v1';
+
+function readDeletedProblemIds(): Set<string> {
+  try {
+    const parsed = JSON.parse(safeGetItem(LS_DELETED_PROBLEMS) || '[]');
+    return new Set(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function isProblemDeletedLocally(id: string): boolean {
+  return readDeletedProblemIds().has(id);
+}
+
+export function markProblemDeletedLocally(id: string): void {
+  const ids = readDeletedProblemIds();
+  ids.add(id);
+  safeSetItem(LS_DELETED_PROBLEMS, JSON.stringify([...ids]));
+}
+
+export function clearProblemDeletedLocally(id: string): void {
+  const ids = readDeletedProblemIds();
+  if (!ids.delete(id)) return;
+  safeSetItem(LS_DELETED_PROBLEMS, JSON.stringify([...ids]));
+}
 
 function getDB() {
   if (!dbPromise) {
@@ -62,9 +91,56 @@ function getDB() {
   return dbPromise;
 }
 
+async function deleteProblemFromLocalBank(id: string): Promise<void> {
+  try {
+    await fetch(`/__problem-bank/problems?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  } catch {
+    /* ignore */
+  }
+}
+
+async function importProblemsFromLocalBank(): Promise<Problem[]> {
+  try {
+    const res = await fetch('/__problem-bank/problems');
+    if (!res.ok) return [];
+    const data = await res.json() as { problems?: Problem[] };
+    return Array.isArray(data.problems) ? data.problems : [];
+  } catch {
+    return [];
+  }
+}
+
+async function ensureLocalProblemBankImported(db: IDBPDatabase<Schema>): Promise<void> {
+  if (problemBankImportPromise) {
+    await problemBankImportPromise;
+    return;
+  }
+  problemBankImportPromise = (async () => {
+    const localProblems = await importProblemsFromLocalBank();
+    if (localProblems.length === 0) return;
+    const tx = db.transaction('problems', 'readwrite');
+    for (const p of localProblems) {
+      if (isProblemDeletedLocally(p.id)) continue;
+      const existing = await tx.store.get(p.id);
+      if (!existing) {
+        await tx.store.put(p);
+      }
+    }
+    await tx.done;
+  })();
+  try {
+    await problemBankImportPromise;
+  } finally {
+    problemBankImportPromise = null;
+  }
+}
+
 export class BrowserStorage implements CoachStorage {
   // ===== Problems =====
   async saveProblem(p: Problem) {
+    clearProblemDeletedLocally(p.id);
     const db = await getDB();
     await db.put('problems', p);
   }
@@ -74,12 +150,16 @@ export class BrowserStorage implements CoachStorage {
   }
   async listProblems() {
     const db = await getDB();
+    await ensureLocalProblemBankImported(db);
     const all = await db.getAll('problems');
     return all.sort((a, b) => b.createdAt - a.createdAt);
   }
   async deleteProblem(id: string) {
+    markProblemDeletedLocally(id);
     const db = await getDB();
     await db.delete('problems', id);
+    mirroredProblemIds.delete(id);
+    await deleteProblemFromLocalBank(id);
   }
 
   // ===== Mistakes =====
@@ -141,6 +221,18 @@ export class BrowserStorage implements CoachStorage {
       events = events.slice(-opts.limit);
     }
     return events;
+  }
+  async deleteEventsByProblem(problemId: string) {
+    const db = await getDB();
+    const tx = db.transaction('events', 'readwrite');
+    const store = tx.objectStore('events');
+    const [keys, events] = await Promise.all([store.getAllKeys(), store.getAll()]);
+    await Promise.all(
+      events.map((event, idx) =>
+        event.problemId === problemId ? store.delete(keys[idx]) : Promise.resolve(),
+      ),
+    );
+    await tx.done;
   }
 
   // ===== Files =====

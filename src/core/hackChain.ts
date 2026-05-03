@@ -43,13 +43,37 @@ export interface AttackerOutput {
 }
 
 export interface AttackerCandidate {
-  kind: 'edge' | 'large' | 'degenerate' | 'tricky';
+  kind:
+    | 'min_boundary'
+    | 'max_boundary'
+    | 'duplicates'
+    | 'monotonic'
+    | 'random_stress'
+    | 'special_structure'
+    | 'anti_greedy'
+    | 'overflow'
+    | 'edge'
+    | 'large'
+    | 'degenerate'
+    | 'tricky';
   /** 给评委 / 学生看的简短描述（≤ 30 字） */
   description: string;
   /** 直接喂 stdin 的字符串 */
   stdin: string;
   /** Attacker 推测的期望输出；填了 Executor 会用来判 hack 是否成功 */
   expectedOutput?: string;
+  expectedRisk?: string;
+  targetBugType?: string;
+  validationMethod?: 'expected_output' | 'oracle' | 'metamorphic' | 'runtime_only';
+  oracle?: {
+    language: 'python';
+    code: string;
+  };
+  metamorphic?: {
+    transformedStdin: string;
+    relation: 'same_output' | 'different_output';
+    expectedRelation?: string;
+  };
 }
 
 /** Step 2: Executor — 把 Attacker 给的候选挨个跑一遍，挑出真能 hack 的 */
@@ -65,8 +89,12 @@ export interface ExecutorRunResult {
   stdout: string;
   stderr: string;
   durationMs: number;
+  validationMethod?: AttackerCandidate['validationMethod'];
   /** 若 candidate.expectedOutput 不为空，则比对 stdout 是否匹配 */
   matchesExpected?: boolean;
+  oracleOutput?: string;
+  transformedStdout?: string;
+  metamorphicPassed?: boolean;
   /** 是否成功 hack（exit ≠ 0 / TLE / 输出与期望不符 / 编译错） */
   hacked: boolean;
   /** 若 hacked=true，给一段简短理由（"TLE 2003ms" / "Wrong: 期望 5 实际 4"） */
@@ -129,26 +157,49 @@ ${samplesBlock}
 ${ctx.code.slice(0, 4500)}
 \`\`\`
 
-请按"最有可能让代码挂掉"的顺序产出 **1-3 个候选 hack 输入**。重点考虑：
-- 边界值（最小 / 最大 / 0 / 1 / 极端规模）
-- 退化结构（已排序 / 全相同 / 一条链 / 极不平衡）
+请按"最有可能让代码挂掉"的顺序产出 **3-5 个候选验证任务**。每个任务都要说明攻击意图，并尽量覆盖不同类型：
+- 最小边界 / 最大边界
+- 重复元素 / 全相同元素
+- 单调序列（升序、降序、链式结构）
+- 随机压力（小规模但结构复杂）
+- 特殊结构（空、孤立点、多个连通块、极不平衡）
+- 反贪心样例
 - 整数溢出 / 越界 / 浮点精度
-- 题面里容易忽略的特殊情况
+
+验证方法优先级：
+1. 能心算正确答案时，用 expected_output。
+2. 小规模可暴力求解时，用 oracle，并给一段 Python3 朴素解代码。该 oracle 只需要适用于你给的 stdin 或小规模随机/边界输入，不要写优化算法。
+3. 难以直接算答案时，用 metamorphic，给 transformedStdin 和 relation：
+   - same_output：原输入与变形输入正确输出应完全一致
+   - different_output：原输入与变形输入正确输出应不同
+4. 只能验证 RE/TLE/崩溃时，用 runtime_only。
 
 输出严格 JSON：
 {
   "hypothesis": "一句话：你认为这份代码会在哪类 case 上挂（≤ 60 字）",
   "candidates": [
     {
-      "kind": "edge | large | degenerate | tricky",
+      "kind": "min_boundary | max_boundary | duplicates | monotonic | random_stress | special_structure | anti_greedy | overflow | edge | large | degenerate | tricky",
       "description": "≤ 30 字简短描述",
+      "expectedRisk": "为什么这个 case 可能触发错误（≤ 80 字）",
+      "targetBugType": "边界条件 | 复杂度 | 溢出 | 贪心反例 | 状态转移 | 数据结构不变量 | 输入解析 | 其他",
+      "validationMethod": "expected_output | oracle | metamorphic | runtime_only",
       "stdin": "可粘贴的 stdin 字符串（≤ 20 行）",
-      "expectedOutput": "如果你能心算出正确答案就给（不确定置空字符串）"
+      "expectedOutput": "validationMethod=expected_output 时填写；否则置空字符串",
+      "oracle": {
+        "language": "python",
+        "code": "validationMethod=oracle 时填写 Python3 朴素解；否则置空字符串"
+      },
+      "metamorphic": {
+        "transformedStdin": "validationMethod=metamorphic 时填写变形后的 stdin；否则置空字符串",
+        "relation": "same_output | different_output",
+        "expectedRelation": "这个变形关系为什么成立（≤ 80 字）"
+      }
     }
   ]
 }
 
-⚠ candidates 至少 1 个、最多 3 个；按攻击力排序（最强放第一）。
+⚠ candidates 至少 1 个、最多 5 个；按攻击力和可验证性排序（最强且最可靠放第一）。
 直接输出 JSON。`,
   };
 }
@@ -183,6 +234,9 @@ ${args.attackerHypothesis}
 
 【成功 hack 的 case】
 描述：${args.winningCandidate.description}
+攻击意图：${args.winningCandidate.expectedRisk ?? '未提供'}
+目标 bug 类型：${args.winningCandidate.targetBugType ?? '未提供'}
+验证方法：${args.winningCandidate.validationMethod ?? 'runtime_only'}
 stdin（前 200 字）：
 ${args.winningCandidate.stdin.slice(0, 200)}
 ${args.winningCandidate.expectedOutput ? `期望输出：${args.winningCandidate.expectedOutput.slice(0, 80)}` : ''}

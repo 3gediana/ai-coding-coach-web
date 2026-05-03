@@ -2,12 +2,12 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useEffect, useRef, useState } from 'react';
 import {
   Settings,
-  Sparkles,
-  Plus,
-  CheckCircle2,
-  Library,
-  MessageCircleQuestion,
-  Brain,
+  Bot,
+  FilePlus2,
+  BadgeCheck,
+  ClipboardList,
+  MessagesSquare,
+  Presentation,
   ChevronDown,
 } from 'lucide-react';
 import { hasUsableAIConfig, useStore } from '../lib/store';
@@ -63,7 +63,7 @@ export function TopBar() {
       {/* Logo */}
       <div className="flex items-center gap-2 mr-2">
         <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-accent to-cyan flex items-center justify-center shadow-soft">
-          <Sparkles size={18} className="text-bg" strokeWidth={2.5} />
+          <Bot size={18} className="text-bg" strokeWidth={2.5} />
         </div>
         <div className="hidden sm:block">
           <div className="text-sm font-bold leading-none">AI Coding Coach</div>
@@ -123,7 +123,7 @@ export function TopBar() {
             : '没题也能问：学习方向 / 配置 / 算法概念都行'
         }
       >
-        <MessageCircleQuestion size={14} />
+        <MessagesSquare size={14} />
         <span className="hidden md:inline">问教练</span>
         {tasksRunning > 0 && (
           <span className="ml-1 px-1.5 py-0.5 text-[10px] rounded-full bg-white/20">
@@ -204,7 +204,7 @@ function ProblemMenu({
   }, [open]);
 
   const items: Array<{
-    icon: typeof Library;
+    icon: typeof ClipboardList;
     label: string;
     desc: string;
     onClick: () => void;
@@ -212,28 +212,28 @@ function ProblemMenu({
     accent?: boolean;
   }> = [
     {
-      icon: Library,
+      icon: ClipboardList,
       label: '题库',
       desc: 'OJ 题库（洛谷 / AtCoder / POJ / HDU）',
       onClick: onOpenBrowser,
     },
     {
-      icon: Plus,
+      icon: FilePlus2,
       label: '录入题目',
       desc: '手动录入 / 贴题面',
       onClick: onOpenEditor,
     },
     {
-      icon: CheckCircle2,
+      icon: BadgeCheck,
       label: '登记提交',
       desc: 'AC/WA/TLE/... → AI 针对性分析',
       onClick: onOpenSubmit,
       disabled: !hasActiveProblem || !apiOk,
     },
     {
-      icon: Brain,
+      icon: Presentation,
       label: '费曼模式',
-      desc: '用你的话给 AI 讲题，AI 装菜鸟提问',
+      desc: '用你的话讲题，AI 从初学者视角追问',
       onClick: onOpenFeynman,
       disabled: !hasActiveProblem || !apiOk,
       accent: true,
@@ -250,7 +250,7 @@ function ProblemMenu({
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        <Library size={15} />
+        <ClipboardList size={15} />
         <span className="hidden md:inline text-[12px]">题目</span>
         <ChevronDown size={12} className={cn('transition-transform', open && 'rotate-180')} />
       </button>

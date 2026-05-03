@@ -107,6 +107,8 @@ export function AlgoVizPanel(): React.ReactElement {
     status === 'ready' ||
     (status === 'failed' && hasUsable) ||
     (status === 'generating-status' && hasUsable);
+  const isAnimGenerating =
+    status === 'status-ready' || status === 'generating-anim' || status === 'generating-status';
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -127,7 +129,7 @@ export function AlgoVizPanel(): React.ReactElement {
             </span>
             <button
               className="text-[11px] underline hover:no-underline"
-              onClick={() => void requestAnimOnly(problem.id)}
+              onClick={() => void requestAnimOnly(problem.id, { force: true })}
             >
               重试
             </button>
@@ -148,6 +150,7 @@ export function AlgoVizPanel(): React.ReactElement {
           <GeneratingView
             title={showRealtimeStatus ? '生成 Status 模块卡片中…' : '准备动画素材中…'}
             subtitle="预计 ~20 秒"
+            onRetry={() => void requestGen(problem.id, { force: true })}
           />
         )}
 
@@ -160,10 +163,8 @@ export function AlgoVizPanel(): React.ReactElement {
             moduleStatus={moduleStatus}
             detecting={showRealtimeStatus && detecting}
             hasUserCode={!!activeFileContent.trim()}
-            isAnimGenerating={
-              status === 'status-ready' || status === 'generating-anim' || status === 'generating-status'
-            }
-            onRegenerateAnim={() => void requestAnimOnly(problem.id)}
+            isAnimGenerating={isAnimGenerating}
+            onRegenerateAnim={() => void requestAnimOnly(problem.id, { force: isAnimGenerating })}
             showRealtimeStatus={showRealtimeStatus}
           />
         )}
@@ -334,9 +335,11 @@ function IdleOrFailedView({
 function GeneratingView({
   title,
   subtitle,
+  onRetry,
 }: {
   title: string;
   subtitle?: string;
+  onRetry?: () => void;
 }): React.ReactElement {
   return (
     <div className="px-4 py-8">
@@ -357,6 +360,17 @@ function GeneratingView({
             Animation
           </div>
         </div>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="relative mt-4 btn-ghost text-xs mx-auto"
+            title="如果上一次生成任务已经中断，可以强制解锁并重新开始"
+          >
+            <RefreshCw size={12} />
+            强制重试
+          </button>
+        )}
       </div>
     </div>
   );
@@ -601,15 +615,14 @@ function ReadyView({
           <button
             onClick={onRegenerateAnim}
             className="text-ink-mute hover:text-ink transition flex items-center gap-1 text-[10px]"
-            title="重新生成动画（重新调一次 Animation 模型）"
-            disabled={isAnimGenerating}
+            title={isAnimGenerating ? '强制解锁并重新生成动画' : '重新生成动画（重新调一次 Animation 模型）'}
           >
             <RefreshCw size={10} className={isAnimGenerating ? 'animate-spin' : ''} />
-            重新生成
+            {isAnimGenerating ? '强制重试' : '重新生成'}
           </button>
         </div>
         {isAnimGenerating ? (
-          <GeneratingView title="生成 Animation 中…" subtitle="预计 60–100 秒" />
+          <GeneratingView title="生成 Animation 中…" subtitle="预计 60–100 秒" onRetry={onRegenerateAnim} />
         ) : animationCode && schema ? (
           <AnimationPlayer animationCode={animationCode} schema={schema} />
         ) : (

@@ -13,14 +13,14 @@ import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import {
   Activity,
-  Sparkles,
+  Bot,
   Loader2,
-  ScrollText,
+  FileSearch,
   ExternalLink,
-  MessageCircle,
+  MessagesSquare,
   ChevronDown,
   AlertTriangle,
-  Wand2,
+  Film,
 } from 'lucide-react';
 import { MathMarkdown } from './MathMarkdown';
 import { QAPanel } from './QAPanel';
@@ -109,19 +109,19 @@ export function FeedbackPanel() {
         {/* 顶部 Tab bar — Coach 标识合并到此处省一行 36px；spinner 浮在最右 */}
         <div className="h-9 border-b border-line bg-bg-elev/60 flex items-stretch shrink-0 relative">
           <div className="px-2 flex items-center gap-1 text-accent-glow shrink-0">
-            <Sparkles size={12} />
+            <Bot size={12} />
           </div>
           <TabButton
             active={tab === 'analyze'}
             onClick={() => setTab('analyze')}
-            icon={<ScrollText size={12} />}
+            icon={<FileSearch size={12} />}
             label={resultFresh && result && result.issues.length > 0 ? '题目 · 分析' : '题目'}
             badge={resultFresh && result && result.issues.length > 0 ? result.issues.length : undefined}
           />
           <TabButton
             active={tab === 'ask'}
             onClick={() => setTab('ask')}
-            icon={<MessageCircle size={12} />}
+            icon={<MessagesSquare size={12} />}
             label="问教练"
             badge={qaCount > 0 ? qaCount : undefined}
             pulsing={qaActive}
@@ -129,7 +129,7 @@ export function FeedbackPanel() {
           <TabButton
             active={tab === 'algoviz'}
             onClick={() => setTab('algoviz')}
-            icon={<Wand2 size={12} />}
+            icon={<Film size={12} />}
             label={
               showAlgoVizProgress && algoVizTotalCount > 0
                 ? `算法 ${algoVizActiveCount}/${algoVizTotalCount}`
@@ -297,7 +297,7 @@ function ProblemSummary({ problem }: { problem: import('../core/types').Problem 
             open ? 'rotate-0' : '-rotate-90',
           )}
         />
-        <ScrollText size={14} className="text-ink-dim shrink-0" />
+        <FileSearch size={14} className="text-ink-dim shrink-0" />
         <span className="truncate flex-1 text-left">{problem.title}</span>
         {problem.tags && problem.tags.length > 0 && (
           <span className="flex gap-1 shrink-0">
@@ -420,7 +420,7 @@ function ResultView({
       {result.overallComment && (
         <div className="glass-card p-3">
           <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-accent-glow">
-            <Sparkles size={12} />
+            <Bot size={12} />
             总评
           </div>
           <p className="text-sm text-ink leading-relaxed">{result.overallComment}</p>

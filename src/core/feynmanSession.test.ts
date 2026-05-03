@@ -27,7 +27,7 @@ const PROBLEM: FeynmanProblem = {
 };
 
 const STUDENT_OK: FeynmanStudentReply = {
-  studentReply: '我有点没听懂哈希表那部分',
+  studentReply: '我想确认一下哈希表那部分',
   questions: ['哈希表是怎么避免重复扫一遍的？', '为什么要用字典而不是排序？'],
   confusion: 'hash',
 };
@@ -111,7 +111,7 @@ describe('runFeynmanStudentTurn', () => {
     expect(result.conversation).toHaveLength(2);
     expect(result.conversation[0].role).toBe('user');
     expect(result.conversation[1].role).toBe('student');
-    expect(result.conversation[1].text).toMatch(/没听懂/);
+    expect(result.conversation[1].text).toMatch(/追问点/);
   });
 
   it('4. Student 抛异常 — fallback 同上', async () => {
@@ -131,7 +131,7 @@ describe('runFeynmanStudentTurn', () => {
       expect(result.reason).toBe('LLM timeout');
     }
     expect(result.conversation).toHaveLength(2);
-    expect(result.conversation[1].text).toMatch(/没听懂/);
+    expect(result.conversation[1].text).toMatch(/追问点/);
   });
 
   it('5. 用户输入空白 — 拒绝且不调 deps', async () => {

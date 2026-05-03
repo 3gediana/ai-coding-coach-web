@@ -88,10 +88,11 @@ function formatRelative(ts: number, now: number): string {
   return `${Math.floor(diff / 3_600_000)}h ago`;
 }
 
-export function AgentDashboard() {
-  const trace = useStore((s) => s.agentTrace);
+export function AgentDashboard({ trace }: { trace?: AgentTraceEvent[] } = {}) {
+  const storeTrace = useStore((s) => s.agentTrace);
+  const effectiveTrace = trace ?? storeTrace;
   const ollamaEnabled = useStore((s) => s.aiConfig.ollamaMode !== 'disabled');
-  const stats = useMemo(() => buildStats(trace), [trace]);
+  const stats = useMemo(() => buildStats(effectiveTrace), [effectiveTrace]);
   const now = Date.now();
 
   const totalCalls = stats.reduce((a, b) => a + b.count, 0);

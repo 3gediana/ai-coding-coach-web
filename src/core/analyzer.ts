@@ -144,7 +144,7 @@ export class Coach {
     return {
       id: shortId(),
       title: data.title?.trim() || '未命名题目',
-      statement: data.statement?.trim() || rawText.slice(0, 1000),
+      statement: data.statement?.trim() || '',
       inputFormat: data.inputFormat,
       outputFormat: data.outputFormat,
       constraints: data.constraints,
@@ -667,10 +667,10 @@ export class Coach {
   }
 
   /**
-   * 费曼模式 - "AI 学生" Agent：装作第一次听这道题，提澄清问题。
+   * 费曼模式 - "AI 学生" Agent：模拟第一次接触题目的同学，提澄清问题。
    *
-   * 总是走云端（cloud）：装菜鸟提问需要较强的 reasoning 能力（要看出讲解者的逻辑漏洞）。
-   * 失败返回 null，UI 应显示"AI 学生没听懂，再说一遍？"之类的兜底。
+   * 总是走云端（cloud）：高质量追问需要较强的 reasoning 能力（要看出讲解者的逻辑漏洞）。
+   * 失败返回 null，UI 应显示"暂时没整理出追问点，换个角度再讲一遍？"之类的兜底。
    */
   async generateFeynmanStudentReply(args: {
     problem: { title: string; statement: string };
@@ -1350,31 +1350,94 @@ export class Coach {
         description?: string;
         stdin?: string;
         expectedOutput?: string;
+        expectedRisk?: string;
+        targetBugType?: string;
+        validationMethod?: string;
+        oracle?: {
+          language?: string;
+          code?: string;
+        };
+        metamorphic?: {
+          transformedStdin?: string;
+          relation?: string;
+          expectedRelation?: string;
+        };
       }>;
     }>({
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
-      maxTokens: 1600,
+      maxTokens: 2400,
       ...opts,
     });
-    const allowed: Array<AttackerCandidate['kind']> = ['edge', 'large', 'degenerate', 'tricky'];
+    const allowed: Array<AttackerCandidate['kind']> = [
+      'min_boundary',
+      'max_boundary',
+      'duplicates',
+      'monotonic',
+      'random_stress',
+      'special_structure',
+      'anti_greedy',
+      'overflow',
+      'edge',
+      'large',
+      'degenerate',
+      'tricky',
+    ];
+    const allowedValidation: Array<NonNullable<AttackerCandidate['validationMethod']>> = [
+      'expected_output',
+      'oracle',
+      'metamorphic',
+      'runtime_only',
+    ];
     const candidates: AttackerCandidate[] = (data.candidates ?? [])
       .map((c) => {
         const kind = (allowed as string[]).includes(c.kind ?? '')
           ? (c.kind as AttackerCandidate['kind'])
           : 'edge';
         const stdin = (c.stdin ?? '').replace(/\r\n/g, '\n');
+        const oracleCode = c.oracle?.code?.replace(/\r\n/g, '\n').trim();
+        const transformedStdin = c.metamorphic?.transformedStdin?.replace(/\r\n/g, '\n').trim();
+        const relation: NonNullable<AttackerCandidate['metamorphic']>['relation'] =
+          c.metamorphic?.relation === 'different_output' ? 'different_output' : 'same_output';
+        const requestedValidation = (allowedValidation as string[]).includes(c.validationMethod ?? '')
+          ? (c.validationMethod as AttackerCandidate['validationMethod'])
+          : undefined;
+        const validationMethod: NonNullable<AttackerCandidate['validationMethod']> =
+          requestedValidation === 'oracle' && oracleCode
+            ? 'oracle'
+            : requestedValidation === 'metamorphic' && transformedStdin
+              ? 'metamorphic'
+              : requestedValidation === 'expected_output' && c.expectedOutput?.trim()
+                ? 'expected_output'
+                : c.expectedOutput?.trim()
+                  ? 'expected_output'
+                  : 'runtime_only';
         return {
           kind,
           description: (c.description ?? '').trim() || '边界 case',
           stdin: stdin.trim(),
           expectedOutput: c.expectedOutput?.trim() || undefined,
+          expectedRisk: c.expectedRisk?.trim() || undefined,
+          targetBugType: c.targetBugType?.trim() || undefined,
+          validationMethod,
+          oracle:
+            validationMethod === 'oracle' && oracleCode
+              ? { language: 'python' as const, code: oracleCode }
+              : undefined,
+          metamorphic:
+            validationMethod === 'metamorphic' && transformedStdin
+              ? {
+                  transformedStdin,
+                  relation,
+                  expectedRelation: c.metamorphic?.expectedRelation?.trim() || undefined,
+                }
+              : undefined,
         };
       })
       .filter((c) => !!c.stdin)
-      .slice(0, 3);
+      .slice(0, 5);
     return {
       hypothesis: (data.hypothesis ?? '').trim() || '（攻击者未给出明确假设）',
       candidates,

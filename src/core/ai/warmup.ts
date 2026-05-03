@@ -139,6 +139,36 @@ export async function warmupLocalModels(cfg: AIConfig): Promise<WarmupResult[]> 
       error: '本地 Ollama 只能配置一个模型；请让所有本地工位使用同一个模型。',
     }));
   }
+  if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
+    try {
+      const res = await fetch('/__aicc-ollama-warmup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ targets }),
+        signal: AbortSignal.timeout(35_000),
+      });
+      if (res.ok) {
+        const data = await res.json() as { results?: WarmupResult[] };
+        return Array.isArray(data.results) ? data.results : [];
+      }
+      const text = await res.text().catch(() => '');
+      return targets.map((t) => ({
+        label: t.label,
+        model: t.model,
+        ok: false,
+        latencyMs: 0,
+        error: `warmup HTTP ${res.status}: ${text.slice(0, 120)}`,
+      }));
+    } catch (e: any) {
+      return targets.map((t) => ({
+        label: t.label,
+        model: t.model,
+        ok: false,
+        latencyMs: 0,
+        error: e?.message?.slice(0, 160) ?? String(e).slice(0, 160),
+      }));
+    }
+  }
 
   const results: WarmupResult[] = await Promise.all(
     targets.map(async (t) => {

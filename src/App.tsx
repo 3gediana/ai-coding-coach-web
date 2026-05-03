@@ -25,6 +25,7 @@ import { RuntimePane } from './components/RuntimePane';
 import { OnboardingOverlay } from './components/OnboardingOverlay';
 import { OllamaIntroModal } from './components/OllamaIntroModal';
 import { OfflineBanner } from './components/OfflineBanner';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { hasUsableAIConfig, useStore } from './lib/store';
 import { startImportReceiver, stopImportReceiver } from './lib/importReceiver';
 import { startOjBridgeReceiver, stopOjBridgeReceiver } from './lib/ojBridge';
@@ -47,9 +48,14 @@ export default function App() {
   const pendingHackCase = useStore((s) => s.pendingHackCase);
   const warmTargetsRef = useRef<ReturnType<typeof collectLocalOllamaTargets>>([]);
   const lastWarmResultKeyRef = useRef<string>('');
+  const isLocalBrowser =
+    typeof window === 'undefined' ||
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1' ||
+    window.location.hostname === '::1';
   // 派生 key：只有本地 Ollama 目标 / ollamaMode 变化时才重新 warm，避免 temperature 等无关字段触发
   const warmDepKey = (() => {
-    const mode = aiConfig.ollamaMode === 'disabled' ? 'disabled' : 'enabled';
+    const mode = !isLocalBrowser || aiConfig.ollamaMode === 'disabled' ? 'disabled' : 'enabled';
     const targets =
       mode === 'disabled'
         ? []
@@ -65,12 +71,12 @@ export default function App() {
   // 不阻塞首屏；并行 warm；失败静默。配置变更时也重新 warm（用户切换模型后立即生效）。
   useEffect(() => {
     let cancelled = false;
-    const targets = aiConfig.ollamaMode === 'disabled' ? [] : collectLocalOllamaTargets(aiConfig);
+    const targets = !isLocalBrowser || aiConfig.ollamaMode === 'disabled' ? [] : collectLocalOllamaTargets(aiConfig);
     const targetKey = (t: (typeof targets)[number]) => `${t.baseUrl}|${t.model}`;
     const nextKeys = new Set(targets.map(targetKey));
     const removedTargets = warmTargetsRef.current.filter((t) => !nextKeys.has(targetKey(t)));
     warmTargetsRef.current = targets;
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && isLocalBrowser) {
       const mode = aiConfig.ollamaMode === 'disabled' ? 'disabled' : 'enabled';
       // dev / preview 都挂了 /__aicc-ollama-mode 中间件；生产部署没有也不会影响业务，fetch catch 静默
       const notifyMode = () =>
@@ -92,6 +98,7 @@ export default function App() {
     }
     const timer = setTimeout(() => {
       if (cancelled) return;
+      if (!isLocalBrowser) return;
       void warmupLocalModels(aiConfig).then((results) => {
         if (cancelled || results.length === 0) return;
         const okCount = results.filter((r) => r.ok).length;
@@ -102,12 +109,12 @@ export default function App() {
         if (okCount === results.length) {
           toast.success(`本地模型已预热：${results[0].model}`, {
             description: `已加载到 Ollama keep_alive=24h；首次实时调用不再冷启动。`,
-            duration: 3500,
+            duration: 3000,
           });
         } else {
           toast.error(`本地模型预热失败：${okCount}/${results.length} 就绪`, {
             description: message,
-            duration: 8000,
+            duration: 3000,
           });
         }
       });
@@ -118,7 +125,7 @@ export default function App() {
     };
     // 仅依赖派生 key + ollamaMode：改 temperature/timeoutMs/maxTokens 等无关字段不会反复预热
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [warmDepKey]);
+  }, [warmDepKey, isLocalBrowser]);
 
   // 注意：以前这里监听 pagehide 自动卸载本地模型，导致每次刷新/关 tab 都要冷启 3-5s。
   // 现在交给 Ollama 自己的 keep_alive=24h 管理；用户可在设置里显式切到"无 Ollama 模式"来释放显存。
@@ -144,7 +151,7 @@ export default function App() {
       } catch (e) {
         toast.error('Demo 数据加载失败', {
           description: String((e as Error)?.message ?? e),
-          duration: 6000,
+          duration: 3000,
         });
       }
     })();
@@ -189,40 +196,88 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col overflow-hidden">
-      <TopBar />
-      <OfflineBanner />
+      <ErrorBoundary title="顶部栏异常" compact>
+        <TopBar />
+      </ErrorBoundary>
+      <ErrorBoundary title="离线提示异常" compact>
+        <OfflineBanner />
+      </ErrorBoundary>
       <div className="flex-1 flex min-h-0">
-        <Sidebar />
+        <ErrorBoundary title="侧边栏异常" compact>
+          <Sidebar />
+        </ErrorBoundary>
         <main className="flex-1 flex min-w-0">
-          {multiFileMode && <FileTree />}
+          {multiFileMode && (
+            <ErrorBoundary title="文件树异常" compact>
+              <FileTree />
+            </ErrorBoundary>
+          )}
           <div className="flex-1 min-w-0 flex flex-col relative">
-            {/* P1 题眼速读卡：激活题目时云端生成的「头条 + 注意点」，固定在编辑器顶部 */}
-            <ProblemOverviewCard />
-            <CodeEditor />
-            <RuntimePane />
-            {/* QuickSetupCard 只在 !hasUsableAIConfig 时浮现在这个区域 */}
-            <QuickSetupCard />
+            <ErrorBoundary title="编辑区异常" compact>
+              {/* P1 题眼速读卡：激活题目时云端生成的「头条 + 注意点」，固定在编辑器顶部 */}
+              <ProblemOverviewCard />
+              <CodeEditor />
+              <RuntimePane />
+              {/* QuickSetupCard 只在 !hasUsableAIConfig 时浮现在这个区域 */}
+              <QuickSetupCard />
+            </ErrorBoundary>
           </div>
-          <FeedbackPanel />
+          <ErrorBoundary title="反馈面板异常" compact>
+            <FeedbackPanel />
+          </ErrorBoundary>
         </main>
       </div>
-      <TaskTray />
-      {!dailyPlanBlocksOverlay && <HackCaseCard />}
-      <HackChainModal />
-      <AcReviewCard />
-      <DailyReviewCard />
-      <DailyPlanCard />
-      <FeynmanModal />
-      <SettingsModal />
-      <ProblemEditorModal />
-      <ProblemBrowserModal />
-      <CommandPalette />
-      <DiffResultViewer />
-      <SubmitResultModal />
-      <StuckHintCard />
-      <IntentSnifferCard />
-      <OnboardingOverlay />
-      {!dailyPlanBlocksOverlay && !hackCaseBlocksOverlay && <OllamaIntroModal />}
+      <ErrorBoundary title="任务队列异常" compact>
+        <TaskTray />
+      </ErrorBoundary>
+      <ErrorBoundary title="Hack 提示异常" compact>
+        {!dailyPlanBlocksOverlay && <HackCaseCard />}
+      </ErrorBoundary>
+      <ErrorBoundary title="Hack Chain 弹窗异常" compact>
+        <HackChainModal />
+      </ErrorBoundary>
+      <ErrorBoundary title="AC 复盘异常" compact>
+        <AcReviewCard />
+      </ErrorBoundary>
+      <ErrorBoundary title="每日复习异常" compact>
+        <DailyReviewCard />
+      </ErrorBoundary>
+      <ErrorBoundary title="学习计划异常" compact>
+        <DailyPlanCard />
+      </ErrorBoundary>
+      <ErrorBoundary title="费曼弹窗异常" compact>
+        <FeynmanModal />
+      </ErrorBoundary>
+      <ErrorBoundary title="设置弹窗异常" compact>
+        <SettingsModal />
+      </ErrorBoundary>
+      <ErrorBoundary title="题目录入异常" compact>
+        <ProblemEditorModal />
+      </ErrorBoundary>
+      <ErrorBoundary title="题库浏览异常" compact>
+        <ProblemBrowserModal />
+      </ErrorBoundary>
+      <ErrorBoundary title="命令面板异常" compact>
+        <CommandPalette />
+      </ErrorBoundary>
+      <ErrorBoundary title="对比结果异常" compact>
+        <DiffResultViewer />
+      </ErrorBoundary>
+      <ErrorBoundary title="提交结果异常" compact>
+        <SubmitResultModal />
+      </ErrorBoundary>
+      <ErrorBoundary title="卡住提示异常" compact>
+        <StuckHintCard />
+      </ErrorBoundary>
+      <ErrorBoundary title="意图提示异常" compact>
+        <IntentSnifferCard />
+      </ErrorBoundary>
+      <ErrorBoundary title="引导浮层异常" compact>
+        <OnboardingOverlay />
+      </ErrorBoundary>
+      <ErrorBoundary title="Ollama 引导异常" compact>
+        {isLocalBrowser && !dailyPlanBlocksOverlay && !hackCaseBlocksOverlay && <OllamaIntroModal />}
+      </ErrorBoundary>
     </div>
   );
 }

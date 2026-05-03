@@ -98,8 +98,6 @@ export function pickRoute(
   // 合并阈值：用户配置 > 默认
   const codeCharLimit = override?.codeCharLimit ?? DEFAULT_ROUTER_HINTS.codeCharLimit;
   const codeLineLimit = override?.codeLineLimit ?? DEFAULT_ROUTER_HINTS.codeLineLimit;
-  const questionCharLimit =
-    override?.questionCharLimit ?? DEFAULT_ROUTER_HINTS.questionCharLimit;
   const pasteCharLimit = override?.pasteCharLimit ?? DEFAULT_ROUTER_HINTS.pasteCharLimit;
   const heavyTags =
     override?.heavyTags && override.heavyTags.length > 0
@@ -115,6 +113,8 @@ export function pickRoute(
         reason: '一次性高质量任务（题面解析 / 错题总结）',
         label: '☁ 云端',
       };
+    case 'ask':
+      return { useFast: false, reason: '问教练固定使用主云端模型', label: '☁ 云端' };
     case 'stuck':
       return { useFast: true, reason: '苏格拉底引导极短，本地最快', label: '⚡ 本地' };
     case 'explain':
@@ -158,15 +158,6 @@ export function pickRoute(
   const hit = tags.find((t) => heavyTags.some((h) => t.includes(h)));
   if (hit) {
     return { useFast: false, reason: `复杂主题"${hit}"`, label: '☁ 云端' };
-  }
-
-  // ask 任务：问题文本超长 → 主
-  if (hints.taskKind === 'ask' && (hints.questionLength ?? 0) > questionCharLimit) {
-    return {
-      useFast: false,
-      reason: `问题 ${hints.questionLength} 字符 > ${questionCharLimit}`,
-      label: '☁ 云端',
-    };
   }
 
   // ── 3) 默认 → fast ─────────────────

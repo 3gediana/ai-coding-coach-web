@@ -93,7 +93,7 @@ const CLUSTERS: ClusterDef[] = [
     hint: '用户教 AI · 创新模块',
     accent: 'border-purple-500/40 bg-purple-500/5',
     nodes: [
-      { name: 'Feynman/Student', label: 'AI 装菜鸟', desc: '听讲 + 提问', isLLM: true },
+      { name: 'Feynman/Student', label: '初学者视角', desc: '听讲 + 追问', isLLM: true },
       { name: 'Feynman/Evaluator', label: 'AI 评委', desc: '清晰度评分', isLLM: true },
     ],
   },
@@ -122,10 +122,11 @@ function computeAgentState(trace: AgentTraceEvent[]) {
   return result;
 }
 
-export function AgentGraph() {
-  const trace = useStore((s) => s.agentTrace);
+export function AgentGraph({ trace }: { trace?: AgentTraceEvent[] } = {}) {
+  const storeTrace = useStore((s) => s.agentTrace);
+  const effectiveTrace = trace ?? storeTrace;
   const ollamaEnabled = useStore((s) => s.aiConfig.ollamaMode !== 'disabled');
-  const state = useMemo(() => computeAgentState(trace), [trace]);
+  const state = useMemo(() => computeAgentState(effectiveTrace), [effectiveTrace]);
   const clusters = ollamaEnabled ? CLUSTERS : CLUSTERS.filter((cluster) => cluster.id !== 'proactive');
 
   return (

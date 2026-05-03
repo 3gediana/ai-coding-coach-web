@@ -99,13 +99,17 @@ function buildFastLaneClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null 
 }
 
 function buildMainClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null {
-  const primary =
-    role === 'status' || role === 'animation'
-      ? resolveQualityModel(cfg)
-      : resolvePrimaryModel(cfg);
+  const isHeavy = role === 'status' || role === 'animation';
+  const quality = isHeavy ? resolveQualityModel(cfg) : null;
+  const main = resolvePrimaryModel(cfg);
+  const qualityUsable = quality
+    ? quality.provider === 'ollama'
+      ? cfg.ollamaMode !== 'disabled' && !!quality.baseUrl.trim()
+      : !!quality.apiKey.trim()
+    : false;
+  const primary = isHeavy && qualityUsable ? quality! : main;
   const usable = primary.provider === 'ollama' ? !!primary.baseUrl.trim() : !!primary.apiKey.trim();
   if (!usable) return null;
-  const isHeavy = role === 'status' || role === 'animation';
   return new AIClient({
     provider: primary.provider,
     baseUrl: primary.baseUrl,
@@ -158,5 +162,14 @@ export function describeRoute(cfg: AIConfig, role: AlgoVizRole): string {
     role === 'status' || role === 'animation'
       ? resolveQualityModel(cfg)
       : resolvePrimaryModel(cfg);
+  if (role === 'status' || role === 'animation') {
+    const usable = primary.provider === 'ollama'
+      ? cfg.ollamaMode !== 'disabled' && !!primary.baseUrl.trim()
+      : !!primary.apiKey.trim();
+    if (!usable) {
+      const main = resolvePrimaryModel(cfg);
+      return `主云端兜底 · ${main.model || '未配'}`;
+    }
+  }
   return `${role === 'status' || role === 'animation' ? '高质量模型' : '主云端'} · ${primary.model || '未配'}`;
 }

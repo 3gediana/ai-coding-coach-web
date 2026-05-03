@@ -19,6 +19,7 @@ import type {
   AnalysisHistoryEntry,
   AnalysisResult,
   CodeFile,
+  CoachEvent,
   DailyPlan,
   FileLang,
   Lang,
@@ -82,7 +83,8 @@ import {
 } from './modelRegistry';
 import bankData from '../data/problemBank.json';
 import { safeGetItem, safeJsonParse, safeRemoveItem, safeSetItem } from './safeLocalStorage';
-import { storage } from './storage';
+import { canEditLocalSettings } from './settingsAccess';
+import { isProblemDeletedLocally, storage } from './storage';
 
 const PROBLEM_BANK = bankData as BankProblem[];
 
@@ -233,9 +235,11 @@ const LS_DEFAULT_LANG = 'aicc.defaultLang.v1';
 
 const DEEPSEEK_FLASH_MODEL_ID = 'deepseek-v4-flash';
 const DEEPSEEK_PRO_MODEL_ID = 'deepseek-v4-pro';
+const DEFAULT_MODEL_IDS = new Set((DEFAULT_AI_CONFIG.modelRegistry ?? []).map((m) => m.id));
 const LS_OLD_CODE = 'aicc.code.v1'; // 旧数据迁移用
 
 const DRAFT_SCOPE = '__draft__';
+const ONBOARDING_PROBLEM_ID = '__onboarding_two_sum__';
 
 // ============== Tasks ==============
 
@@ -520,14 +524,51 @@ const coachAbortByScope = new Map<string, AbortController>();
 
 /** algoViz 实时检测的 debounce timer：每个 problemId 一个 */
 const algoVizDetectTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const algoVizGenerationInFlight = new Map<string, number>();
+const importParseInFlight = new Set<string>();
 /** 用户停止打字后多久跑一次模块检测（trailing-edge debounce）。15s = 跟用户约定的频率 */
 const ALGOVIZ_DETECT_DEBOUNCE_MS = 15_000;
 const IMPORT_PLACEHOLDER_ANALYZING =
   '题目已收到，AI 正在整理题面结构、样例和约束。你可以先在编辑器中准备代码，整理完成后这里会自动刷新。';
 const IMPORT_PLACEHOLDER_WAITING = '题目已收到，正在等待题面文本或图片识别结果。';
+const LS_ACTIVE_PROBLEM = 'aicc.activeProblem.v1';
+const LS_SIDEBAR_TAB = 'aicc.sidebarTab.v1';
+const LS_FEEDBACK_TAB = 'aicc.feedbackTab.v1';
 
 function isImportedProblemPlaceholder(problem: Problem | null | undefined): boolean {
   return problem?.statement === IMPORT_PLACEHOLDER_ANALYZING || problem?.statement === IMPORT_PLACEHOLDER_WAITING;
+}
+
+function hasUsableProblemStatement(problem: Problem | null | undefined): boolean {
+  const text = problem?.statement?.trim() ?? '';
+  if (!text) return false;
+  if (isImportedProblemPlaceholder(problem)) return false;
+  if (problem?.importRawText && problem.importParseStatus !== 'parsed') return false;
+  if (text.includes('题面解析可能被页面刷新或热加载中断')) return false;
+  return true;
+}
+
+function readStoredSidebarTab(): State['sidebarTab'] {
+  const value = safeGetItem(LS_SIDEBAR_TAB);
+  if (value === 'problems' || value === 'mistakes' || value === 'sessions' || value === 'dashboard') return value;
+  return null;
+}
+
+function readStoredFeedbackTab(): State['feedbackTab'] {
+  const value = safeGetItem(LS_FEEDBACK_TAB);
+  if (value === 'analyze' || value === 'ask' || value === 'algoviz') return value;
+  return 'analyze';
+}
+
+function isAlgoVizGeneratingStatus(status: NonNullable<Problem['algoViz']>['status'] | undefined): boolean {
+  return status === 'generating-status' || status === 'status-ready' || status === 'generating-anim';
+}
+
+function isAlgoVizGenerationStale(problem: Problem, now = Date.now()): boolean {
+  const algoViz = problem.algoViz;
+  if (!algoViz || !isAlgoVizGeneratingStatus(algoViz.status)) return false;
+  if (algoVizGenerationInFlight.has(problem.id)) return false;
+  return !algoViz.generationStartedAt || now >= algoViz.generationStartedAt;
 }
 
 function scheduleImportedProblemParsing(
@@ -541,9 +582,27 @@ function scheduleImportedProblemParsing(
 ): void {
   if (!statement) return;
   if (!hasUsableAIConfig(get().aiConfig)) return;
+  if (importParseInFlight.has(id)) return;
+  importParseInFlight.add(id);
   void (async () => {
     const startedAt = Date.now();
     const route = resolvePrimaryModel(get().aiConfig).provider === 'ollama' ? 'fast' : 'cloud';
+    const rawStatement = statement.trim();
+    const current = get().problems.find((p) => p.id === id);
+    if (current) {
+      const updated: Problem = {
+        ...current,
+        statement: hasUsableProblemStatement(current) ? current.statement : IMPORT_PLACEHOLDER_ANALYZING,
+        importRawText: current.importRawText || rawStatement,
+        importParseStatus: 'parsing',
+        importParseError: undefined,
+        importParseUpdatedAt: startedAt,
+      };
+      await storage.saveProblem(updated);
+      set((s) => ({
+        problems: s.problems.map((p) => (p.id === id ? updated : p)),
+      }));
+    }
     get().recordAgentTrace({
       kind: 'act',
       level: 'info',
@@ -553,18 +612,42 @@ function scheduleImportedProblemParsing(
       route,
     });
     try {
-      const parsed = await get().coach.parseProblem(statement);
+      let parsed: Problem | null = null;
+      let parseError: unknown = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const candidate = await get().coach.parseProblem(statement);
+          if (!candidate.statement?.trim()) {
+            throw new Error('题面结构化没有返回题目正文');
+          }
+          parsed = candidate;
+          break;
+        } catch (err) {
+          parseError = err;
+          if (attempt < 2) {
+            await new Promise((resolve) => window.setTimeout(resolve, 800 * (attempt + 1)));
+          }
+        }
+      }
+      if (!parsed) {
+        throw parseError instanceof Error ? parseError : new Error(String(parseError ?? '题面结构化失败'));
+      }
       const latest = get().problems.find((p) => p.id === id);
       if (!latest) return;
+      const parsedStatement = parsed.statement.trim();
       const updated: Problem = {
         ...latest,
         ...parsed,
         id,
         title: payload.title || parsed.title || latest.title,
-        statement: parsed.statement || latest.statement,
+        statement: parsedStatement,
         plainExplanation: parsed.plainExplanation?.trim() || latest.plainExplanation,
         source: payload.url || latest.source,
         createdAt: latest.createdAt,
+        importRawText: latest.importRawText || rawStatement,
+        importParseStatus: 'parsed',
+        importParseError: undefined,
+        importParseUpdatedAt: Date.now(),
       };
       await storage.saveProblem(updated);
       set((s) => ({
@@ -580,7 +663,7 @@ function scheduleImportedProblemParsing(
         latencyMs: Date.now() - startedAt,
         route,
       });
-      if (get().activeProblemId === id) {
+      if (get().activeProblemId === id && hasUsableProblemStatement(updated)) {
         if (!updated.plainExplanation?.trim()) {
           void get().requestPlainExplanation(id);
         }
@@ -601,6 +684,23 @@ function scheduleImportedProblemParsing(
       }
     } catch (err: any) {
       console.warn('[handleImportPayload] parseProblem 失败，保留占位题面', err?.message || err);
+      const latest = get().problems.find((p) => p.id === id);
+      if (latest && statement.trim() && !hasUsableProblemStatement(latest)) {
+        const updated: Problem = {
+          ...latest,
+          title: payload.title || latest.title,
+          statement: IMPORT_PLACEHOLDER_ANALYZING,
+          importRawText: latest.importRawText || statement,
+          importParseStatus: 'failed',
+          importParseError: String(err?.message || err).slice(0, 240),
+          importParseUpdatedAt: Date.now(),
+          source: payload.url || latest.source,
+        };
+        await storage.saveProblem(updated);
+        set((s) => ({
+          problems: s.problems.map((p) => (p.id === id ? updated : p)),
+        }));
+      }
       get().recordAgentTrace({
         kind: 'feedback',
         level: 'warn',
@@ -611,6 +711,8 @@ function scheduleImportedProblemParsing(
         latencyMs: Date.now() - startedAt,
         route,
       });
+    } finally {
+      importParseInFlight.delete(id);
     }
   })();
 }
@@ -631,7 +733,7 @@ interface State {
   /** 入库流水线：完整两阶段（录题 / 题目激活时按需自动调用） */
   requestAlgoVizGeneration: (problemId: string, opts?: { force?: boolean }) => Promise<void>;
   /** 老题模式：仅生成 Animation；缺 schema 时自动 fallback 到完整 pipeline */
-  requestAlgoVizAnimationOnly: (problemId: string) => Promise<void>;
+  requestAlgoVizAnimationOnly: (problemId: string, opts?: { force?: boolean }) => Promise<void>;
   /** 实时检测：caller 应自己 debounce ~15s（store 内部只做 in-flight 防抖） */
   detectAlgoVizModules: (problemId: string, code: string) => Promise<void>;
   /** 直接覆盖某题 module status（test / 手动调试用） */
@@ -941,6 +1043,415 @@ interface State {
   enqueueOjSubmit: (opts?: { autoSubmit?: boolean }) => string | null;
 }
 
+type ProblemBundleState = {
+  files?: CodeFile[];
+  activeFileId?: string | null;
+  analysis?: AnalysisResult | null;
+  qa?: QAMessage[];
+  lastRun?: RunSnapshot | null;
+  coachHints?: CoachHint[];
+  moduleStatus?: Record<string, boolean> | null;
+  failureStats?: FailureStats | null;
+  mistakes?: Mistake[];
+  sessions?: Session[];
+  events?: CoachEvent[];
+  agentTrace?: AgentTraceEvent[];
+  pendingHackCase?: State['pendingHackCase'];
+  hackChainState?: State['hackChainState'];
+  pendingAcReview?: State['pendingAcReview'];
+};
+
+type ProblemBundleMeta = {
+  savedAt?: number;
+};
+
+type ProblemStateBundle = {
+  kind: 'aicc.problem.bundle';
+  version: 1;
+  savedAt: number;
+  problem: Problem;
+  state: ProblemBundleState;
+};
+
+const PROBLEM_BUNDLE_SAVE_DEBOUNCE_MS = 1200;
+const problemBundleSaveTimers = new Map<string, number>();
+const problemBundleMetaById = new Map<string, ProblemBundleMeta>();
+let problemBundleSyncStarted = false;
+let problemBundleHydrating = false;
+let pendingSaveFlushInstalled = false;
+
+function normalizeProblemStateBundle(value: unknown): ProblemStateBundle | null {
+  const v = value as Partial<ProblemStateBundle>;
+  if (!v || typeof v !== 'object' || !v.problem || typeof v.problem.id !== 'string') return null;
+  return {
+    kind: 'aicc.problem.bundle',
+    version: 1,
+    savedAt: typeof v.savedAt === 'number' ? v.savedAt : Date.now(),
+    problem: v.problem,
+    state: v.state && typeof v.state === 'object' ? v.state : {},
+  };
+}
+
+async function fetchProblemBundlesFromLocalBank(): Promise<ProblemStateBundle[]> {
+  try {
+    const res = await fetch('/__problem-bank/problems');
+    if (!res.ok) return [];
+    const data = await res.json() as { bundles?: unknown[]; problems?: Problem[] };
+    if (Array.isArray(data.bundles)) {
+      return data.bundles
+        .map(normalizeProblemStateBundle)
+        .filter((bundle): bundle is ProblemStateBundle => !!bundle && !isProblemDeletedLocally(bundle.problem.id));
+    }
+    return (data.problems ?? [])
+      .filter((problem) => !isProblemDeletedLocally(problem.id))
+      .map((problem) => ({
+        kind: 'aicc.problem.bundle',
+        version: 1,
+        savedAt: Date.now(),
+        problem,
+        state: {},
+      }));
+  } catch {
+    return [];
+  }
+}
+
+async function writeProblemBundleToLocalBank(bundle: ProblemStateBundle): Promise<void> {
+  if (isProblemDeletedLocally(bundle.problem.id)) return;
+  try {
+    await fetch('/__problem-bank/problems', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ bundle }),
+    });
+  } catch {
+  }
+}
+
+function getProblemStateModifiedAt(st: State, problemId: string): number {
+  const times: number[] = [];
+  const problem = st.problems.find((p) => p.id === problemId);
+  if (problem) {
+    times.push(problem.createdAt);
+    if (problem.archivedAt) times.push(problem.archivedAt);
+    if (problem.coachOverview?.generatedAt) times.push(problem.coachOverview.generatedAt);
+    if (problem.acReview?.generatedAt) times.push(problem.acReview.generatedAt);
+    if (problem.algoViz?.statusGeneratedAt) times.push(problem.algoViz.statusGeneratedAt);
+    if (problem.algoViz?.animationGeneratedAt) times.push(problem.algoViz.animationGeneratedAt);
+    if (problem.algoViz?.traceGeneratedAt) times.push(problem.algoViz.traceGeneratedAt);
+    if (problem.algoViz?.visualPlanGeneratedAt) times.push(problem.algoViz.visualPlanGeneratedAt);
+  }
+  for (const file of st.filesByScope[problemId] ?? []) times.push(file.updatedAt, file.createdAt);
+  const analysis = st.analysisByProblem[problemId] as (AnalysisResult & { analyzedAt?: number }) | undefined;
+  if (analysis?.analyzedAt) times.push(analysis.analyzedAt);
+  for (const msg of st.qaByProblem[problemId] ?? []) times.push(msg.ts);
+  const run = st.lastRunByScope[problemId];
+  if (run?.timestamp) times.push(run.timestamp);
+  for (const hint of st.coachHintsByScope[problemId] ?? []) times.push(hint.ts);
+  const failureStats = st.failureStatsByProblem[problemId];
+  for (const ts of failureStats?.recentTimestamps ?? []) times.push(ts);
+  for (const mistake of st.mistakes.filter((m) => m.problemId === problemId)) {
+    times.push(mistake.createdAt);
+    if (mistake.reviewedAt) times.push(mistake.reviewedAt);
+  }
+  for (const session of st.sessions.filter((s) => s.problemId === problemId)) {
+    times.push(session.startedAt);
+    if (session.endedAt) times.push(session.endedAt);
+  }
+  for (const event of st.agentTrace.filter((e) => e.problemId === problemId)) times.push(event.ts);
+  if (st.pendingHackCase?.problemId === problemId) times.push(st.pendingHackCase.createdAt);
+  if (st.hackChainState?.problemId === problemId) {
+    times.push(st.hackChainState.startedAt);
+    for (const step of st.hackChainState.steps) {
+      if (step.startedAt) times.push(step.startedAt);
+      if (step.endedAt) times.push(step.endedAt);
+    }
+  }
+  return Math.max(0, ...times.filter((t) => Number.isFinite(t)));
+}
+
+function makeEventKey(e: CoachEvent): string {
+  return `${e.sessionId}|${e.problemId ?? ''}|${e.type}|${e.ts}|${JSON.stringify(e.payload ?? {})}`;
+}
+
+async function buildProblemStateBundle(st: State, problemId: string): Promise<ProblemStateBundle | null> {
+  const problem = st.problems.find((p) => p.id === problemId);
+  if (!problem) return null;
+  const allEvents = await storage.listEvents({ limit: 5000 });
+  return {
+    kind: 'aicc.problem.bundle',
+    version: 1,
+    savedAt: Date.now(),
+    problem,
+    state: {
+      files: st.filesByScope[problemId] ?? [],
+      activeFileId: st.activeFileIdByScope[problemId] ?? null,
+      analysis: st.analysisByProblem[problemId] ?? null,
+      qa: st.qaByProblem[problemId] ?? [],
+      lastRun: st.lastRunByScope[problemId] ?? null,
+      coachHints: st.coachHintsByScope[problemId] ?? [],
+      moduleStatus: st.moduleStatusByProblem[problemId] ?? null,
+      failureStats: st.failureStatsByProblem[problemId] ?? null,
+      mistakes: st.mistakes.filter((m) => m.problemId === problemId),
+      sessions: st.sessions.filter((sn) => sn.problemId === problemId),
+      events: allEvents.filter((e) => e.problemId === problemId),
+      agentTrace: st.agentTrace.filter((e) => e.problemId === problemId),
+      pendingHackCase: st.pendingHackCase?.problemId === problemId ? st.pendingHackCase : null,
+      hackChainState: st.hackChainState?.problemId === problemId ? st.hackChainState : null,
+      pendingAcReview: st.pendingAcReview?.problemId === problemId ? st.pendingAcReview : null,
+    },
+  };
+}
+
+function scheduleProblemBundleSave(problemId: string, delayMs = PROBLEM_BUNDLE_SAVE_DEBOUNCE_MS): void {
+  if (!problemId || problemId === DRAFT_SCOPE || problemBundleHydrating) return;
+  const prev = problemBundleSaveTimers.get(problemId);
+  if (prev) window.clearTimeout(prev);
+  problemBundleSaveTimers.set(
+    problemId,
+    window.setTimeout(() => {
+      problemBundleSaveTimers.delete(problemId);
+      void (async () => {
+        const bundle = await buildProblemStateBundle(useStore.getState(), problemId);
+        if (bundle) {
+          await writeProblemBundleToLocalBank(bundle);
+          problemBundleMetaById.set(problemId, { savedAt: bundle.savedAt });
+        }
+      })();
+    }, delayMs),
+  );
+}
+
+function collectDirtyProblemIds(next: State, prev: State): Set<string> {
+  const ids = new Set<string>();
+  const add = (id: string | null | undefined) => {
+    if (id && id !== DRAFT_SCOPE) ids.add(id);
+  };
+  for (const p of next.problems) {
+    if (prev.problems.find((old) => old.id === p.id) !== p) add(p.id);
+  }
+  for (const key of new Set([...Object.keys(next.filesByScope), ...Object.keys(prev.filesByScope)])) {
+    if (next.filesByScope[key] !== prev.filesByScope[key]) add(key);
+  }
+  for (const key of new Set([...Object.keys(next.activeFileIdByScope), ...Object.keys(prev.activeFileIdByScope)])) {
+    if (next.activeFileIdByScope[key] !== prev.activeFileIdByScope[key]) add(key);
+  }
+  for (const key of new Set([...Object.keys(next.analysisByProblem), ...Object.keys(prev.analysisByProblem)])) {
+    if (next.analysisByProblem[key] !== prev.analysisByProblem[key]) add(key);
+  }
+  for (const key of new Set([...Object.keys(next.qaByProblem), ...Object.keys(prev.qaByProblem)])) {
+    if (next.qaByProblem[key] !== prev.qaByProblem[key]) add(key);
+  }
+  for (const key of new Set([...Object.keys(next.lastRunByScope), ...Object.keys(prev.lastRunByScope)])) {
+    if (next.lastRunByScope[key] !== prev.lastRunByScope[key]) add(key);
+  }
+  for (const key of new Set([...Object.keys(next.coachHintsByScope), ...Object.keys(prev.coachHintsByScope)])) {
+    if (next.coachHintsByScope[key] !== prev.coachHintsByScope[key]) add(key);
+  }
+  for (const key of new Set([...Object.keys(next.moduleStatusByProblem), ...Object.keys(prev.moduleStatusByProblem)])) {
+    if (next.moduleStatusByProblem[key] !== prev.moduleStatusByProblem[key]) add(key);
+  }
+  for (const key of new Set([...Object.keys(next.failureStatsByProblem), ...Object.keys(prev.failureStatsByProblem)])) {
+    if (next.failureStatsByProblem[key] !== prev.failureStatsByProblem[key]) add(key);
+  }
+  if (next.mistakes !== prev.mistakes) {
+    for (const m of [...next.mistakes, ...prev.mistakes]) add(m.problemId);
+  }
+  if (next.sessions !== prev.sessions) {
+    for (const sn of [...next.sessions, ...prev.sessions]) add(sn.problemId);
+  }
+  if (next.agentTrace !== prev.agentTrace) {
+    for (const e of [...next.agentTrace, ...prev.agentTrace]) add(e.problemId);
+  }
+  if (next.pendingHackCase !== prev.pendingHackCase) {
+    add(next.pendingHackCase?.problemId);
+    add(prev.pendingHackCase?.problemId);
+  }
+  if (next.hackChainState !== prev.hackChainState) {
+    add(next.hackChainState?.problemId);
+    add(prev.hackChainState?.problemId);
+  }
+  if (next.pendingAcReview !== prev.pendingAcReview) {
+    add(next.pendingAcReview?.problemId);
+    add(prev.pendingAcReview?.problemId);
+  }
+  return ids;
+}
+
+function mergeById<T extends { id: string }>(current: T[], incoming: T[]): T[] {
+  const byId = new Map(current.map((item) => [item.id, item]));
+  for (const item of incoming) byId.set(item.id, item);
+  return [...byId.values()];
+}
+
+async function importProblemBundlesFromLocalBank(
+  get: () => State,
+  set: (fn: (s: State) => Partial<State> | State) => void,
+): Promise<void> {
+  const bundles = await fetchProblemBundlesFromLocalBank();
+  if (bundles.length === 0) return;
+  problemBundleHydrating = true;
+  try {
+    const existingEventKeys = new Set((await storage.listEvents({ limit: 5000 })).map(makeEventKey));
+    for (const bundle of bundles) {
+      const meta = problemBundleMetaById.get(bundle.problem.id);
+      if (meta?.savedAt && bundle.savedAt <= meta.savedAt) continue;
+      if (getProblemStateModifiedAt(get(), bundle.problem.id) > bundle.savedAt) continue;
+      await storage.saveProblem(bundle.problem);
+      for (const file of bundle.state.files ?? []) await storage.saveFile(file);
+      for (const mistake of bundle.state.mistakes ?? []) await storage.saveMistake(mistake);
+      for (const session of bundle.state.sessions ?? []) await storage.saveSession(session);
+      for (const event of bundle.state.events ?? []) {
+        const key = makeEventKey(event);
+        if (existingEventKeys.has(key)) continue;
+        existingEventKeys.add(key);
+        await storage.appendEvent(event);
+      }
+    }
+    set((s) => {
+      let problems = s.problems;
+      let mistakes = s.mistakes;
+      let sessions = s.sessions;
+      let filesByScope = s.filesByScope;
+      let activeFileIdByScope = s.activeFileIdByScope;
+      let analysisByProblem = s.analysisByProblem;
+      let qaByProblem = s.qaByProblem;
+      let lastRunByScope = s.lastRunByScope;
+      let coachHintsByScope = s.coachHintsByScope;
+      let moduleStatusByProblem = s.moduleStatusByProblem;
+      let failureStatsByProblem = s.failureStatsByProblem;
+      let agentTrace = s.agentTrace;
+      let pendingHackCase = s.pendingHackCase;
+      let hackChainState = s.hackChainState;
+      let pendingAcReview = s.pendingAcReview;
+      for (const bundle of bundles) {
+        const id = bundle.problem.id;
+        const meta = problemBundleMetaById.get(id);
+        if (meta?.savedAt && bundle.savedAt <= meta.savedAt) continue;
+        if (getProblemStateModifiedAt(s, id) > bundle.savedAt) continue;
+        problemBundleMetaById.set(id, { savedAt: bundle.savedAt });
+        problems = mergeById(problems, [bundle.problem]).sort((a, b) => b.createdAt - a.createdAt);
+        if (bundle.state.files) filesByScope = { ...filesByScope, [id]: bundle.state.files };
+        if ('activeFileId' in bundle.state) {
+          activeFileIdByScope = { ...activeFileIdByScope, [id]: bundle.state.activeFileId ?? bundle.state.files?.[0]?.id ?? null };
+        }
+        if ('analysis' in bundle.state) {
+          analysisByProblem = bundle.state.analysis
+            ? { ...analysisByProblem, [id]: bundle.state.analysis }
+            : omitRecordKey(analysisByProblem, id);
+        }
+        if (bundle.state.qa) {
+          qaByProblem = {
+            ...qaByProblem,
+            [id]: bundle.state.qa.map((m) => ({ ...m, streaming: false })),
+          };
+        }
+        if ('lastRun' in bundle.state) {
+          lastRunByScope = bundle.state.lastRun
+            ? { ...lastRunByScope, [id]: bundle.state.lastRun }
+            : omitRecordKey(lastRunByScope, id);
+        }
+        if (bundle.state.coachHints) coachHintsByScope = { ...coachHintsByScope, [id]: bundle.state.coachHints };
+        if ('moduleStatus' in bundle.state) {
+          moduleStatusByProblem = bundle.state.moduleStatus
+            ? { ...moduleStatusByProblem, [id]: bundle.state.moduleStatus }
+            : omitRecordKey(moduleStatusByProblem, id);
+        }
+        if ('failureStats' in bundle.state) {
+          failureStatsByProblem = bundle.state.failureStats
+            ? { ...failureStatsByProblem, [id]: bundle.state.failureStats }
+            : omitRecordKey(failureStatsByProblem, id);
+        }
+        if (bundle.state.mistakes) mistakes = mergeById(mistakes, bundle.state.mistakes).sort((a, b) => b.createdAt - a.createdAt);
+        if (bundle.state.sessions) sessions = mergeById(sessions, bundle.state.sessions).sort((a, b) => b.startedAt - a.startedAt);
+        if (bundle.state.agentTrace) agentTrace = mergeById(agentTrace, bundle.state.agentTrace).sort((a, b) => b.ts - a.ts).slice(0, AGENT_TRACE_LIMIT);
+        if ('pendingHackCase' in bundle.state) pendingHackCase = bundle.state.pendingHackCase ?? null;
+        if ('hackChainState' in bundle.state) hackChainState = bundle.state.hackChainState ?? null;
+        if ('pendingAcReview' in bundle.state) pendingAcReview = bundle.state.pendingAcReview ?? null;
+      }
+      return {
+        problems,
+        mistakes,
+        sessions,
+        filesByScope,
+        activeFileIdByScope,
+        analysisByProblem,
+        qaByProblem,
+        lastRunByScope,
+        coachHintsByScope,
+        moduleStatusByProblem,
+        failureStatsByProblem,
+        agentTrace,
+        pendingHackCase,
+        hackChainState,
+        pendingAcReview,
+      };
+    });
+  } finally {
+    problemBundleHydrating = false;
+  }
+  void get;
+}
+
+function startProblemBundleSync(): void {
+  if (problemBundleSyncStarted) return;
+  problemBundleSyncStarted = true;
+  useStore.subscribe((next, prev) => {
+    if (problemBundleHydrating) return;
+    for (const id of collectDirtyProblemIds(next, prev)) {
+      scheduleProblemBundleSave(id);
+    }
+  });
+}
+
+function cancelProblemBundleSave(problemId: string): void {
+  const timer = problemBundleSaveTimers.get(problemId);
+  if (timer) window.clearTimeout(timer);
+  problemBundleSaveTimers.delete(problemId);
+  problemBundleMetaById.delete(problemId);
+}
+
+function flushPendingFileSaves(): void {
+  for (const [fileId, timer] of [...fileSaveTimers.entries()]) {
+    clearTimeout(timer);
+    fileSaveTimers.delete(fileId);
+    const latest = useStore.getState();
+    const latestScope = findScopeOfFile(latest, fileId);
+    const latestFile = latestScope
+      ? (latest.filesByScope[latestScope] ?? []).find((f) => f.id === fileId)
+      : null;
+    if (latestFile) void storage.saveFile(latestFile);
+  }
+}
+
+function flushPendingProblemBundleSaves(): void {
+  for (const [problemId, timer] of [...problemBundleSaveTimers.entries()]) {
+    window.clearTimeout(timer);
+    problemBundleSaveTimers.delete(problemId);
+    void (async () => {
+      const bundle = await buildProblemStateBundle(useStore.getState(), problemId);
+      if (!bundle) return;
+      await writeProblemBundleToLocalBank(bundle);
+      problemBundleMetaById.set(problemId, { savedAt: bundle.savedAt });
+    })();
+  }
+}
+
+function flushPendingSaves(): void {
+  flushPendingFileSaves();
+  flushPendingProblemBundleSaves();
+}
+
+function installPendingSaveFlush(): void {
+  if (pendingSaveFlushInstalled || typeof window === 'undefined') return;
+  pendingSaveFlushInstalled = true;
+  window.addEventListener('pagehide', flushPendingSaves);
+  window.addEventListener('beforeunload', flushPendingSaves);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flushPendingSaves();
+  });
+}
+
 // ============== 初始化 ==============
 
 /**
@@ -1036,20 +1547,37 @@ function withDefaultCloudModels(cfg: AIConfig): AIConfig {
         entry.contextWindowTokens ?? inferModelContextWindowTokens(entry.provider, entry.model, entry.numCtx),
     });
   }
+  const registry = [...byId.values()];
+  const userPrimaryId = firstUserRegisteredModelId(registry);
+  const configuredPrimaryIsValid = !!cfg.primaryModelId && byId.has(cfg.primaryModelId);
+  const primaryModelId = cfg.primaryModelIdExplicit
+    ? configuredPrimaryIsValid
+      ? cfg.primaryModelId
+      : undefined
+    : cfg.primaryModelId === DEEPSEEK_FLASH_MODEL_ID && userPrimaryId
+      ? userPrimaryId
+      : configuredPrimaryIsValid
+        ? cfg.primaryModelId
+        : userPrimaryId;
+  const primaryModelIdExplicit =
+    cfg.primaryModelIdExplicit || (!!primaryModelId && primaryModelId !== DEEPSEEK_FLASH_MODEL_ID);
   if (cfg.provider !== 'deepseek' || cfg.baseUrl !== DEFAULT_AI_CONFIG.baseUrl) {
     return {
       ...cfg,
       contextWindowTokens: cfg.contextWindowTokens ?? inferModelContextWindowTokens(cfg.provider, cfg.model, cfg.numCtx),
-      modelRegistry: [...byId.values()],
+      primaryModelId,
+      primaryModelIdExplicit,
+      modelRegistry: registry,
     };
   }
   return {
     ...cfg,
     model: cfg.model || DEEPSEEK_FLASH_MODEL_ID,
     contextWindowTokens: cfg.contextWindowTokens ?? 1_000_000,
-    primaryModelId: cfg.primaryModelId ?? DEEPSEEK_FLASH_MODEL_ID,
+    primaryModelId: primaryModelId ?? (primaryModelIdExplicit ? undefined : DEEPSEEK_FLASH_MODEL_ID),
+    primaryModelIdExplicit,
     qualityModelId: cfg.qualityModelId ?? DEEPSEEK_PRO_MODEL_ID,
-    modelRegistry: [...byId.values()],
+    modelRegistry: registry,
     algoVizModels: {
       ...cfg.algoVizModels,
       status: cfg.algoVizModels?.status ?? DEFAULT_AI_CONFIG.algoVizModels?.status,
@@ -1070,6 +1598,10 @@ function mergeModelRegistries(...registries: Array<ModelEntry[] | undefined>): M
 
 function hasDeepSeekEnv(cfg: Partial<AIConfig>): boolean {
   return !!cfg.modelRegistry?.some((m) => m.id === DEEPSEEK_FLASH_MODEL_ID && !!m.apiKey.trim());
+}
+
+function firstUserRegisteredModelId(registry: ModelEntry[]): string | undefined {
+  return registry.find((m) => !DEFAULT_MODEL_IDS.has(m.id))?.id;
 }
 
 const initialAIConfig: AIConfig = (() => {
@@ -1219,6 +1751,60 @@ export const useStore = create<State>((set, get) => {
       if (algoVizPatchQueues.get(pid) === next) {
         algoVizPatchQueues.delete(pid);
       }
+    }
+  }
+
+  async function recoverStaleAlgoVizGenerations(): Promise<void> {
+    const staleProblems = get().problems.filter((p) => isAlgoVizGenerationStale(p));
+    for (const problem of staleProblems) {
+      await persistAlgoVizPatch(problem.id, {
+        status: 'failed',
+        generationStartedAt: null,
+        generationStage: null,
+        errorMessage: '上次生成被中断或超时，已自动解锁；可以重新生成。',
+      });
+      get().recordAgentTrace({
+        kind: 'feedback',
+        level: 'warn',
+        title: `算法可视化 · 已解锁卡住的生成：${problem.title}`,
+        problemId: problem.id,
+        agentName: 'AlgoViz',
+      });
+    }
+  }
+
+  async function recoverInterruptedImportedProblems(): Promise<void> {
+    if (!hasUsableAIConfig(get().aiConfig)) return;
+    const staleProblems = get().problems.filter((p) => {
+      if (!p.importRawText?.trim()) return false;
+      if (p.importParseStatus === 'parsed') return false;
+      if (!isImportedProblemPlaceholder(p)) return false;
+      return true;
+    });
+    for (const problem of staleProblems) {
+      const rawText = problem.importRawText?.trim();
+      if (!rawText) continue;
+      get().recordAgentTrace({
+        kind: 'act',
+        level: 'info',
+        title: `题面解析 · 恢复中断任务：${problem.title}`,
+        detail: '检测到刷新/热加载中断的导入题，已用隐藏原始题面重新开始结构化解析。',
+        problemId: problem.id,
+        agentName: 'ParseProblem',
+      });
+      scheduleImportedProblemParsing(
+        get,
+        set,
+        problem.id,
+        {
+          source: 'recovery',
+          url: problem.source || problem.id,
+          title: problem.title,
+          rawText,
+        },
+        rawText,
+        problem.title,
+      );
     }
   }
 
@@ -1383,7 +1969,7 @@ export const useStore = create<State>((set, get) => {
     problems: [],
     mistakes: [],
     sessions: [],
-    activeProblemId: null,
+    activeProblemId: safeGetItem(LS_ACTIVE_PROBLEM),
 
     defaultLang: initialDefaultLang,
     filesByScope: {},
@@ -1424,7 +2010,7 @@ export const useStore = create<State>((set, get) => {
     },
     clearAgentTrace: () => set({ agentTrace: [] }),
 
-    sidebarTab: null,
+    sidebarTab: readStoredSidebarTab(),
     multiFileMode: safeGetItem('aicc.multiFile.v1') === 'on',
     setMultiFileMode: (v: boolean) => {
       safeSetItem('aicc.multiFile.v1', v ? 'on' : 'off');
@@ -1447,7 +2033,7 @@ export const useStore = create<State>((set, get) => {
     stuckHintEnabled: safeGetItem('aicc.stuckHint.v1') === 'on',
     askPrefill: null,
     coachDraft: null,
-    feedbackTab: 'analyze',
+    feedbackTab: readStoredFeedbackTab(),
     // Onboarding：localStorage 已标记完成 → idle；否则 wait-analyze 状态会在 App 启动时由触发器决定是否进 inject
     onboardingStep: safeGetItem('aicc.onboarding.v1') === 'done' ? 'idle' : 'idle',
     learningOverview: null,
@@ -1480,6 +2066,12 @@ export const useStore = create<State>((set, get) => {
     intentSniffEnabled: safeGetItem('aicc.coach.intentSniff.v1') === 'on',
 
     setAIConfig: (cfg) => {
+      if (!canEditLocalSettings()) {
+        toast.warning('远程访问已禁止修改设置', {
+          description: '请用 localhost / 127.0.0.1 / ::1 打开应用后再修改 AI 配置。',
+        });
+        return;
+      }
       cfg = withDefaultCloudModels(cfg);
       try {
         safeSetItem(LS_AI_CFG, JSON.stringify(cfg));
@@ -1510,6 +2102,7 @@ export const useStore = create<State>((set, get) => {
       // 重建 algoVizService：3 个工位 client 都得跟着 cfg 重新挑（override / fastLane / 主 cfg）
       const newAlgoVizService = new AlgoVizService(buildAlgoVizClients(cfg));
       set({ aiConfig: cfg, algoVizService: newAlgoVizService });
+      void recoverInterruptedImportedProblems();
     },
 
     /**
@@ -1533,7 +2126,16 @@ export const useStore = create<State>((set, get) => {
       const next = existing.some((m) => m.id === id)
         ? existing.map((m) => (m.id === id ? newEntry : m))
         : [...existing, newEntry];
-      get().setAIConfig({ ...cfg, modelRegistry: next });
+      const shouldPromoteToPrimary =
+        !existing.some((m) => m.id === id) &&
+        !cfg.primaryModelIdExplicit &&
+        (!cfg.primaryModelId || DEFAULT_MODEL_IDS.has(cfg.primaryModelId));
+      get().setAIConfig({
+        ...cfg,
+        modelRegistry: next,
+        primaryModelId: shouldPromoteToPrimary ? id : cfg.primaryModelId,
+        primaryModelIdExplicit: shouldPromoteToPrimary ? true : cfg.primaryModelIdExplicit,
+      });
       return id;
     },
 
@@ -1555,7 +2157,10 @@ export const useStore = create<State>((set, get) => {
       const existing = cfg.modelRegistry ?? [];
       const next = existing.filter((m) => m.id !== id);
       const cleaned: AIConfig = { ...cfg, modelRegistry: next };
-      if (cfg.primaryModelId === id) cleaned.primaryModelId = undefined;
+      if (cfg.primaryModelId === id) {
+        cleaned.primaryModelId = undefined;
+        cleaned.primaryModelIdExplicit = false;
+      }
       if (cfg.fastLane?.modelId === id) {
         cleaned.fastLane = { ...cfg.fastLane, modelId: undefined };
       }
@@ -1586,16 +2191,20 @@ export const useStore = create<State>((set, get) => {
       const st = get();
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
+      if (!hasUsableProblemStatement(problem)) return;
       const cur = problem.algoViz?.status;
-      if (
-        !opts.force &&
-        (cur === 'ready' ||
-          cur === 'generating-status' ||
-          cur === 'status-ready' ||
-          cur === 'generating-anim')
-      ) {
+      if (!opts.force && cur === 'ready') {
         return;
       }
+      if (!opts.force && cur === 'status-ready' && problem.algoViz?.detectionSchema) {
+        await get().requestAlgoVizAnimationOnly(problemId);
+        return;
+      }
+      if (!opts.force && isAlgoVizGeneratingStatus(cur) && !isAlgoVizGenerationStale(problem)) {
+        return;
+      }
+      const startedAt = Date.now();
+      algoVizGenerationInFlight.set(problem.id, startedAt);
       st.recordAgentTrace({
         kind: 'decide',
         level: 'info',
@@ -1608,6 +2217,8 @@ export const useStore = create<State>((set, get) => {
       // 用户重生时仍能看到/播放上一次的可用版本，不会"重生中啥都看不到"。
       await persistAlgoVizPatch(problem.id, {
         status: 'generating-status',
+        generationStartedAt: startedAt,
+        generationStage: 'status',
         errorMessage: undefined,
       });
       await st.algoVizService.generate(problem, {
@@ -1645,6 +2256,7 @@ export const useStore = create<State>((set, get) => {
             statusCode,
             detectionSchema: schema,
             statusGeneratedAt: Date.now(),
+            generationStage: 'status',
           });
           get().setAlgoVizModuleStatus(
             problem.id,
@@ -1660,15 +2272,23 @@ export const useStore = create<State>((set, get) => {
           });
         },
         onAnimationStart: async () => {
+          const animationStartedAt = Date.now();
+          algoVizGenerationInFlight.set(problem.id, animationStartedAt);
           await persistAlgoVizPatch(problem.id, {
             status: 'generating-anim',
+            generationStartedAt: animationStartedAt,
+            generationStage: 'animation',
           });
         },
         onAnimationReady: async (animationCode) => {
+          algoVizGenerationInFlight.delete(problem.id);
           await persistAlgoVizPatch(problem.id, {
             status: 'ready',
             animationCode,
             animationGeneratedAt: Date.now(),
+            generationStartedAt: null,
+            generationStage: null,
+            errorMessage: undefined,
           });
           get().recordAgentTrace({
             kind: 'feedback',
@@ -1679,8 +2299,11 @@ export const useStore = create<State>((set, get) => {
           });
         },
         onError: (stage, err) => {
+          algoVizGenerationInFlight.delete(problem.id);
           void persistAlgoVizPatch(problem.id, {
             status: 'failed',
+            generationStartedAt: null,
+            generationStage: null,
             errorMessage: `${stage}: ${err.message.slice(0, 200)}`,
           });
           get().recordAgentTrace({
@@ -1693,6 +2316,9 @@ export const useStore = create<State>((set, get) => {
           });
         },
       });
+      if (algoVizGenerationInFlight.get(problem.id) === startedAt) {
+        algoVizGenerationInFlight.delete(problem.id);
+      }
     },
 
     /**
@@ -1700,19 +2326,35 @@ export const useStore = create<State>((set, get) => {
      * - 已有 schema → 直接走第 2 阶段
      * - 没 schema  → 自动 fallback 到完整 pipeline（避免 caller 自己判断）
      */
-    requestAlgoVizAnimationOnly: async (problemId) => {
+    requestAlgoVizAnimationOnly: async (problemId, opts = {}) => {
       const st = get();
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
+      if (!hasUsableProblemStatement(problem)) return;
       const cur = problem.algoViz;
-      if (cur?.status === 'ready' || cur?.status === 'generating-anim') return;
+      if (!opts.force && cur?.status === 'ready') return;
+      if (!opts.force && cur?.status === 'generating-anim' && !isAlgoVizGenerationStale(problem)) return;
       if (!cur?.detectionSchema) {
-        await get().requestAlgoVizGeneration(problemId);
+        await get().requestAlgoVizGeneration(problemId, opts);
         return;
       }
+      const startedAt = Date.now();
+      algoVizGenerationInFlight.set(problem.id, startedAt);
+      st.recordAgentTrace({
+        kind: 'decide',
+        level: 'info',
+        title: `算法可视化 · 重跑 Animation：${problem.title}`,
+        detail: cur.trace || cur.visualPlan
+          ? '复用已生成的 Trace / Status / VisualPlan，只重新调用 Animation 模型'
+          : '复用已生成的 Status schema，只重新调用 Animation 模型',
+        problemId: problem.id,
+        agentName: 'AlgoViz',
+      });
       // 同 generate：保留旧 animationCode，新成功才覆盖；失败保留旧的可继续看
       await persistAlgoVizPatch(problem.id, {
         status: 'generating-anim',
+        generationStartedAt: startedAt,
+        generationStage: 'animation',
         errorMessage: undefined,
       });
       await st.algoVizService.generateAnimationOnly(
@@ -1721,20 +2363,47 @@ export const useStore = create<State>((set, get) => {
         cur.statusCode ?? '',
         {
           onReady: async (animationCode) => {
+            algoVizGenerationInFlight.delete(problem.id);
             await persistAlgoVizPatch(problem.id, {
               status: 'ready',
               animationCode,
               animationGeneratedAt: Date.now(),
+              generationStartedAt: null,
+              generationStage: null,
+              errorMessage: undefined,
+            });
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: 'success',
+              title: `算法可视化 · Animation 重跑完成：${problem.title}`,
+              problemId: problem.id,
+              agentName: 'AlgoViz',
+              latencyMs: Date.now() - startedAt,
             });
           },
           onError: (err) => {
+            algoVizGenerationInFlight.delete(problem.id);
             void persistAlgoVizPatch(problem.id, {
               status: 'failed',
+              generationStartedAt: null,
+              generationStage: null,
               errorMessage: err.message.slice(0, 200),
+            });
+            get().recordAgentTrace({
+              kind: 'feedback',
+              level: 'warn',
+              title: `算法可视化 · Animation 重跑失败：${problem.title}`,
+              detail: err.message.slice(0, 240),
+              problemId: problem.id,
+              agentName: 'AlgoViz',
+              latencyMs: Date.now() - startedAt,
             });
           },
         },
       );
+      if (algoVizGenerationInFlight.get(problem.id) === startedAt) {
+        algoVizGenerationInFlight.delete(problem.id);
+      }
     },
 
     /**
@@ -1828,6 +2497,11 @@ export const useStore = create<State>((set, get) => {
       if (id && !problemStartedAtById.has(id)) {
         problemStartedAtById.set(id, Date.now());
       }
+      if (id) {
+        safeSetItem(LS_ACTIVE_PROBLEM, id);
+      } else {
+        safeRemoveItem(LS_ACTIVE_PROBLEM);
+      }
       set({ activeProblemId: id, diffSelection: [] });
       const scope = id ?? DRAFT_SCOPE;
       const list = st.filesByScope[scope] ?? [];
@@ -1840,10 +2514,20 @@ export const useStore = create<State>((set, get) => {
           activeFileIdByScope: { ...s.activeFileIdByScope, [scope]: list[0].id },
         }));
       }
+      const latestFiles = get().filesByScope[scope] ?? list;
+      const activeFileId = get().activeFileIdByScope[scope];
+      const activeFile = latestFiles.find((f) => f.id === activeFileId) ?? latestFiles[0];
+      if (
+        activeFile &&
+        (activeFile.language === 'cpp' || activeFile.language === 'c' || activeFile.language === 'python') &&
+        !activeFile.content.trim()
+      ) {
+        await get().updateFileContent(activeFile.id, defaultCode(activeFile.language));
+      }
       // 懒补齐：如果该题缺白话解释，后台静默调 AI 生成（成功后右侧栏会自动出现）
       if (id) {
         const target = get().problems.find((p) => p.id === id);
-        if (isImportedProblemPlaceholder(target)) return;
+        if (!hasUsableProblemStatement(target)) return;
         if (target && (!target.plainExplanation || !target.plainExplanation.trim())) {
           void get().requestPlainExplanation(id);
         }
@@ -2405,12 +3089,16 @@ export const useStore = create<State>((set, get) => {
     },
 
     refreshAll: async () => {
+      installPendingSaveFlush();
       await Promise.all([
         get().refreshProblems(),
         get().refreshMistakes(),
         get().refreshSessions(),
         get().refreshFiles(),
       ]);
+      await importProblemBundlesFromLocalBank(get, set);
+      await recoverStaleAlgoVizGenerations();
+      await recoverInterruptedImportedProblems();
       // 旧数据迁移
       await migrateLegacyCode(get);
       // 草稿 scope 没有文件 → 创建默认
@@ -2418,6 +3106,17 @@ export const useStore = create<State>((set, get) => {
       const draftFiles = st.filesByScope[DRAFT_SCOPE] ?? [];
       if (draftFiles.length === 0) {
         await get().createFile({ scope: DRAFT_SCOPE, activate: true });
+      }
+      const storedActiveProblemId = safeGetItem(LS_ACTIVE_PROBLEM);
+      if (storedActiveProblemId && get().problems.some((p) => p.id === storedActiveProblemId)) {
+        await get().setActiveProblem(storedActiveProblemId);
+      } else if (storedActiveProblemId) {
+        safeRemoveItem(LS_ACTIVE_PROBLEM);
+        set({ activeProblemId: null });
+      }
+      startProblemBundleSync();
+      for (const problem of get().problems) {
+        scheduleProblemBundleSave(problem.id, 0);
       }
     },
 
@@ -2442,6 +3141,7 @@ export const useStore = create<State>((set, get) => {
       const st = get();
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
+      if (!hasUsableProblemStatement(problem)) return;
       if (problem.plainExplanation && problem.plainExplanation.trim().length > 0) return;
       const needsKey = st.aiConfig.provider !== 'ollama';
       if (needsKey && !st.aiConfig.apiKey) return; // 没配 AI 就不打扰
@@ -2492,6 +3192,7 @@ export const useStore = create<State>((set, get) => {
       const st = get();
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
+      if (!hasUsableProblemStatement(problem)) return;
       // 已缓存 + 不强制 → 跳过
       if (!opts.force && problem.coachOverview && problem.coachOverview.headline) return;
       // 没配 AI 不打扰
@@ -3249,6 +3950,8 @@ export const useStore = create<State>((set, get) => {
             language: language === 'c' ? 'c' : 'cpp',
           });
         },
+        runOracle: async (code, stdin): Promise<SandboxRunResult> =>
+          runPython(code, stdin, { timeoutMs: 4000 }),
         observer: {
           onStepStart: (step, ts) => {
             patchStep(step, { status: 'running', startedAt: ts });
@@ -3288,7 +3991,12 @@ export const useStore = create<State>((set, get) => {
               level: 'success',
               title: `${stepTitle.attacker} · 输出 ${out.candidates.length} 个候选`,
               detail: `假设：${out.hypothesis}\n${out.candidates
-                .map((c, i) => `${i + 1}. [${c.kind}] ${c.description}`)
+                .map(
+                  (c, i) =>
+                    `${i + 1}. [${c.kind}/${c.validationMethod ?? 'runtime_only'}] ${c.description}` +
+                    `${c.targetBugType ? ` · ${c.targetBugType}` : ''}` +
+                    `${c.expectedRisk ? `\n   意图：${c.expectedRisk}` : ''}`,
+                )
                 .join('\n')}`,
               problemId: problem.id,
               agentName: stepAgent.attacker,
@@ -3301,8 +4009,12 @@ export const useStore = create<State>((set, get) => {
               title: `${stepTitle.executor} · case #${run.candidateIndex + 1} ${run.hacked ? '命中' : '通过'}`,
               detail: [
                 `exit ${run.exitCode} · ${run.durationMs}ms`,
+                `验证：${run.validationMethod ?? 'runtime_only'}`,
                 run.reason ? `原因：${run.reason}` : '',
                 run.matchesExpected !== undefined ? `期望输出匹配：${run.matchesExpected ? '是' : '否'}` : '',
+                run.oracleOutput !== undefined ? `oracle stdout:\n${run.oracleOutput}` : '',
+                run.metamorphicPassed !== undefined ? `变形关系通过：${run.metamorphicPassed ? '是' : '否'}` : '',
+                run.transformedStdout !== undefined ? `变形 stdout/stderr:\n${run.transformedStdout}` : '',
                 run.stdout ? `stdout:\n${run.stdout}` : '',
                 run.stderr ? `stderr:\n${run.stderr}` : '',
               ].filter(Boolean).join('\n'),
@@ -3348,7 +4060,7 @@ export const useStore = create<State>((set, get) => {
               (r, i) =>
                 `${i + 1}. exit ${r.exitCode} · ${r.durationMs}ms · ${
                   r.hacked ? '✗ hacked' : '✓ ok'
-                }${r.reason ? ` (${r.reason})` : ''}`,
+                } · ${r.validationMethod ?? 'runtime_only'}${r.reason ? ` (${r.reason})` : ''}`,
             )
             .join('\n'),
           problemId: problem.id,
@@ -3450,15 +4162,33 @@ export const useStore = create<State>((set, get) => {
     },
 
     deleteProblem: async (id) => {
+      if (id === ONBOARDING_PROBLEM_ID) {
+        safeSetItem('aicc.onboarding.v1', 'done');
+      }
       // 删题目时同步把它的所有 file 也删了
+      cancelProblemBundleSave(id);
+      coachAbortByScope.get(id)?.abort();
+      coachAbortByScope.delete(id);
+      const detectTimer = algoVizDetectTimers.get(id);
+      if (detectTimer) clearTimeout(detectTimer);
+      algoVizDetectTimers.delete(id);
       const st = get();
-      const files = st.filesByScope[id] ?? [];
+      const wasActiveProblem = st.activeProblemId === id;
+      if (wasActiveProblem) {
+        safeRemoveItem(LS_ACTIVE_PROBLEM);
+      }
+      const nextActiveProblem =
+        wasActiveProblem
+          ? st.problems.find((p) => p.id !== id && !p.archivedAt) ?? st.problems.find((p) => p.id !== id) ?? null
+          : null;
+      const files = await storage.listFiles({ problemId: id });
       const mistakes = await storage.listMistakes();
       const sessions = await storage.listSessions();
       await Promise.all([
         ...files.map((f) => storage.deleteFile(f.id)),
         ...mistakes.filter((m) => m.problemId === id).map((m) => storage.deleteMistake(m.id)),
         ...sessions.filter((sn) => sn.problemId === id).map((sn) => storage.deleteSession(sn.id)),
+        storage.deleteEventsByProblem(id),
       ]);
       await storage.deleteProblem(id);
       set((s) => {
@@ -3477,11 +4207,26 @@ export const useStore = create<State>((set, get) => {
           lastRunByScope: omitRecordKey(s.lastRunByScope, id),
           coachHintsByScope: omitRecordKey(s.coachHintsByScope, id),
           moduleStatusByProblem: omitRecordKey(s.moduleStatusByProblem, id),
+          failureStatsByProblem: omitRecordKey(s.failureStatsByProblem, id),
           algoVizDetectingByProblem: omitRecordKey(s.algoVizDetectingByProblem, id),
           pendingAlgoVizDetectByProblem: omitRecordKey(s.pendingAlgoVizDetectByProblem, id),
+          agentTrace: s.agentTrace.filter((e) => e.problemId !== id),
+          pendingHackCase: s.pendingHackCase?.problemId === id ? null : s.pendingHackCase,
+          hackChainState: s.hackChainState?.problemId === id ? null : s.hackChainState,
+          pendingAcReview: s.pendingAcReview?.problemId === id ? null : s.pendingAcReview,
         };
       });
       await get().refreshProblems();
+      if (nextActiveProblem) {
+        await get().setActiveProblem(nextActiveProblem.id);
+      }
+      toast.success('题目已删除', {
+        description: wasActiveProblem
+          ? nextActiveProblem
+            ? `已切换到：${nextActiveProblem.title}`
+            : '已清空当前题目'
+          : '当前题目保持不变',
+      });
     },
     toggleArchiveProblem: async (id) => {
       const st = get();
@@ -3493,6 +4238,9 @@ export const useStore = create<State>((set, get) => {
       set((s) => ({
         problems: s.problems.map((x) => (x.id === id ? updated : x)),
       }));
+      toast.success(updated.archivedAt ? '已归档到历史记录' : '已移回日常题库', {
+        description: p.title,
+      });
     },
     deleteMistake: async (id) => {
       await storage.deleteMistake(id);
@@ -3515,7 +4263,11 @@ export const useStore = create<State>((set, get) => {
       }));
     },
 
-    setSidebarTab: (t) => set({ sidebarTab: t }),
+    setSidebarTab: (t) => {
+      if (t) safeSetItem(LS_SIDEBAR_TAB, t);
+      else safeRemoveItem(LS_SIDEBAR_TAB);
+      set({ sidebarTab: t });
+    },
     setSettingsOpen: (v) => set({ settingsOpen: v }),
     setProblemEditorOpen: (v) => set({ problemEditorOpen: v }),
     setProblemBrowserOpen: (v) => set({ problemBrowserOpen: v }),
@@ -3614,23 +4366,6 @@ export const useStore = create<State>((set, get) => {
         inMistakeBook,
         unresolvedIssueCount,
       };
-      const route = await routeCoachRequest(
-        {
-          text: trimmed,
-          source: input.source,
-          hasProblem: !!problem,
-          hasSelection: !!input.selection?.text.trim(),
-          codeLength: code.length,
-          codeLineCount: code ? code.split('\n').length : 0,
-          lastRun: runtimeContext
-            ? { exitCode: runtimeContext.exitCode, stderrBrief: runtimeContext.stderr?.slice(-500) }
-            : undefined,
-          recentAction: runtimeContext ? (runtimeContext.exitCode === 0 ? 'run_ok' : 'run_failed') : undefined,
-          behavior,
-        },
-        createIntentRouterClient(s.aiConfig),
-      );
-
       const userMsg: QAMessage = {
         id: nanoid(),
         role: 'user',
@@ -3643,7 +4378,6 @@ export const useStore = create<State>((set, get) => {
         content: '',
         ts: Date.now(),
         streaming: true,
-        route,
       };
 
       set((st) => ({
@@ -3655,6 +4389,75 @@ export const useStore = create<State>((set, get) => {
         feedbackTab: 'ask',
         coachDraft: null,
       }));
+
+      let route: CoachRoute;
+      try {
+        route = await routeCoachRequest(
+          {
+            text: trimmed,
+            source: input.source,
+            hasProblem: !!problem,
+            hasSelection: !!input.selection?.text.trim(),
+            codeLength: code.length,
+            codeLineCount: code ? code.split('\n').length : 0,
+            lastRun: runtimeContext
+              ? { exitCode: runtimeContext.exitCode, stderrBrief: runtimeContext.stderr?.slice(-500) }
+              : undefined,
+            recentAction: runtimeContext ? (runtimeContext.exitCode === 0 ? 'run_ok' : 'run_failed') : undefined,
+            behavior,
+          },
+          createIntentRouterClient(s.aiConfig),
+        );
+      } catch (e: any) {
+        const primaryModel = resolvePrimaryModel(s.aiConfig);
+        if (primaryModel.provider !== 'ollama') {
+          route = {
+            intent: input.selection?.text.trim()
+              ? 'explain_selection'
+              : code.trim()
+                ? 'review_code'
+                : 'general_question',
+            contextTemplate: input.selection?.text.trim()
+              ? 'selection'
+              : problem
+                ? code.trim()
+                  ? 'full_code_review'
+                  : 'problem_only'
+                : 'general',
+            outputMode: 'chat',
+            confidence: 0.35,
+            reason: `路由失败，云端主模型全量上下文兜底：${String(e?.message || e).slice(0, 80)}`,
+            routedBy: 'fallback',
+          };
+        } else {
+          set((st) => {
+            const list = st.qaByProblem[scope] ?? [];
+            const idx = list.findIndex((m) => m.id === assistMsg.id);
+            if (idx < 0) return { qaPendingProblemId: null };
+            const next = list.slice();
+            next[idx] = {
+              ...next[idx],
+              content: '路由判断失败，请稍后重试。',
+              streaming: false,
+              error: String(e?.message || e).slice(0, 240),
+            };
+            return {
+              qaByProblem: { ...st.qaByProblem, [scope]: next },
+              qaPendingProblemId: null,
+            };
+          });
+          return;
+        }
+      }
+
+      set((st) => {
+        const list = st.qaByProblem[scope] ?? [];
+        const idx = list.findIndex((m) => m.id === assistMsg.id);
+        if (idx < 0) return st;
+        const next = list.slice();
+        next[idx] = { ...next[idx], route };
+        return { qaByProblem: { ...st.qaByProblem, [scope]: next } };
+      });
 
       const history = (get().qaByProblem[scope] ?? [])
         .slice(0, -2)
@@ -3961,12 +4764,23 @@ export const useStore = create<State>((set, get) => {
     // ───── 框选问 AI / FeedbackPanel tab ─────
     setAskPrefill: (s) => set({ askPrefill: s }),
     setCoachDraft: (s) => set({ coachDraft: s }),
-    setFeedbackTab: (t) => set({ feedbackTab: t }),
+    setFeedbackTab: (t) => {
+      safeSetItem(LS_FEEDBACK_TAB, t);
+      set({ feedbackTab: t });
+    },
 
     // ───── Onboarding ─────
     startOnboarding: async () => {
+      const currentProblems = get().problems;
+      const persistedProblems = currentProblems.length > 0 ? currentProblems : await storage.listProblems();
+      const hasUserProblems = persistedProblems.some((p) => p.id !== ONBOARDING_PROBLEM_ID);
+      if (hasUserProblems) {
+        safeSetItem('aicc.onboarding.v1', 'done');
+        set({ problems: persistedProblems, onboardingStep: 'idle' });
+        return;
+      }
       // 注入 Two Sum demo 题 + 故意 bug 代码
-      const problemId = '__onboarding_two_sum__';
+      const problemId = ONBOARDING_PROBLEM_ID;
       const fileId = '__onboarding_main__';
       const now = Date.now();
       const demoProblem: Problem = {
@@ -4432,10 +5246,22 @@ int main() {
 
       if (existing) {
         const incomingStatement = payload.rawText || '';
-        if ((payload.title && payload.title !== existing.title) || existing.source !== payload.url) {
+        if (
+          (payload.title && payload.title !== existing.title) ||
+          existing.source !== payload.url ||
+          incomingStatement.trim()
+        ) {
+          const shouldKeepParsedStatement = hasUsableProblemStatement(existing) && !incomingStatement.trim();
           const updated = {
             ...existing,
             title: payload.title || existing.title,
+            statement: shouldKeepParsedStatement ? existing.statement : IMPORT_PLACEHOLDER_ANALYZING,
+            importRawText: incomingStatement.trim() || existing.importRawText,
+            importParseStatus: incomingStatement.trim()
+              ? 'pending' as const
+              : existing.importParseStatus,
+            importParseError: incomingStatement.trim() ? undefined : existing.importParseError,
+            importParseUpdatedAt: incomingStatement.trim() ? Date.now() : existing.importParseUpdatedAt,
             source: payload.url || existing.source,
           };
           await storage.saveProblem(updated);
@@ -4449,17 +5275,20 @@ int main() {
           toast.info(`已存在：${existing.title}`);
         }
         const incomingCode = payload.initialCode ?? '';
-        if (incomingCode.trim()) {
-          const lang = inferImportedFileLang(payload);
-          const latest = get();
-          const files = latest.filesByScope[existing.id] ?? [];
-          const activeFileId = latest.activeFileIdByScope[existing.id];
-          const target = files.find((f) => f.id === activeFileId) ?? files[0];
-          if (target) {
+        const hasIncomingCode = hasImportedInitialCode(incomingCode);
+        const lang = inferImportedFileLang(payload);
+        const latest = get();
+        const files = latest.filesByScope[existing.id] ?? [];
+        const activeFileId = latest.activeFileIdByScope[existing.id];
+        const target = files.find((f) => f.id === activeFileId) ?? files[0];
+        if (target) {
+          const canReplaceGeneratedTemplate =
+            !hasIncomingCode && target.language !== lang && isDefaultCodeTemplate(target.content);
+          if (hasIncomingCode || !target.content.trim() || canReplaceGeneratedTemplate) {
             const updatedFile: CodeFile = {
               ...target,
               language: lang,
-              content: incomingCode,
+              content: hasIncomingCode ? incomingCode : defaultCode(lang),
               updatedAt: Date.now(),
             };
             await storage.saveFile(updatedFile);
@@ -4472,29 +5301,31 @@ int main() {
               },
               activeFileIdByScope: { ...s.activeFileIdByScope, [existing.id]: updatedFile.id },
             }));
-          } else {
-            const fileId = 'file-' + Date.now();
-            const file: CodeFile = {
-              id: fileId,
-              problemId: existing.id,
-              name: defaultFileName(lang, []),
-              language: lang,
-              content: incomingCode,
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-            };
-            await storage.saveFile(file);
-            set((s) => ({
-              filesByScope: { ...s.filesByScope, [existing.id]: [file] },
-              activeFileIdByScope: { ...s.activeFileIdByScope, [existing.id]: fileId },
-            }));
           }
+        } else {
+          const fileId = 'file-' + Date.now();
+          const file: CodeFile = {
+            id: fileId,
+            problemId: existing.id,
+            name: defaultFileName(lang, []),
+            language: lang,
+            content: hasIncomingCode ? incomingCode : defaultCode(lang),
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+          await storage.saveFile(file);
+          set((s) => ({
+            filesByScope: { ...s.filesByScope, [existing.id]: [file] },
+            activeFileIdByScope: { ...s.activeFileIdByScope, [existing.id]: fileId },
+          }));
         }
         await get().setActiveProblem(existing.id);
         const nonEmptyLines = incomingCode.split('\n').filter((line) => line.trim().length > 0).length;
-        scheduleImportedProblemParsing(get, set, id, payload, incomingStatement, payload.title || existing.title, {
-          autoAnalyzeCode: incomingCode.trim().length >= 30 && nonEmptyLines >= 3,
-        });
+        if (incomingStatement.trim()) {
+          scheduleImportedProblemParsing(get, set, id, payload, incomingStatement, payload.title || existing.title, {
+            autoAnalyzeCode: hasIncomingCode && incomingCode.trim().length >= 30 && nonEmptyLines >= 3,
+          });
+        }
         return;
       }
 
@@ -4507,6 +5338,9 @@ int main() {
         source: payload.url,
         tags: [],
         createdAt: now,
+        importRawText: statement || undefined,
+        importParseStatus: statement ? 'pending' : undefined,
+        importParseUpdatedAt: now,
       };
 
       // 入库 + 编辑文件
@@ -4515,12 +5349,13 @@ int main() {
       const fileId = 'file-' + now;
       const fileName = lang === 'cpp' ? 'main.cpp' : lang === 'c' ? 'main.c' : 'main.py';
       const incomingCode = payload.initialCode || '';
+      const hasIncomingCode = hasImportedInitialCode(incomingCode);
       const file: CodeFile = {
         id: fileId,
         problemId: problem.id,
         name: fileName,
         language: lang,
-        content: incomingCode,
+        content: hasIncomingCode ? incomingCode : defaultCode(lang),
         createdAt: now,
         updatedAt: now,
       };
@@ -4547,7 +5382,7 @@ int main() {
       });
       const nonEmptyLines = incomingCode.split('\n').filter((line) => line.trim().length > 0).length;
       scheduleImportedProblemParsing(get, set, id, payload, statement, problem.title, {
-        autoAnalyzeCode: incomingCode.trim().length >= 30 && nonEmptyLines >= 3,
+        autoAnalyzeCode: hasIncomingCode && incomingCode.trim().length >= 30 && nonEmptyLines >= 3,
       });
     },
 
@@ -4590,18 +5425,57 @@ function findScopeOfFile(st: State, fileId: string): string | null {
 }
 
 function inferImportedFileLang(payload: import('./importReceiver').ImportPayload): FileLang {
-  const explicit = (payload.language ?? '').toLowerCase();
-  const text = `${payload.title ?? ''}\n${payload.rawText ?? ''}\n${payload.initialCode ?? ''}`.toLowerCase();
+  const explicit = (payload.language ?? '').trim().toLowerCase();
+  const compactExplicit = explicit.replace(/[\s_-]/g, '');
   if (
-    explicit === 'python' ||
-    /\bpython\b/.test(text) ||
-    text.includes('input 函数') ||
-    /(^|\n)\s*(def|print|with\s+open|import\s+)\b/.test(payload.initialCode ?? '')
+    compactExplicit === 'cpp' ||
+    compactExplicit === 'c++' ||
+    compactExplicit === 'cplusplus' ||
+    compactExplicit === 'g++' ||
+    compactExplicit === 'gnu++' ||
+    compactExplicit === 'cxx' ||
+    compactExplicit === 'cc'
+  ) {
+    return 'cpp';
+  }
+  if (compactExplicit === 'c' || compactExplicit === 'gcc') return 'c';
+  if (compactExplicit === 'python' || compactExplicit === 'python3' || compactExplicit === 'py') {
+    return 'python';
+  }
+  const initialCode = payload.initialCode ?? '';
+  if (
+    /(^|\n)\s*(def|print\s*\(|with\s+open|import\s+\w|from\s+\w+\s+import)\b/.test(initialCode)
   ) {
     return 'python';
   }
-  if (explicit === 'c') return 'c';
+  if (/(^|\n)\s*#include\s*<stdio\.h>/.test(initialCode) && !/(iostream|bits\/stdc\+\+|std::|using\s+namespace\s+std|cin\s*>>|cout\s*<<)/.test(initialCode)) {
+    return 'c';
+  }
   return 'cpp';
+}
+
+function hasImportedInitialCode(code: string | undefined): boolean {
+  const trimmed = code?.trim() ?? '';
+  if (!trimmed) return false;
+  const normalized = trimmed.replace(/\s+/g, '').toLowerCase();
+  return ![
+    'todo',
+    'pass',
+    '//todo',
+    '//yourcodehere',
+    'yourcodehere',
+    'writeyourcodehere',
+    '请在此处编写代码',
+    '在这里写你的代码',
+    '在这里写你的解法',
+  ].includes(normalized);
+}
+
+function isDefaultCodeTemplate(code: string): boolean {
+  const trimmed = code.trim();
+  return (['cpp', 'c', 'python', 'markdown', 'plaintext'] as FileLang[]).some(
+    (lang) => defaultCode(lang).trim() === trimmed,
+  );
 }
 
 function smartDupName(orig: string, existing: string[]): string {
