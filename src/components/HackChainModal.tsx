@@ -102,14 +102,14 @@ export function HackChainModal() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed right-4 bottom-4 z-50 w-[min(56rem,calc(100vw-2rem))] max-h-[80vh]"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-bg-base/55 px-4 py-6 backdrop-blur-sm"
         >
           <motion.div
-            initial={{ scale: 0.96, opacity: 0, y: 8 }}
+            initial={{ scale: 0.96, opacity: 0, y: 16 }}
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.96, opacity: 0 }}
             onClick={(e) => e.stopPropagation()}
-            className="glass-card w-full max-h-[80vh] flex flex-col overflow-hidden shadow-2xl"
+            className="glass-card w-[min(64rem,calc(100vw-2rem))] max-h-[86vh] flex flex-col overflow-hidden shadow-2xl"
           >
             <Header onClose={dismiss} steps={state.steps} startedAt={state.startedAt} now={now} />
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">

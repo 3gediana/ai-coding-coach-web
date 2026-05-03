@@ -137,6 +137,7 @@ export function RuntimePane() {
   const runHackChain = useStore((s) => s.runHackChain);
   const enqueueOjSubmit = useStore((s) => s.enqueueOjSubmit);
   const lastRunByScope = useStore((s) => s.lastRunByScope);
+  const sampleAcRunByScope = useStore((s) => s.sampleAcRunByScope);
   const hackChainRunning = useStore(
     (s) => !!s.hackChainState && !s.hackChainState.result,
   );
@@ -348,6 +349,7 @@ export function RuntimePane() {
     activeProblem,
     file,
     lastRunByScope[scope],
+    sampleAcRunByScope[scope],
   );
   const canRunHackChain = !offline && !hackChainRunning && !hackChainBlockReason;
   const canOjSubmit = !!activeProblem?.source && /^https?:\/\//.test(activeProblem.source);

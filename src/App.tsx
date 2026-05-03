@@ -32,6 +32,7 @@ import { startOjBridgeReceiver, stopOjBridgeReceiver } from './lib/ojBridge';
 import { loadDemoSeed } from './lib/demoSeed';
 import {
   collectLocalOllamaTargets,
+  requestUnloadLocalModels,
   unloadLocalModels,
   warmupLocalModels,
 } from './core/ai/warmup';
@@ -108,7 +109,7 @@ export default function App() {
         lastWarmResultKeyRef.current = resultKey;
         if (okCount === results.length) {
           toast.success(`本地模型已预热：${results[0].model}`, {
-            description: `已加载到 Ollama keep_alive=24h；首次实时调用不再冷启动。`,
+            description: `已短时加载到 Ollama；关闭页面会请求卸载。`,
             duration: 3000,
           });
         } else {
@@ -127,8 +128,21 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [warmDepKey, isLocalBrowser]);
 
-  // 注意：以前这里监听 pagehide 自动卸载本地模型，导致每次刷新/关 tab 都要冷启 3-5s。
-  // 现在交给 Ollama 自己的 keep_alive=24h 管理；用户可在设置里显式切到"无 Ollama 模式"来释放显存。
+  // 关闭 / 刷新页面时请求卸载本次页面预热过的本地模型，避免显存长期占用。
+  // 这里用 sendBeacon / keepalive，不等待响应；正常配置切换仍走上面的 unloadLocalModels。
+  useEffect(() => {
+    if (typeof window === 'undefined' || !isLocalBrowser) return;
+    const unloadCurrentTargets = () => {
+      requestUnloadLocalModels(warmTargetsRef.current);
+    };
+    window.addEventListener('pagehide', unloadCurrentTargets);
+    window.addEventListener('beforeunload', unloadCurrentTargets);
+    return () => {
+      window.removeEventListener('pagehide', unloadCurrentTargets);
+      window.removeEventListener('beforeunload', unloadCurrentTargets);
+      unloadCurrentTargets();
+    };
+  }, [isLocalBrowser]);
 
   // ?seed=demo：清空 IndexedDB 并注入 5 题 + 错题 + 7 天学习记录，然后 reload
   useEffect(() => {

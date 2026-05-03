@@ -381,6 +381,7 @@ export type AIProvider =
   | 'qwen'
   | 'zhipu'
   | 'moonshot'
+  | 'mimo'
   | 'ollama'
   | 'custom';
 

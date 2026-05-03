@@ -140,6 +140,19 @@ export const PRESETS: AIPreset[] = [
     },
   },
   {
+    id: 'mimo',
+    label: 'Mimo Token Plan',
+    hint: '小米 Mimo Token Plan OpenAI 兼容接口；V2.5 Pro 强模型，注意实际模型名为 mimo-v2.5-pro',
+    baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1/chat/completions',
+    defaultModel: 'mimo-v2.5-pro',
+    modelExamples: ['mimo-v2.5-pro', 'mimo-v2.5'],
+    defaultContextWindowTokens: DEFAULT_CLOUD_CONTEXT_TOKENS,
+    modelContextTokens: {
+      'mimo-v2.5-pro': DEFAULT_CLOUD_CONTEXT_TOKENS,
+      'mimo-v2.5': DEFAULT_CLOUD_CONTEXT_TOKENS,
+    },
+  },
+  {
     id: 'anthropic',
     label: 'Anthropic Claude',
     hint: 'Opus 4.7 / Sonnet 4.6 / Haiku 4.5；长推理 + 代码',

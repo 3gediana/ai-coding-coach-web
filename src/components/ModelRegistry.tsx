@@ -27,6 +27,7 @@ const PROVIDER_LABELS: Record<AIProvider, string> = {
   qwen: '通义',
   zhipu: '智谱',
   moonshot: 'Kimi',
+  mimo: 'Mimo',
   ollama: 'Ollama 本地',
   custom: '自定义',
 };

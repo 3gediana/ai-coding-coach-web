@@ -1,3 +1,5 @@
+import { queueLocalSettingRemove, queueLocalSettingWrite } from './fileBackedSettings';
+
 export function safeGetItem(key: string): string | null {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return null;
@@ -11,6 +13,7 @@ export function safeSetItem(key: string, value: string): void {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return;
     window.localStorage.setItem(key, value);
+    queueLocalSettingWrite(key, value);
   } catch {
     return;
   }
@@ -20,6 +23,7 @@ export function safeRemoveItem(key: string): void {
   try {
     if (typeof window === 'undefined' || !window.localStorage) return;
     window.localStorage.removeItem(key);
+    queueLocalSettingRemove(key);
   } catch {
     return;
   }

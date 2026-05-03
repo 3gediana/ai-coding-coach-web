@@ -2,7 +2,7 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as net from 'node:net';
-import { writeFile, mkdir, readFile, readdir, stat, unlink } from 'node:fs/promises';
+import { writeFile, mkdir, readFile, readdir, stat, unlink, rename } from 'node:fs/promises';
 import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve, extname, resolve as pathResolve } from 'node:path';
 import type { Connect } from 'vite';
@@ -10,6 +10,9 @@ import type { Connect } from 'vite';
 const devArtifactPath = (...parts: string[]) => resolve(process.cwd(), 'dev-workspace', 'artifacts', ...parts);
 const localProblemBankPath = (...parts: string[]) => resolve(process.cwd(), 'dev-workspace', 'problem-bank', ...parts);
 const localFeedbackPath = (...parts: string[]) => resolve(process.cwd(), 'dev-workspace', 'feedback', ...parts);
+const localSettingsFilePath = () => resolve(process.cwd(), 'dev-workspace', 'local-config', 'settings.json');
+let problemBankWriteQueue: Promise<unknown> = Promise.resolve();
+let localSettingsWriteQueue: Promise<unknown> = Promise.resolve();
 
 type ProblemBankItem = {
   id: string;
@@ -166,10 +169,20 @@ async function writeLocalProblemBankBundle(bundle: ProblemBankBundle): Promise<s
   };
   const parts = classifyProblemBankItem(problem);
   const target = localProblemBankPath('problems', ...parts, `${safePathPart(problem.id)}__${safePathPart(problem.title)}.json`);
+  const tmpTarget = `${target}.${process.pid}.${Date.now()}.tmp`;
   await removeProblemBankFilesById(problem.id);
   await mkdir(dirname(target), { recursive: true });
-  await writeFile(target, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+  await writeFile(tmpTarget, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+  await rename(tmpTarget, target);
   return target;
+}
+
+async function queueProblemBankWrite<T>(fn: () => Promise<T>): Promise<T> {
+  const run = problemBankWriteQueue
+    .catch(() => undefined)
+    .then(fn);
+  problemBankWriteQueue = run;
+  return run;
 }
 
 function installLocalProblemBankMiddleware(middlewares: Connect.Server) {
@@ -191,12 +204,14 @@ function installLocalProblemBankMiddleware(middlewares: Connect.Server) {
           res.end(JSON.stringify({ ok: false, error: 'invalid problem bundle' }));
           return;
         }
-        const path = await writeLocalProblemBankBundle({
-          ...bundle,
-          kind: 'aicc.problem.bundle',
-          version: 1,
-          savedAt: Date.now(),
-        });
+        const path = await queueProblemBankWrite(() =>
+          writeLocalProblemBankBundle({
+            ...bundle,
+            kind: 'aicc.problem.bundle',
+            version: 1,
+            savedAt: Date.now(),
+          }),
+        );
         res.statusCode = 200;
         res.end(JSON.stringify({ ok: true, path }));
       } catch (err: any) {
@@ -213,7 +228,7 @@ function installLocalProblemBankMiddleware(middlewares: Connect.Server) {
         res.end(JSON.stringify({ ok: false, error: 'missing id' }));
         return;
       }
-      await removeProblemBankFilesById(id);
+      await queueProblemBankWrite(() => removeProblemBankFilesById(id));
       res.statusCode = 200;
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -236,6 +251,109 @@ async function writeLocalFeedback(payload: Record<string, unknown>): Promise<str
     'utf8',
   );
   return target;
+}
+
+function normalizeLocalSettingEntries(entries: unknown): Record<string, string> {
+  if (!entries || typeof entries !== 'object') return {};
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(entries as Record<string, unknown>)) {
+    if (typeof key === 'string' && typeof value === 'string') out[key] = value;
+  }
+  return out;
+}
+
+function normalizeLocalSettingKeys(keys: unknown): string[] {
+  return Array.isArray(keys) ? keys.filter((key): key is string => typeof key === 'string') : [];
+}
+
+function isLocalSettingsRequest(req: any): boolean {
+  const host = String(req.headers?.host ?? '').split(':')[0].replace(/^\[|\]$/g, '').toLowerCase();
+  const remote = String(req.socket?.remoteAddress ?? '').replace(/^::ffff:/, '').toLowerCase();
+  const allowed = new Set(['localhost', '127.0.0.1', '::1']);
+  return allowed.has(host) || allowed.has(remote);
+}
+
+async function readLocalSettingsFile(): Promise<Record<string, string>> {
+  try {
+    const parsed = JSON.parse(await readFile(localSettingsFilePath(), 'utf8'));
+    return normalizeLocalSettingEntries(parsed.entries);
+  } catch {
+    return {};
+  }
+}
+
+async function readLocalSettingsKnownKeys(): Promise<string[]> {
+  try {
+    const parsed = JSON.parse(await readFile(localSettingsFilePath(), 'utf8'));
+    const entryKeys = Object.keys(normalizeLocalSettingEntries(parsed.entries));
+    return [...new Set([...entryKeys, ...normalizeLocalSettingKeys(parsed.keys)])];
+  } catch {
+    return [];
+  }
+}
+
+async function writeLocalSettingsFile(entries: Record<string, string>): Promise<string> {
+  const target = localSettingsFilePath();
+  const keys = Object.keys(entries);
+  const tmpTarget = `${target}.${process.pid}.${Date.now()}.tmp`;
+  await mkdir(dirname(target), { recursive: true });
+  await writeFile(tmpTarget, `${JSON.stringify({ kind: 'aicc.localSettings', version: 1, savedAt: Date.now(), keys, entries }, null, 2)}\n`, 'utf8');
+  await rename(tmpTarget, target);
+  return target;
+}
+
+async function updateLocalSettingsFile(
+  mutator: (current: Record<string, string>) => Record<string, string>,
+): Promise<string> {
+  const run = localSettingsWriteQueue
+    .catch(() => undefined)
+    .then(async () => {
+      const current = await readLocalSettingsFile();
+      return writeLocalSettingsFile(mutator(current));
+    });
+  localSettingsWriteQueue = run;
+  return run;
+}
+
+function installLocalSettingsMiddleware(middlewares: Connect.Server) {
+  middlewares.use('/__aicc-local-settings', async (req, res) => {
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    if (!isLocalSettingsRequest(req)) {
+      res.statusCode = 403;
+      res.end(JSON.stringify({ ok: false, error: 'local settings are only available from localhost' }));
+      return;
+    }
+    if (req.method === 'GET') {
+      const entries = await readLocalSettingsFile();
+      const keys = await readLocalSettingsKnownKeys();
+      res.statusCode = 200;
+      res.setHeader('x-aicc-local-settings-manifest', JSON.stringify({ keys }));
+      res.end(JSON.stringify({ ok: true, exists: Object.keys(entries).length > 0, entries }));
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.statusCode = 405;
+      res.end(JSON.stringify({ ok: false, error: 'method not allowed' }));
+      return;
+    }
+    try {
+      const payload = await readJsonRequest<{ entries?: unknown; remove?: unknown }>(req);
+      const path = await updateLocalSettingsFile((current) => {
+        const next = { ...current, ...normalizeLocalSettingEntries(payload.entries) };
+        if (Array.isArray(payload.remove)) {
+          for (const key of payload.remove) {
+            if (typeof key === 'string') delete next[key];
+          }
+        }
+        return next;
+      });
+      res.statusCode = 200;
+      res.end(JSON.stringify({ ok: true, path }));
+    } catch (err: any) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ ok: false, error: String(err?.message || err) }));
+    }
+  });
 }
 
 function installFeedbackMiddleware(middlewares: Connect.Server) {
@@ -276,12 +394,15 @@ let managedOllama: ChildProcess | null = null;
 let ensuringPromise: Promise<boolean> | null = null;
 let warmupPromise: Promise<Array<{ label: string; model: string; ok: boolean; latencyMs: number; error?: string }>> | null = null;
 let lastWarmupAt = 0;
+const OLLAMA_WARMUP_KEEP_ALIVE = '10m';
 let serverOllamaMode: 'enabled' | 'disabled' =
   process.env.AICC_OLLAMA === '0' ? 'disabled' : 'enabled';
 const ollamaAutostartEnv = process.env.AICC_OLLAMA_AUTOSTART?.toLowerCase();
 const serverOllamaAutostart =
   ollamaAutostartEnv !== '0' && ollamaAutostartEnv !== 'false';
 let loggedExternalOllama = false;
+let knownOllamaTargets: Array<{ baseUrl?: string; model?: string }> = [];
+let shuttingDownOllama = false;
 
 function probePort(host: string, port: number, timeoutMs = 400): Promise<boolean> {
   return new Promise((resolve) => {
@@ -349,6 +470,9 @@ async function ensureOllamaRunning(): Promise<boolean> {
       ensuringPromise = null;
       return false;
     }
+    if (managedOllama && !managedOllama.killed) {
+      return waitOllamaReady(8_000);
+    }
     console.log('\x1b[33m[aicc-ollama]\x1b[0m 端口 11434 未在监听，自动启动 `ollama serve` ...');
     try {
       managedOllama = spawn(
@@ -376,17 +500,12 @@ async function ensureOllamaRunning(): Promise<boolean> {
     if (ready) console.log('\x1b[32m[aicc-ollama]\x1b[0m ✓ ollama 已就绪 (auto-managed)');
     else {
       console.warn('\x1b[31m[aicc-ollama]\x1b[0m ⚠ 20s 内 ollama 未就绪，跳过');
-      ensuringPromise = null;
     }
-    // ensuringPromise 保持已 resolve，下次直接复用结果（避免重复 spawn）
     return ready;
-  })();
+  })().finally(() => {
+    ensuringPromise = null;
+  });
   return ensuringPromise;
-}
-
-function ensureOllamaOnServerStart(): void {
-  if (serverOllamaMode === 'disabled' || !serverOllamaAutostart) return;
-  void ensureOllamaRunning();
 }
 
 function killManagedOllama() {
@@ -401,8 +520,20 @@ function killManagedOllama() {
   }
 }
 
+function rememberOllamaTargets(targets: Array<{ baseUrl?: string; model?: string }>) {
+  const merged = [...knownOllamaTargets, ...targets];
+  const seen = new Set<string>();
+  knownOllamaTargets = merged.filter((t) => {
+    const model = t.model?.trim();
+    if (!model || seen.has(model)) return false;
+    seen.add(model);
+    return true;
+  });
+}
+
 async function unloadOllamaTargets(targets: Array<{ baseUrl?: string; model?: string }>) {
   const seen = new Set<string>();
+  if (!(await probeOllamaServe(1200))) return;
   for (const t of targets) {
     const model = t.model?.trim();
     if (!model || seen.has(model)) continue;
@@ -418,6 +549,17 @@ async function unloadOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
     } catch (err: any) {
       console.warn(`\x1b[31m[aicc-ollama]\x1b[0m unload ${model} 失败: ${err?.message || err}`);
     }
+  }
+}
+
+async function shutdownOllamaLifecycle() {
+  if (shuttingDownOllama) return;
+  shuttingDownOllama = true;
+  try {
+    await unloadOllamaTargets(knownOllamaTargets);
+  } finally {
+    killManagedOllama();
+    shuttingDownOllama = false;
   }
 }
 
@@ -437,6 +579,7 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
   }
   if (warmupPromise) return warmupPromise;
   if (Date.now() - lastWarmupAt < 60_000) {
+    rememberOllamaTargets(unique);
     return unique.map((t) => ({
       label: t.label ?? 'ollama',
       model: t.model!,
@@ -449,19 +592,17 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
     const model = target.model!.trim();
     const startedAt = Date.now();
     try {
-      if (!(await probePort('127.0.0.1', 11434, 300))) {
-        const ok = await ensureOllamaRunning();
-        if (!ok) {
-          return [{
-            label: target.label ?? 'ollama',
-            model,
-            ok: false,
-            latencyMs: Date.now() - startedAt,
-            error: serverOllamaMode === 'disabled'
-              ? 'ollama 模式已关闭'
-              : 'ollama 未就绪；已尝试自动启动，请确认本机已安装 Ollama 且 11434 未被其它程序占用',
-          }];
-        }
+      const ready = await ensureOllamaRunning();
+      if (!ready) {
+        return [{
+          label: target.label ?? 'ollama',
+          model,
+          ok: false,
+          latencyMs: Date.now() - startedAt,
+          error: serverOllamaMode === 'disabled'
+            ? 'ollama 模式已关闭'
+            : 'ollama 未就绪；已尝试自动启动，请确认本机已安装 Ollama 且 11434 未被其它程序占用',
+        }];
       }
       const upstream = await fetch('http://127.0.0.1:11434/api/chat', {
         method: 'POST',
@@ -470,13 +611,14 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
           model,
           messages: [{ role: 'user', content: 'hi /no_think' }],
           stream: false,
-          keep_alive: '24h',
+          keep_alive: OLLAMA_WARMUP_KEEP_ALIVE,
           options: { num_predict: 1, temperature: 0 },
         }),
         signal: AbortSignal.timeout(30_000),
       });
       const text = upstream.ok ? '' : await upstream.text().catch(() => '');
       lastWarmupAt = Date.now();
+      if (upstream.ok) rememberOllamaTargets(unique);
       return [{
         label: target.label ?? 'ollama',
         model,
@@ -500,8 +642,8 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
 }
 
 process.on('exit', killManagedOllama);
-process.on('SIGINT', () => { killManagedOllama(); process.exit(0); });
-process.on('SIGTERM', () => { killManagedOllama(); process.exit(0); });
+process.on('SIGINT', () => { void shutdownOllamaLifecycle().finally(() => process.exit(0)); });
+process.on('SIGTERM', () => { void shutdownOllamaLifecycle().finally(() => process.exit(0)); });
 
 /** 判断 url 是否指向本地 ollama（11434） */
 function isLocalOllamaTarget(target: URL): boolean {
@@ -575,9 +717,14 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
             res.write(Buffer.from(value));
           }
         } finally {
-          res.end();
+          if (!res.writableEnded) res.end();
         }
       } catch (e: any) {
+        if (res.writableEnded) return;
+        if (res.headersSent) {
+          res.destroy(e instanceof Error ? e : new Error(String(e?.message || e)));
+          return;
+        }
         res.statusCode = 502;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: String(e?.message || e) }));
@@ -589,12 +736,10 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
 const ollamaAutostartPlugin: Plugin = {
   name: 'aicc-ollama-autostart',
   configureServer(server) {
-    ensureOllamaOnServerStart();
-    server.httpServer?.on('close', killManagedOllama);
+    server.httpServer?.on('close', () => { void shutdownOllamaLifecycle(); });
   },
   configurePreviewServer(server) {
-    ensureOllamaOnServerStart();
-    server.httpServer?.on('close', killManagedOllama);
+    server.httpServer?.on('close', () => { void shutdownOllamaLifecycle(); });
   },
 };
 
@@ -608,11 +753,13 @@ export default defineConfig({
       name: 'aicc-ai-proxy',
       configureServer(server) {
         installAiProxyMiddleware(server.middlewares);
+        installLocalSettingsMiddleware(server.middlewares);
         installLocalProblemBankMiddleware(server.middlewares);
         installFeedbackMiddleware(server.middlewares);
       },
       configurePreviewServer(server) {
         installAiProxyMiddleware(server.middlewares);
+        installLocalSettingsMiddleware(server.middlewares);
         installLocalProblemBankMiddleware(server.middlewares);
         installFeedbackMiddleware(server.middlewares);
       },
@@ -864,9 +1011,6 @@ export default defineConfig({
             const payload = await readJsonBody<{ mode?: 'enabled' | 'disabled' }>(req);
             serverOllamaMode = payload.mode === 'disabled' ? 'disabled' : 'enabled';
             process.env.AICC_OLLAMA = serverOllamaMode === 'disabled' ? '0' : '1';
-            if (serverOllamaMode === 'enabled') {
-              void ensureOllamaRunning();
-            }
             res.statusCode = 200;
             res.setHeader('content-type', 'application/json');
             res.end(JSON.stringify({ ok: true, mode: serverOllamaMode }));
@@ -892,6 +1036,7 @@ export default defineConfig({
           try {
             const payload = await readJsonBody<{ targets?: Array<{ baseUrl?: string; model?: string }> }>(req);
             const targets = Array.isArray(payload.targets) ? payload.targets : [];
+            rememberOllamaTargets(targets);
             await unloadOllamaTargets(targets);
             res.statusCode = 200;
             res.setHeader('content-type', 'application/json');

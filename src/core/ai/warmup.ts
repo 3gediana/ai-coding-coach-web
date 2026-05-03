@@ -189,7 +189,7 @@ export async function warmupLocalModels(cfg: AIConfig): Promise<WarmupResult[]> 
           maxTokens: 1,
           temperature: 0,
           timeoutMs: 30_000,
-          keepAlive: '24h',
+          keepAlive: '10m',
         });
         const dt = Math.round(performance.now() - t0);
         return { label: t.label, model: t.model, ok: true, latencyMs: dt };

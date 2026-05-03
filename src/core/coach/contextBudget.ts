@@ -44,6 +44,11 @@ const MODEL_CONTEXT_TOKENS: Record<string, number> = {
   'moonshot-v1-32k': 32_000,
   'moonshot-v1-8k': 8_000,
 
+  'mimo-v2.5-pro': DEFAULT_CLOUD_CONTEXT_TOKENS,
+  'mimo-v2.5': DEFAULT_CLOUD_CONTEXT_TOKENS,
+  'v2.5pro': DEFAULT_CLOUD_CONTEXT_TOKENS,
+  'v2.5': DEFAULT_CLOUD_CONTEXT_TOKENS,
+
   'claude-opus-4.7': 1_000_000,
   'claude-opus-4.6': 1_000_000,
   'claude-sonnet-4.6': 200_000,

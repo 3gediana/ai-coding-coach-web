@@ -501,31 +501,61 @@ export interface RunSnapshot {
   timestamp: number;
 }
 
+function isSampleAcceptedRun(problem: Problem, snap: RunSnapshot): boolean {
+  if (snap.exitCode !== 0) return false;
+  return (problem.examples ?? []).some(
+    (ex) =>
+      ex.input.trim() &&
+      normalizeRunIO(snap.stdin) === normalizeRunIO(ex.input) &&
+      normalizeRunIO(snap.stdout) === normalizeRunIO(ex.output),
+  );
+}
+
+function isRunForCurrentFile(file: CodeFile, snap: RunSnapshot): boolean {
+  return snap.fileId === file.id && snap.fileContent !== undefined && snap.fileContent === file.content;
+}
+
+function getHackChainReadySnapshot(
+  problem: Problem,
+  file: CodeFile,
+  lastRun: RunSnapshot | undefined,
+  sampleAcRun: RunSnapshot | undefined,
+): RunSnapshot | undefined {
+  for (const { snap, requireFresh } of [
+    { snap: sampleAcRun, requireFresh: false },
+    { snap: lastRun, requireFresh: true },
+  ]) {
+    if (!snap) continue;
+    if (!isRunForCurrentFile(file, snap)) continue;
+    if (requireFresh && Date.now() - snap.timestamp > 30 * 60 * 1000) continue;
+    if (isSampleAcceptedRun(problem, snap)) return snap;
+  }
+  return undefined;
+}
+
 export function getHackChainBlockReason(
   problem: Problem | null | undefined,
   file: CodeFile | null | undefined,
   snap: RunSnapshot | undefined,
+  sampleAcRun?: RunSnapshot,
 ): string | null {
   if (!problem) return '请先激活一道题目';
   if (!file || (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python')) {
     return '当前活跃文件不是可执行代码';
   }
   if (!file.content.trim()) return '请先写代码，并运行题目样例到 AC';
-  if (!snap || snap.fileId !== file.id) return '请先运行当前代码，并通过题目样例';
-  if (snap.fileContent === undefined || snap.fileContent !== file.content) {
+  if (getHackChainReadySnapshot(problem, file, snap, sampleAcRun)) return null;
+  if (!snap && !sampleAcRun) return '请先运行当前代码，并通过题目样例';
+  const latest = sampleAcRun ?? snap;
+  if (!latest || latest.fileId !== file.id) return '请先运行当前代码，并通过题目样例';
+  if (latest.fileContent === undefined || latest.fileContent !== file.content) {
     return '代码已修改，请重新运行当前代码并通过样例';
   }
-  if (Date.now() - snap.timestamp > 30 * 60 * 1000) {
+  if (!sampleAcRun && snap && Date.now() - snap.timestamp > 30 * 60 * 1000) {
     return '样例 AC 记录已过期，请重新运行当前代码';
   }
-  if (snap.exitCode !== 0) return '最近一次运行还没 AC，请先修到样例通过';
-  const passedSample = (problem.examples ?? []).some(
-    (ex) =>
-      ex.input.trim() &&
-      normalizeRunIO(snap.stdin) === normalizeRunIO(ex.input) &&
-      normalizeRunIO(snap.stdout) === normalizeRunIO(ex.output),
-  );
-  return passedSample ? null : '请先用题目样例运行到 AC，再启动 Hack Chain';
+  if (latest.exitCode !== 0) return '最近一次运行还没 AC，请先修到样例通过';
+  return '请先用题目样例运行到 AC，再启动 Hack Chain';
 }
 
 const handlersById = new Map<string, TaskHandler>();
@@ -821,6 +851,7 @@ interface State {
   diffSelection: string[];
   /** 最近一次运行结果（按 scope）— 让 analyzeCode 能拿到 stderr/exitCode 给出对症建议 */
   lastRunByScope: Record<string, RunSnapshot>;
+  sampleAcRunByScope: Record<string, RunSnapshot>;
 
   /** Coach 主动嗅探得到的静默提示（按 scope）；UI 只通过角标 + 行动面板暴露 */
   coachHintsByScope: Record<string, CoachHint[]>;
@@ -1068,6 +1099,7 @@ type ProblemBundleState = {
   analysis?: AnalysisResult | null;
   qa?: QAMessage[];
   lastRun?: RunSnapshot | null;
+  sampleAcRun?: RunSnapshot | null;
   coachHints?: CoachHint[];
   moduleStatus?: Record<string, boolean> | null;
   failureStats?: FailureStats | null;
@@ -1166,6 +1198,8 @@ function getProblemStateModifiedAt(st: State, problemId: string): number {
   for (const msg of st.qaByProblem[problemId] ?? []) times.push(msg.ts);
   const run = st.lastRunByScope[problemId];
   if (run?.timestamp) times.push(run.timestamp);
+  const sampleAcRun = st.sampleAcRunByScope[problemId];
+  if (sampleAcRun?.timestamp) times.push(sampleAcRun.timestamp);
   for (const hint of st.coachHintsByScope[problemId] ?? []) times.push(hint.ts);
   const failureStats = st.failureStatsByProblem[problemId];
   for (const ts of failureStats?.recentTimestamps ?? []) times.push(ts);
@@ -1208,6 +1242,7 @@ async function buildProblemStateBundle(st: State, problemId: string): Promise<Pr
       analysis: st.analysisByProblem[problemId] ?? null,
       qa: st.qaByProblem[problemId] ?? [],
       lastRun: st.lastRunByScope[problemId] ?? null,
+      sampleAcRun: st.sampleAcRunByScope[problemId] ?? null,
       coachHints: st.coachHintsByScope[problemId] ?? [],
       moduleStatus: st.moduleStatusByProblem[problemId] ?? null,
       failureStats: st.failureStatsByProblem[problemId] ?? null,
@@ -1216,7 +1251,10 @@ async function buildProblemStateBundle(st: State, problemId: string): Promise<Pr
       events: allEvents.filter((e) => e.problemId === problemId),
       agentTrace: st.agentTrace.filter((e) => e.problemId === problemId),
       pendingHackCase: st.pendingHackCase?.problemId === problemId ? st.pendingHackCase : null,
-      hackChainState: st.hackChainState?.problemId === problemId ? st.hackChainState : null,
+      hackChainState:
+        st.hackChainState?.problemId === problemId && st.hackChainState.result
+          ? st.hackChainState
+          : null,
       pendingAcReview: st.pendingAcReview?.problemId === problemId ? st.pendingAcReview : null,
     },
   };
@@ -1263,6 +1301,9 @@ function collectDirtyProblemIds(next: State, prev: State): Set<string> {
   }
   for (const key of new Set([...Object.keys(next.lastRunByScope), ...Object.keys(prev.lastRunByScope)])) {
     if (next.lastRunByScope[key] !== prev.lastRunByScope[key]) add(key);
+  }
+  for (const key of new Set([...Object.keys(next.sampleAcRunByScope), ...Object.keys(prev.sampleAcRunByScope)])) {
+    if (next.sampleAcRunByScope[key] !== prev.sampleAcRunByScope[key]) add(key);
   }
   for (const key of new Set([...Object.keys(next.coachHintsByScope), ...Object.keys(prev.coachHintsByScope)])) {
     if (next.coachHintsByScope[key] !== prev.coachHintsByScope[key]) add(key);
@@ -1336,6 +1377,7 @@ async function importProblemBundlesFromLocalBank(
       let analysisByProblem = s.analysisByProblem;
       let qaByProblem = s.qaByProblem;
       let lastRunByScope = s.lastRunByScope;
+      let sampleAcRunByScope = s.sampleAcRunByScope;
       let coachHintsByScope = s.coachHintsByScope;
       let moduleStatusByProblem = s.moduleStatusByProblem;
       let failureStatsByProblem = s.failureStatsByProblem;
@@ -1370,6 +1412,16 @@ async function importProblemBundlesFromLocalBank(
             ? { ...lastRunByScope, [id]: bundle.state.lastRun }
             : omitRecordKey(lastRunByScope, id);
         }
+        const fallbackSampleAcRun =
+          bundle.state.lastRun && isSampleAcceptedRun(bundle.problem, bundle.state.lastRun)
+            ? bundle.state.lastRun
+            : null;
+        if ('sampleAcRun' in bundle.state || fallbackSampleAcRun) {
+          const sampleAcRun = bundle.state.sampleAcRun ?? fallbackSampleAcRun;
+          sampleAcRunByScope = sampleAcRun
+            ? { ...sampleAcRunByScope, [id]: sampleAcRun }
+            : omitRecordKey(sampleAcRunByScope, id);
+        }
         if (bundle.state.coachHints) coachHintsByScope = { ...coachHintsByScope, [id]: bundle.state.coachHints };
         if ('moduleStatus' in bundle.state) {
           moduleStatusByProblem = bundle.state.moduleStatus
@@ -1385,7 +1437,9 @@ async function importProblemBundlesFromLocalBank(
         if (bundle.state.sessions) sessions = mergeById(sessions, bundle.state.sessions).sort((a, b) => b.startedAt - a.startedAt);
         if (bundle.state.agentTrace) agentTrace = mergeById(agentTrace, bundle.state.agentTrace).sort((a, b) => b.ts - a.ts).slice(0, AGENT_TRACE_LIMIT);
         if ('pendingHackCase' in bundle.state) pendingHackCase = bundle.state.pendingHackCase ?? null;
-        if ('hackChainState' in bundle.state) hackChainState = bundle.state.hackChainState ?? null;
+        if ('hackChainState' in bundle.state) {
+          hackChainState = bundle.state.hackChainState?.result ? bundle.state.hackChainState : null;
+        }
         if ('pendingAcReview' in bundle.state) pendingAcReview = bundle.state.pendingAcReview ?? null;
       }
       return {
@@ -1397,6 +1451,7 @@ async function importProblemBundlesFromLocalBank(
         analysisByProblem,
         qaByProblem,
         lastRunByScope,
+        sampleAcRunByScope,
         coachHintsByScope,
         moduleStatusByProblem,
         failureStatsByProblem,
@@ -1619,6 +1674,14 @@ function hasDeepSeekEnv(cfg: Partial<AIConfig>): boolean {
   return !!cfg.modelRegistry?.some((m) => m.id === DEEPSEEK_FLASH_MODEL_ID && !!m.apiKey.trim());
 }
 
+function hasUserPersistedPrimary(parsed: Partial<AIConfig>): boolean {
+  return (
+    parsed.primaryModelIdExplicit === true ||
+    (!!parsed.primaryModelId && !DEFAULT_MODEL_IDS.has(parsed.primaryModelId)) ||
+    (!!parsed.modelRegistry?.some((m) => parsed.primaryModelId === m.id && !DEFAULT_MODEL_IDS.has(m.id)))
+  );
+}
+
 function firstUserRegisteredModelId(registry: ModelEntry[]): string | undefined {
   return registry.find((m) => !DEFAULT_MODEL_IDS.has(m.id))?.id;
 }
@@ -1629,8 +1692,8 @@ const initialAIConfig: AIConfig = (() => {
     const raw = safeGetItem(LS_AI_CFG);
     if (raw) {
       const parsed = JSON.parse(raw);
-      const forceDeepSeek = hasDeepSeekEnv(envCfg);
-      // 浅合并：默认 → .env → localStorage；如果显式配置 DEEPSEEK_KEY，则以 DeepSeek 双模型为当前运行路由
+      const forceDeepSeek = hasDeepSeekEnv(envCfg) && !hasUserPersistedPrimary(parsed);
+      // 浅合并：默认 → .env → localStorage；如果没有用户显式主模型且配置了 DEEPSEEK_KEY，才以 DeepSeek 双模型为当前运行路由
       // fastLane / intentRouter 做嵌套兜底
       const mergedBase: AIConfig = forceDeepSeek
         ? { ...DEFAULT_AI_CONFIG, ...parsed, ...envCfg }
@@ -1976,6 +2039,40 @@ export const useStore = create<State>((set, get) => {
     get().refreshLearningEngine();
   };
 
+  const recordAcceptedSubmission = async (problem: Problem, file: CodeFile) => {
+    await recordSubmissionSession(problem, file, 'pass');
+    set((s) => {
+      if (!s.failureStatsByProblem[problem.id]) return s;
+      const next = { ...s.failureStatsByProblem };
+      delete next[problem.id];
+      return { failureStatsByProblem: next };
+    });
+    const related = get().mistakes.filter(
+      (m) => m.problemId === problem.id && !m.reviewedAt,
+    );
+    for (const m of related) {
+      await get().markMistakeReviewed(m.id);
+    }
+    if (related.length > 0) {
+      toast.success(`✨ 自动标记 ${related.length} 条错题已复习`, {
+        description: 'AC 即为有效复习',
+        duration: 4000,
+      });
+    }
+    get().recordAgentTrace({
+      kind: 'feedback',
+      level: 'success',
+      title: 'AC 已记录到学习空间',
+      detail: related.length > 0 ? `同时标记 ${related.length} 条错题已复习` : undefined,
+      problemId: problem.id,
+    });
+    toast.success('AC 已记录到学习空间', {
+      description: '可在左侧「学习记录」和「学习空间」查看',
+      duration: 3000,
+    });
+    get().refreshLearningEngine();
+  };
+
   return {
     aiConfig: initialAIConfig,
     ai,
@@ -2060,6 +2157,7 @@ export const useStore = create<State>((set, get) => {
     learningCardDismissedDate: safeGetItem('aicc.learning.dismissed.v1'),
     diffSelection: [],
     lastRunByScope: {},
+    sampleAcRunByScope: {},
     overviewDismissedProblemIds: [],
     pendingAcReview: null,
     failureStatsByProblem: {},
@@ -2179,6 +2277,9 @@ export const useStore = create<State>((set, get) => {
       if (cfg.primaryModelId === id) {
         cleaned.primaryModelId = undefined;
         cleaned.primaryModelIdExplicit = false;
+      }
+      if (cfg.qualityModelId === id) {
+        cleaned.qualityModelId = undefined;
       }
       if (cfg.fastLane?.modelId === id) {
         cleaned.fastLane = { ...cfg.fastLane, modelId: undefined };
@@ -2668,6 +2769,14 @@ export const useStore = create<State>((set, get) => {
           ...s.activeFileIdByScope,
           [scopeKey]: wasActive ? remaining[0]?.id ?? null : s.activeFileIdByScope[scopeKey],
         },
+        lastRunByScope:
+          s.lastRunByScope[scopeKey]?.fileId === fileId
+            ? omitRecordKey(s.lastRunByScope, scopeKey)
+            : s.lastRunByScope,
+        sampleAcRunByScope:
+          s.sampleAcRunByScope[scopeKey]?.fileId === fileId
+            ? omitRecordKey(s.sampleAcRunByScope, scopeKey)
+            : s.sampleAcRunByScope,
         diffSelection: s.diffSelection.filter((id) => id !== fileId),
       }));
       // 删完了 → 自动建一个新的，避免空白
@@ -2796,6 +2905,10 @@ export const useStore = create<State>((set, get) => {
           s.lastRunByScope[scopeKey]?.fileId === fileId
             ? omitRecordKey(s.lastRunByScope, scopeKey)
             : s.lastRunByScope,
+        sampleAcRunByScope:
+          s.sampleAcRunByScope[scopeKey]?.fileId === fileId
+            ? omitRecordKey(s.sampleAcRunByScope, scopeKey)
+            : s.sampleAcRunByScope,
         coachHintsByScope: s.coachHintsByScope[scopeKey]
           ? {
               ...s.coachHintsByScope,
@@ -2819,9 +2932,16 @@ export const useStore = create<State>((set, get) => {
     clearDiffSelection: () => set({ diffSelection: [] }),
 
     setLastRun: (scope, snap) => {
-      set((s) => ({
-        lastRunByScope: { ...s.lastRunByScope, [scope]: snap },
-      }));
+      set((s) => {
+        const problem = scope === DRAFT_SCOPE ? undefined : s.problems.find((p) => p.id === scope);
+        return {
+          lastRunByScope: { ...s.lastRunByScope, [scope]: snap },
+          sampleAcRunByScope:
+            problem && isSampleAcceptedRun(problem, snap)
+              ? { ...s.sampleAcRunByScope, [scope]: snap }
+              : s.sampleAcRunByScope,
+        };
+      });
       // Coach 主动嗅探挂钩（全部静默，失败/超时也不打扰）
       const st = get();
       if (snap.exitCode !== 0 && st.diagnoseOnFailEnabled) {
@@ -2850,8 +2970,10 @@ export const useStore = create<State>((set, get) => {
     clearLastRun: (scope) =>
       set((s) => {
         const next = { ...s.lastRunByScope };
+        const nextSampleAc = { ...s.sampleAcRunByScope };
         delete next[scope];
-        return { lastRunByScope: next };
+        delete nextSampleAc[scope];
+        return { lastRunByScope: next, sampleAcRunByScope: nextSampleAc };
       }),
 
     // ===== Coach 主动嗅探（A / B / C） =====
@@ -3587,14 +3709,8 @@ export const useStore = create<State>((set, get) => {
       const opts: SubmitOpts =
         typeof arg === 'boolean' ? { isMistake: arg } : arg;
       const st = get();
-      if (!ensureOfflineFastLane(st.aiConfig)) return null;
       if (!st.activeProblemId) {
         toast.error('请先激活一道题目');
-        return null;
-      }
-      if (!hasUsableAIConfig(st.aiConfig)) {
-        toast.error('请先配置 AI 服务');
-        set({ settingsOpen: true });
         return null;
       }
       const problem = st.problems.find((p) => p.id === st.activeProblemId);
@@ -3604,6 +3720,27 @@ export const useStore = create<State>((set, get) => {
       const file = (st.filesByScope[scopeKey] ?? []).find((f) => f.id === fileId);
       if (!file || (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python')) {
         toast.error('当前活跃文件不是代码文件');
+        return null;
+      }
+
+      if (!opts.isMistake) {
+        void recordAcceptedSubmission(problem, file).catch((e: any) => {
+          get().recordAgentTrace({
+            kind: 'feedback',
+            level: 'warn',
+            title: 'AC 记录失败',
+            detail: String(e?.message ?? e).slice(0, 240),
+            problemId: problem.id,
+          });
+          toast.error('AC 记录失败', {
+            description: String(e?.message ?? e).slice(0, 120),
+          });
+        });
+      }
+      if (!ensureOfflineFastLane(st.aiConfig)) return null;
+      if (!hasUsableAIConfig(st.aiConfig)) {
+        toast.error(opts.isMistake ? '请先配置 AI 服务' : 'AC 已记录；配置 AI 后可生成知识点总结');
+        if (opts.isMistake) set({ settingsOpen: true });
         return null;
       }
 
@@ -3632,8 +3769,8 @@ export const useStore = create<State>((set, get) => {
             { onChunk, onRetry, signal },
           ),
         onSuccess: async (result) => {
-          await recordSubmissionSession(problem, file, opts.isMistake ? 'mistake' : 'pass');
           if (opts.isMistake) {
+            await recordSubmissionSession(problem, file, 'mistake');
             const m = result as Mistake;
             await storage.saveMistake(m);
             await get().refreshMistakes();
@@ -3667,13 +3804,6 @@ export const useStore = create<State>((set, get) => {
             });
             toast.success(`已加入错题本：${m.category}`);
           } else {
-            // P3 屡败计数器：AC 后清零
-            set((s) => {
-              if (!s.failureStatsByProblem[problem.id]) return s;
-              const next = { ...s.failureStatsByProblem };
-              delete next[problem.id];
-              return { failureStatsByProblem: next };
-            });
             get().recordAgentTrace({
               kind: 'feedback',
               level: 'success',
@@ -3681,23 +3811,6 @@ export const useStore = create<State>((set, get) => {
               problemId: problem.id,
             });
             toast.success(`已总结知识点`);
-            // 错题本联动：这题之前如果在错题本里且未复习 → 自动标记
-            // 真正的"复习"不是手动按按钮，是 AC 通过
-            const related = get().mistakes.filter(
-              (m) => m.problemId === problem.id && !m.reviewedAt,
-            );
-            for (const m of related) {
-              await get().markMistakeReviewed(m.id);
-            }
-            if (related.length > 0) {
-              toast.success(`✨ 自动标记 ${related.length} 条错题已复习`, {
-                description: 'AC 即为有效复习',
-                duration: 4000,
-              });
-              // 同步刷新学习引擎（复习率会改变）
-              get().refreshLearningEngine();
-            }
-            // P2 AC 复盘：异步触发，让 AcReviewCard 浮起 + 缓存到 problem 上
             void get().requestAcReview(problem.id, file.id);
           }
         },
@@ -3896,7 +4009,12 @@ export const useStore = create<State>((set, get) => {
         toast.error('当前活跃文件不是可执行代码');
         return;
       }
-      const blockReason = getHackChainBlockReason(problem, file, st.lastRunByScope[scopeKey]);
+      const blockReason = getHackChainBlockReason(
+        problem,
+        file,
+        st.lastRunByScope[scopeKey],
+        st.sampleAcRunByScope[scopeKey],
+      );
       if (blockReason) {
         toast.error(blockReason);
         return;
@@ -4235,6 +4353,7 @@ export const useStore = create<State>((set, get) => {
           analysisByProblem: omitRecordKey(s.analysisByProblem, id),
           qaByProblem: omitRecordKey(s.qaByProblem, id),
           lastRunByScope: omitRecordKey(s.lastRunByScope, id),
+          sampleAcRunByScope: omitRecordKey(s.sampleAcRunByScope, id),
           coachHintsByScope: omitRecordKey(s.coachHintsByScope, id),
           moduleStatusByProblem: omitRecordKey(s.moduleStatusByProblem, id),
           failureStatsByProblem: omitRecordKey(s.failureStatsByProblem, id),

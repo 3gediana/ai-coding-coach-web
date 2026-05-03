@@ -22,7 +22,7 @@ import {
 } from 'recharts';
 import {
   TrendingUp, Target, AlertCircle, Clock, Flame, Calendar,
-  BookOpen, Sparkles, Award, BarChart3,
+  BookOpen, Sparkles, Award, BarChart3, CheckCircle2,
 } from 'lucide-react';
 import { LearningHeatmap } from './LearningHeatmap';
 import { LearningEngineCard } from './LearningEngineCard';
@@ -59,6 +59,14 @@ export function Dashboard() {
       count: v.count,
     }));
   }, [stats]);
+  const recentPasses = useMemo(
+    () =>
+      sessions
+        .filter((s) => s.outcome === 'pass')
+        .sort((a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt))
+        .slice(0, 5),
+    [sessions],
+  );
 
   return (
     <div className="p-3 space-y-3">
@@ -131,6 +139,50 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+
+      {recentPasses.length > 0 && (
+        <div className="glass-card p-3">
+          <div className="flex items-center gap-2 mb-2 text-xs">
+            <CheckCircle2 size={12} className="text-ok" />
+            <span className="font-semibold">最近通过</span>
+            <button
+              onClick={() => setSidebarTab('sessions')}
+              className="ml-auto text-[10px] text-ink-mute hover:text-accent transition"
+            >
+              查看学习记录
+            </button>
+          </div>
+          <div className="space-y-1.5">
+            {recentPasses.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => setSidebarTab('sessions')}
+                className="w-full rounded-lg border border-line/60 bg-bg-elev/30 hover:bg-bg-elev hover:border-line transition p-2 text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                    {s.problemTitle || '未命名题目'}
+                  </span>
+                  <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-ok/15 text-ok">
+                    AC
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-[10px] text-ink-mute">
+                  <span>{new Date(s.endedAt ?? s.startedAt).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                  <span>·</span>
+                  <span>{formatDurationMs(s.effectiveMs)}</span>
+                  {s.language && (
+                    <>
+                      <span>·</span>
+                      <span className="font-mono">{s.language}</span>
+                    </>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ────── 9. 待复习提醒（若有） ────── */}
       {profile.pendingReview > 0 && (

@@ -109,6 +109,7 @@ export class AIClient {
     const decoder = new TextDecoder();
     let buf = '';
     let acc = '';
+    let reasoningAcc = '';
     const ollamaNative = this.isOllamaNative();
 
     try {
@@ -152,6 +153,13 @@ export class AIClient {
                   j?.choices?.[0]?.delta?.content ??
                   j?.choices?.[0]?.message?.content ??
                   '';
+                const reasoningDelta =
+                  j?.choices?.[0]?.delta?.reasoning_content ??
+                  j?.choices?.[0]?.message?.reasoning_content ??
+                  '';
+                if (typeof reasoningDelta === 'string' && reasoningDelta) {
+                  reasoningAcc += reasoningDelta;
+                }
                 if (typeof delta === 'string' && delta) {
                   acc += delta;
                   req.onChunk?.(delta, acc);
@@ -192,6 +200,13 @@ export class AIClient {
                   j?.choices?.[0]?.delta?.content ??
                   j?.choices?.[0]?.message?.content ??
                   '';
+                const reasoningDelta =
+                  j?.choices?.[0]?.delta?.reasoning_content ??
+                  j?.choices?.[0]?.message?.reasoning_content ??
+                  '';
+                if (typeof reasoningDelta === 'string' && reasoningDelta) {
+                  reasoningAcc += reasoningDelta;
+                }
                 if (typeof delta === 'string' && delta) {
                   acc += delta;
                   req.onChunk?.(delta, acc);
@@ -205,6 +220,10 @@ export class AIClient {
             try {
               const j = JSON.parse(buf.trim());
               const content = j?.choices?.[0]?.message?.content ?? j?.choices?.[0]?.text ?? '';
+              const reasoningContent = j?.choices?.[0]?.message?.reasoning_content ?? '';
+              if (typeof reasoningContent === 'string' && reasoningContent) {
+                reasoningAcc += reasoningContent;
+              }
               if (typeof content === 'string' && content) {
                 acc += content;
                 req.onChunk?.(content, acc);
@@ -221,6 +240,10 @@ export class AIClient {
       } catch {
         // ignore
       }
+    }
+    if (!acc.trim() && req.responseFormat !== 'json' && reasoningAcc.trim()) {
+      req.onChunk?.(reasoningAcc, reasoningAcc);
+      return reasoningAcc;
     }
     return acc;
   }
@@ -355,6 +378,15 @@ export class AIClient {
     return u;
   }
 
+  private isMimoCompatible(): boolean {
+    if (this.cfg.provider === 'mimo') return true;
+    try {
+      return new URL(this.cfg.baseUrl).hostname.toLowerCase().includes('xiaomimimo.com');
+    } catch {
+      return /xiaomimimo\.com/i.test(this.cfg.baseUrl);
+    }
+  }
+
   private buildBody(req: ChatRequest, stream: boolean): Record<string, unknown> {
     const cfg = this.cfg;
     const messages = [...req.messages];
@@ -406,6 +438,13 @@ export class AIClient {
       temperature: req.temperature ?? cfg.temperature ?? DEFAULT_TEMPERATURE,
       stream,
     };
+    if (req.responseFormat === 'json' && this.isMimoCompatible()) {
+      body.response_format = { type: 'json_object' };
+    }
+    if (this.isMimoCompatible()) {
+      body.thinking = { type: 'disabled' };
+      body.max_completion_tokens = req.maxTokens ?? cfg.maxTokens ?? 4096;
+    }
     if (req.disableThinking) {
       if (cfg.provider === 'deepseek') {
         body.thinking = { type: 'disabled' };
