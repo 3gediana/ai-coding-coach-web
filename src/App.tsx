@@ -24,6 +24,7 @@ import { ProblemOverviewCard } from './components/ProblemOverviewCard';
 import { RuntimePane } from './components/RuntimePane';
 import { OnboardingOverlay } from './components/OnboardingOverlay';
 import { OllamaIntroModal } from './components/OllamaIntroModal';
+import { OfflineBanner } from './components/OfflineBanner';
 import { hasUsableAIConfig, useStore } from './lib/store';
 import { startImportReceiver, stopImportReceiver } from './lib/importReceiver';
 import { startOjBridgeReceiver, stopOjBridgeReceiver } from './lib/ojBridge';
@@ -189,6 +190,7 @@ export default function App() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <TopBar />
+      <OfflineBanner />
       <div className="flex-1 flex min-h-0">
         <Sidebar />
         <main className="flex-1 flex min-w-0">

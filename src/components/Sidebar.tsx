@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion';
-import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock, Plus, Search, Archive, ArchiveRestore } from 'lucide-react';
+import { Library, BookOpen, History, BarChart3, ChevronLeft, Trash2, Download, CheckCircle2, Clock, Plus, Search, Archive, ArchiveRestore, X, Layers } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { getArea } from '../core/taxonomy';
@@ -7,6 +7,7 @@ import { lazy, Suspense, startTransition, useMemo, useState } from 'react';
 import { ResizeHandle } from './ResizeHandle';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
 import { ErrorBoundary } from './ErrorBoundary';
+import type { SubmissionVerdict } from '../core/types';
 
 const Dashboard = lazy(() => import('./Dashboard').then((m) => ({ default: m.Dashboard })));
 
@@ -33,6 +34,11 @@ export function Sidebar() {
   const setProblemBrowserOpen = useStore((s) => s.setProblemBrowserOpen);
 
   const [mistakeSort, setMistakeSort] = useState<MistakeSort>('recent');
+  const [mistakeQuery, setMistakeQuery] = useState('');
+  // verdict 多选：empty Set 表示全选；保存被勾选的 verdict
+  const [verdictFilter, setVerdictFilter] = useState<Set<SubmissionVerdict>>(new Set());
+  // 去重显示：开启后同 problemId 只保留最新一条，显示重犯次数徽章
+  const [groupByProblem, setGroupByProblem] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [panelWidth, setPanelWidth] = usePersistedWidth('aicc.layout.sidebarWidth', 320, 240, 700);
   const setSidebarTab = (next: typeof tab) => {
@@ -69,11 +75,55 @@ export function Sidebar() {
     };
   }, [mistakes]);
 
+  // 重犯次数：按 problemId 统计；缺 problemId 的（理论上不该出现）归 __no_problem__ 桶不参与
+  const repeatCountByProblem = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const m of mistakes) {
+      const pid = m.problemId ?? '__no_problem__';
+      map.set(pid, (map.get(pid) ?? 0) + 1);
+    }
+    return map;
+  }, [mistakes]);
+
   const sortedMistakes = useMemo(() => {
-    const arr = mistakes.slice();
+    let arr = mistakes.slice();
+    // 1. 关键词过滤（problemTitle + rootCause + userNote + knowledgePoints）
+    const q = mistakeQuery.trim().toLowerCase();
+    if (q) {
+      arr = arr.filter((m) => {
+        const hay = [
+          m.problemTitle,
+          m.rootCause,
+          m.userNote,
+          ...(m.knowledgePoints ?? []),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    // 2. verdict 多选过滤；空集 = 不限
+    if (verdictFilter.size > 0) {
+      arr = arr.filter((m) => m.verdict && verdictFilter.has(m.verdict));
+    }
+    // 3. 去重：按 problemId 取最新一条（创建时间最大）；缺 problemId 的不去重
+    if (groupByProblem) {
+      const latestById = new Map<string, (typeof arr)[number]>();
+      const orphans: typeof arr = [];
+      for (const m of arr) {
+        if (!m.problemId) {
+          orphans.push(m);
+          continue;
+        }
+        const cur = latestById.get(m.problemId);
+        if (!cur || m.createdAt > cur.createdAt) latestById.set(m.problemId, m);
+      }
+      arr = [...latestById.values(), ...orphans];
+    }
+    // 4. 排序
     const now = Date.now();
     if (mistakeSort === 'review-due') {
-      // 待复习优先：未复习且创建越久越靠前
       arr.sort((a, b) => {
         const aDays = a.reviewedAt ? -Infinity : (now - a.createdAt) / 86_400_000;
         const bDays = b.reviewedAt ? -Infinity : (now - b.createdAt) / 86_400_000;
@@ -90,11 +140,14 @@ export function Sidebar() {
       arr.sort((a, b) => b.createdAt - a.createdAt);
     }
     return arr;
-  }, [mistakes, mistakeSort]);
+  }, [mistakes, mistakeSort, mistakeQuery, verdictFilter, groupByProblem]);
   const visibleProblems = displayedProblems.slice(0, PROBLEM_RENDER_LIMIT);
   const hiddenProblemCount = Math.max(0, displayedProblems.length - visibleProblems.length);
   const visibleMistakes = sortedMistakes.slice(0, MISTAKE_RENDER_LIMIT);
   const hiddenMistakeCount = Math.max(0, sortedMistakes.length - visibleMistakes.length);
+  const filtersActive =
+    !!mistakeQuery.trim() || verdictFilter.size > 0 || groupByProblem;
+  const totalMatched = sortedMistakes.length;
   const visibleSessions = sessions.slice(0, SESSION_RENDER_LIMIT);
   const hiddenSessionCount = Math.max(0, sessions.length - visibleSessions.length);
 
@@ -343,7 +396,66 @@ export function Sidebar() {
                             </div>
                           )}
                         </li>
-                        {/* 排序 + 导出 */}
+                        {/* 关键词搜索 */}
+                        <li className="relative">
+                          <Search
+                            size={11}
+                            className="absolute left-2 top-1/2 -translate-y-1/2 text-ink-mute pointer-events-none"
+                          />
+                          <input
+                            value={mistakeQuery}
+                            onChange={(e) => setMistakeQuery(e.target.value)}
+                            placeholder="搜索题目 / 原因 / 备注 / 知识点"
+                            className="input w-full text-[11px] pl-6 pr-6 py-1"
+                          />
+                          {mistakeQuery && (
+                            <button
+                              onClick={() => setMistakeQuery('')}
+                              className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-mute hover:text-bad"
+                              title="清空"
+                            >
+                              <X size={11} />
+                            </button>
+                          )}
+                        </li>
+                        {/* verdict 过滤 chips */}
+                        <li className="flex items-center gap-1 text-[10px] flex-wrap -mb-1">
+                          <span className="text-ink-mute">类型</span>
+                          {(['WA', 'TLE', 'MLE', 'RE', 'CE', 'OTHER'] as const).map((v) => {
+                            const active = verdictFilter.has(v);
+                            return (
+                              <button
+                                key={v}
+                                onClick={() => {
+                                  setVerdictFilter((prev) => {
+                                    const next = new Set(prev);
+                                    if (active) next.delete(v);
+                                    else next.add(v);
+                                    return next;
+                                  });
+                                }}
+                                className={cn(
+                                  'chip text-[9px] px-1.5 py-0 cursor-pointer font-mono tracking-wider transition',
+                                  active
+                                    ? 'border-accent/60 bg-accent/15 text-accent-glow'
+                                    : 'hover:border-accent/40',
+                                )}
+                              >
+                                {v}
+                              </button>
+                            );
+                          })}
+                          {verdictFilter.size > 0 && (
+                            <button
+                              onClick={() => setVerdictFilter(new Set())}
+                              className="text-[10px] text-ink-mute hover:text-bad ml-1"
+                              title="清空 verdict 过滤"
+                            >
+                              清空
+                            </button>
+                          )}
+                        </li>
+                        {/* 排序 + 去重 + 导出 */}
                         <li className="flex items-center gap-1 text-[10px] -mb-1 flex-wrap">
                           <span className="text-ink-mute">排序</span>
                           {(['recent', 'review-due', 'unreviewed'] as const).map((s) => (
@@ -360,6 +472,18 @@ export function Sidebar() {
                               {s === 'recent' ? '最新' : s === 'review-due' ? '待复习' : '未复习'}
                             </button>
                           ))}
+                          <button
+                            onClick={() => setGroupByProblem((v) => !v)}
+                            className={cn(
+                              'chip text-[9px] px-1.5 py-0 cursor-pointer flex items-center gap-1 transition',
+                              groupByProblem
+                                ? 'border-cyan/60 bg-cyan/15 text-cyan'
+                                : 'hover:border-cyan/40',
+                            )}
+                            title="按题去重显示：同一题的多次错题只显示最新一条 + 重犯次数徽章"
+                          >
+                            <Layers size={9} /> 去重
+                          </button>
                           <button
                             className="chip ml-auto hover:border-accent/40 cursor-pointer flex items-center gap-1"
                             title="导出为单文件 Markdown。可发到 Notion / 飞书 / GitHub"
@@ -381,6 +505,29 @@ export function Sidebar() {
                             <Download size={10} /> Anki
                           </button>
                         </li>
+                        {/* 过滤汇总：当过滤后没匹配 → 友好 empty；总匹配数显示 */}
+                        {filtersActive && (
+                          <li className="text-[10px] text-ink-mute flex items-center gap-2">
+                            <span>
+                              匹配 <strong className="text-ink">{totalMatched}</strong> / {mistakes.length}
+                            </span>
+                            <button
+                              onClick={() => {
+                                setMistakeQuery('');
+                                setVerdictFilter(new Set());
+                                setGroupByProblem(false);
+                              }}
+                              className="hover:text-accent inline-flex items-center gap-1"
+                            >
+                              <X size={10} /> 重置过滤
+                            </button>
+                          </li>
+                        )}
+                        {filtersActive && totalMatched === 0 && (
+                          <li>
+                            <Empty text="没有匹配的错题，试试调整过滤条件" />
+                          </li>
+                        )}
                       </>
                     )}
                     {visibleMistakes.map((m) => (
@@ -407,6 +554,17 @@ export function Sidebar() {
                                 </span>
                               )}
                               <div className="text-sm font-medium truncate">{m.problemTitle}</div>
+                              {/* 去重模式下：同题重犯 ≥2 次时显示徽章，提示用户该题反复错 */}
+                              {groupByProblem &&
+                                m.problemId &&
+                                (repeatCountByProblem.get(m.problemId) ?? 1) > 1 && (
+                                  <span
+                                    className="text-[9px] font-mono font-bold px-1 py-0.5 rounded bg-bad/15 text-bad shrink-0"
+                                    title={`这道题一共错过 ${repeatCountByProblem.get(m.problemId)} 次（含本条）`}
+                                  >
+                                    ×{repeatCountByProblem.get(m.problemId)}
+                                  </span>
+                                )}
                             </div>
                             <div className="text-[11px] text-ink-dim mt-0.5">
                               {new Date(m.createdAt).toLocaleString()}

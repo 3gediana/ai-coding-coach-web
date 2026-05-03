@@ -1,5 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
+import { toast } from 'sonner';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import {
@@ -15,6 +16,7 @@ import {
   Sparkles,
   Minus,
   ListChecks,
+  Copy,
 } from 'lucide-react';
 import type { Task } from '../lib/store';
 
@@ -146,7 +148,7 @@ export function TaskTray() {
         </AnimatePresence>
       </motion.div>
 
-      {/* Stream preview drawer */}
+      {/* Stream preview drawer：失败任务可在这里看完整错误 + 复制 + 重试 */}
       <AnimatePresence>
         {previewTask && (
           <motion.div
@@ -165,14 +167,79 @@ export function TaskTray() {
             >
               <div className="px-4 py-3 border-b border-line flex items-center gap-2">
                 <Sparkles size={14} className="text-accent" />
-                <span className="font-semibold text-sm">{previewTask.label}</span>
-                <span className="chip text-[10px] ml-2">{previewTask.status}</span>
-                <button onClick={() => setPreviewId(null)} className="btn-ghost ml-auto p-1">
+                <span className="font-semibold text-sm truncate">{previewTask.label}</span>
+                <span
+                  className={cn(
+                    'text-[10px] px-1.5 py-0.5 rounded ml-2 shrink-0',
+                    previewTask.status === 'failed' && 'bg-bad/15 text-bad',
+                    previewTask.status === 'done' && 'bg-ok/15 text-ok',
+                    previewTask.status === 'running' && 'bg-accent/15 text-accent',
+                    previewTask.status === 'cancelled' && 'bg-ink-mute/15 text-ink-mute',
+                    previewTask.status === 'queued' && 'bg-ink-dim/15 text-ink-dim',
+                  )}
+                >
+                  {previewTask.status}
+                </span>
+                {previewTask.status === 'failed' && (
+                  <button
+                    onClick={() => {
+                      retryTask(previewTask.id);
+                      setPreviewId(null);
+                    }}
+                    className="text-[11px] btn-ghost px-2 py-1 inline-flex items-center gap-1 text-accent-glow"
+                    title="重试"
+                  >
+                    <RotateCcw size={11} /> 重试
+                  </button>
+                )}
+                <button
+                  onClick={async () => {
+                    const txt = `# ${previewTask.label}\nstatus: ${previewTask.status}${previewTask.error ? `\nerror: ${previewTask.error}` : ''}${previewTask.retryAttempt ? `\nretry: ${previewTask.retryAttempt}` : ''}${previewTask.retryReason ? `\nretryReason: ${previewTask.retryReason}` : ''}\n\n--- progress ---\n${previewTask.progress || '(empty)'}`;
+                    try {
+                      await navigator.clipboard.writeText(txt);
+                      toast.success('已复制任务详情');
+                    } catch {
+                      toast.error('复制失败');
+                    }
+                  }}
+                  className="text-[11px] btn-ghost px-2 py-1 inline-flex items-center gap-1"
+                  title="复制 label / status / error / progress 全文"
+                >
+                  <Copy size={11} /> 复制
+                </button>
+                <button onClick={() => setPreviewId(null)} className="btn-ghost p-1" title="关闭">
                   <X size={14} />
                 </button>
               </div>
+              {/* 元信息行：耗时 / 重试次数 / 重试原因 */}
+              {(previewTask.durationMs !== undefined ||
+                previewTask.retryAttempt ||
+                previewTask.retryReason) && (
+                <div className="px-4 py-1.5 border-b border-line/60 text-[11px] text-ink-mute flex flex-wrap gap-x-4 gap-y-1">
+                  {previewTask.durationMs !== undefined && (
+                    <span>用时 {(previewTask.durationMs / 1000).toFixed(1)}s</span>
+                  )}
+                  {previewTask.retryAttempt ? (
+                    <span>重试 {previewTask.retryAttempt} 次</span>
+                  ) : null}
+                  {previewTask.retryReason && (
+                    <span title={previewTask.retryReason} className="truncate max-w-[60%]">
+                      原因：{previewTask.retryReason}
+                    </span>
+                  )}
+                </div>
+              )}
+              {/* error block：失败任务单独高亮 error，再下面铺 progress */}
+              {previewTask.status === 'failed' && previewTask.error && (
+                <div className="px-4 py-3 border-b border-line/60 bg-bad/5">
+                  <div className="text-[10px] text-bad font-semibold mb-1">错误</div>
+                  <pre className="font-mono text-[12px] text-bad/90 whitespace-pre-wrap leading-relaxed max-h-[120px] overflow-y-auto">
+                    {previewTask.error}
+                  </pre>
+                </div>
+              )}
               <pre className="flex-1 overflow-y-auto p-4 font-mono text-[12px] text-ink-dim whitespace-pre-wrap leading-relaxed">
-                {previewTask.progress || previewTask.error || '（无输出）'}
+                {previewTask.progress || (previewTask.status === 'failed' ? '（无流式输出，错误如上）' : '（无输出）')}
               </pre>
             </motion.div>
           </motion.div>
