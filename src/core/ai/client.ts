@@ -162,6 +162,57 @@ export class AIClient {
           }
         }
       }
+      if (buf.trim()) {
+        if (ollamaNative) {
+          for (const line of buf.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const j = JSON.parse(trimmed);
+              const delta = j?.message?.content ?? '';
+              if (typeof delta === 'string' && delta) {
+                acc += delta;
+                req.onChunk?.(delta, acc);
+                yield delta;
+              }
+            } catch {
+            }
+          }
+        } else {
+          for (const evt of buf.split('\n\n')) {
+            for (const line of evt.split('\n')) {
+              if (!line.startsWith('data:')) continue;
+              const data = line.slice(5).trim();
+              if (!data || data === '[DONE]') continue;
+              try {
+                const j = JSON.parse(data);
+                const delta =
+                  j?.choices?.[0]?.delta?.content ??
+                  j?.choices?.[0]?.message?.content ??
+                  '';
+                if (typeof delta === 'string' && delta) {
+                  acc += delta;
+                  req.onChunk?.(delta, acc);
+                  yield delta;
+                }
+              } catch {
+              }
+            }
+          }
+          if (!acc.trim()) {
+            try {
+              const j = JSON.parse(buf.trim());
+              const content = j?.choices?.[0]?.message?.content ?? j?.choices?.[0]?.text ?? '';
+              if (typeof content === 'string' && content) {
+                acc += content;
+                req.onChunk?.(content, acc);
+                yield content;
+              }
+            } catch {
+            }
+          }
+        }
+      }
     } finally {
       try {
         reader.releaseLock();

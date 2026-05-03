@@ -48,7 +48,6 @@ export function QAPanel() {
   const aiConfig = useStore((s) => s.aiConfig);
   const askPrefill = useStore((s) => s.askPrefill);
   const setAskPrefill = useStore((s) => s.setAskPrefill);
-  const coachDraft = useStore((s) => s.coachDraft);
   const setCoachDraft = useStore((s) => s.setCoachDraft);
   // 代码块按钮：替换当前 / 新建文件 都需要拿到 active file 上下文
   const filesByScope = useStore((s) => s.filesByScope);
@@ -158,7 +157,8 @@ export function QAPanel() {
   const onSubmit = () => {
     const q = input.trim();
     if (!q || isPending) return;
-    askCoach({ text: q, source: coachDraft?.source ?? 'manual', selection: coachDraft?.selection });
+    const draft = useStore.getState().coachDraft;
+    askCoach({ text: q, source: draft?.source ?? 'manual', selection: draft?.selection });
     setInput('');
     setCoachDraft(null);
   };

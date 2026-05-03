@@ -4647,7 +4647,7 @@ export const useStore = create<State>((set, get) => {
           lastRun: runtimeContext,
           behavior,
         });
-        await get().coach.askCoach(
+        const finalAnswer = await get().coach.askCoach(
           {
             problem,
             code,
@@ -4675,7 +4675,12 @@ export const useStore = create<State>((set, get) => {
           const idx = list.findIndex((m) => m.id === assistMsg.id);
           if (idx < 0) return st;
           const next = list.slice();
-          next[idx] = { ...next[idx], streaming: false };
+          next[idx] = {
+            ...next[idx],
+            content: next[idx].content || finalAnswer || '（AI 没有返回内容，请重试）',
+            streaming: false,
+            error: next[idx].content || finalAnswer ? next[idx].error : 'empty response',
+          };
           return {
             qaByProblem: { ...st.qaByProblem, [scope]: next },
             qaPendingProblemId: null,
