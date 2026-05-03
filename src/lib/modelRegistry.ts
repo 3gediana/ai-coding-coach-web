@@ -16,9 +16,23 @@ export function lookupModel(registry: ModelEntry[] | undefined, id: string | und
   return registry.find((m) => m.id === id) ?? null;
 }
 
+/**
+ * 若 entry 本身没有 apiKey，但 provider+baseUrl 跟顶层 cfg 一致，
+ * 则继承顶层 apiKey。baseUrl 做 trim + 尾斜杠归一化，避免 `.../v1/chat/completions`
+ * 与 `.../v1/chat/completions/` 这种一字之差导致不匹配。
+ */
+function normalizeBaseUrl(url: string | undefined): string {
+  return (url ?? '').trim().replace(/\/+$/, '');
+}
+
 function inheritedApiKey(cfg: AIConfig, entry: ModelEntry): string {
   if (entry.apiKey?.trim()) return entry.apiKey;
-  if (entry.provider === cfg.provider && entry.baseUrl === cfg.baseUrl) return cfg.apiKey;
+  if (
+    entry.provider === cfg.provider &&
+    normalizeBaseUrl(entry.baseUrl) === normalizeBaseUrl(cfg.baseUrl)
+  ) {
+    return cfg.apiKey;
+  }
   return '';
 }
 
@@ -107,7 +121,8 @@ export function resolveIntentRouterModel(cfg: AIConfig): {
     return {
       provider: entry.provider,
       baseUrl: entry.baseUrl,
-      apiKey: entry.apiKey,
+      // 与 primary / quality / algoViz override 保持一致：entry 未填 apiKey 时走继承
+      apiKey: inheritedApiKey(cfg, entry),
       model: entry.model,
     };
   }

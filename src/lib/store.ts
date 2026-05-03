@@ -1449,15 +1449,9 @@ export const useStore = create<State>((set, get) => {
       } catch {
         /* ignore */
       }
-      if (typeof fetch !== 'undefined' && (import.meta as any).env?.DEV) {
-        void fetch('/__aicc-ollama-mode', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ mode: cfg.ollamaMode === 'disabled' ? 'disabled' : 'enabled' }),
-        }).catch(() => {
-          /* dev server endpoint may be absent in tests/prod */
-        });
-      }
+      // 注意：之前这里还会 POST /__aicc-ollama-mode 通知服务端切换 auto-start。
+      // App.tsx 的 warmup effect 已经会在 aiConfig 变化时统一发一次（dev/preview 都发），
+      // 所以这里去掉重复 POST，避免每次保存配置产生 2 次相同请求。
       // 主 client 用解析后的 primary（registry 优先 → fallback 顶层字段）
       get().ai.updateConfig(resolveAIClientConfig(cfg));
       get().coach.updateQualityClient(new AIClient({ ...cfg, ...resolveQualityModel(cfg) }));
