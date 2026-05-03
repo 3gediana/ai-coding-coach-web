@@ -26,6 +26,8 @@ import { resolve as pathResolve, basename, dirname, join } from 'node:path';
 const OLLAMA_BASE = process.env.AICC_OLLAMA_BASE || 'http://127.0.0.1:11434';
 // 视觉模型默认复用项目统一本地模型 qwen3.5:4b。
 const VISION_MODEL = process.env.AICC_VISION_MODEL || 'qwen3.5:4b';
+const OLLAMA_REQUEST_TIMEOUT_MS = Number(process.env.AICC_OLLAMA_REQUEST_TIMEOUT_MS || 120_000);
+const OLLAMA_UNLOAD_TIMEOUT_MS = Number(process.env.AICC_OLLAMA_UNLOAD_TIMEOUT_MS || 8_000);
 const VISION_PROMPT =
   '请简要描述这张图的内容。' +
   '如果是文字截图（题面/样例/公式）请逐字识别原文；' +
@@ -66,6 +68,7 @@ async function ollamaVisionDescribe(base64) {
       options: { temperature: 0.2 },
       keep_alive: '5m', // 多张图复用，循环结束后再统一卸载
     }),
+    signal: AbortSignal.timeout(OLLAMA_REQUEST_TIMEOUT_MS),
   });
   if (!r.ok) {
     const text = await r.text().catch(() => '');
@@ -81,6 +84,7 @@ async function ollamaUnload(model = VISION_MODEL) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model, prompt: '', keep_alive: 0 }),
+      signal: AbortSignal.timeout(OLLAMA_UNLOAD_TIMEOUT_MS),
     });
     log('已卸载', model);
   } catch (e) {
@@ -151,7 +155,7 @@ export async function processImportFile(rawPath) {
           }
         }
       } finally {
-        await ollamaUnload();
+        void ollamaUnload();
       }
     }
   }

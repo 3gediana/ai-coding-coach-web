@@ -88,7 +88,8 @@ export class AIClient {
   async chat(req: ChatRequest): Promise<string> {
     const body = this.buildBody(req, false);
     const res = await this.fetchWithRetry(body, req);
-    const json = await res.json();
+    const text = await this.readResponseText(res, req);
+    const json = JSON.parse(text);
     // ollama 原生 /api/chat: { message: { content }, ... }
     // OpenAI 兼容:           { choices: [{ message: { content } }] }
     const content = this.isOllamaNative()
@@ -116,11 +117,52 @@ export class AIClient {
     let acc = '';
     let reasoningAcc = '';
     const ollamaNative = this.isOllamaNative();
+    const timeoutMs = req.timeoutMs ?? this.cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    let aborted = false;
+    let completed = false;
+
+    const clearTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    const cancelReader = (reason: unknown) => {
+      try {
+        void reader.cancel(reason).catch(() => undefined);
+      } catch {
+      }
+    };
+    const armTimer = () => {
+      clearTimer();
+      timer = setTimeout(() => {
+        timedOut = true;
+        cancelReader(new AIError(`AI stream timeout after ${timeoutMs}ms`, undefined, true));
+      }, timeoutMs);
+    };
+    const onAbort = () => {
+      aborted = true;
+      cancelReader(new DOMException('Aborted', 'AbortError'));
+    };
 
     try {
-      while (true) {
-        const { done, value } = await reader.read();
+      if (req.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      req.signal?.addEventListener('abort', onAbort);
+      armTimer();
+      while (!completed) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (e) {
+          if (timedOut) throw new AIError(`AI stream timeout after ${timeoutMs}ms`, undefined, true);
+          if (aborted || req.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+          throw e;
+        }
+        if (timedOut) throw new AIError(`AI stream timeout after ${timeoutMs}ms`, undefined, true);
+        if (aborted || req.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        const { done, value } = chunk;
         if (done) break;
+        armTimer();
         buf += decoder.decode(value, { stream: true });
 
         if (ollamaNative) {
@@ -133,6 +175,10 @@ export class AIClient {
             if (!trimmed) continue;
             try {
               const j = JSON.parse(trimmed);
+              if (j?.done === true) {
+                completed = true;
+                break;
+              }
               const delta = j?.message?.content ?? '';
               if (typeof delta === 'string' && delta) {
                 acc += delta;
@@ -151,7 +197,11 @@ export class AIClient {
             for (const line of evt.split('\n')) {
               if (!line.startsWith('data:')) continue;
               const data = line.slice(5).trim();
-              if (!data || data === '[DONE]') continue;
+              if (!data) continue;
+              if (data === '[DONE]') {
+                completed = true;
+                break;
+              }
               try {
                 const j = JSON.parse(data);
                 const delta =
@@ -174,7 +224,9 @@ export class AIClient {
                 // 容忍非 JSON 行
               }
             }
+            if (completed) break;
           }
+          if (completed) break;
         }
       }
       if (buf.trim()) {
@@ -198,7 +250,8 @@ export class AIClient {
             for (const line of evt.split('\n')) {
               if (!line.startsWith('data:')) continue;
               const data = line.slice(5).trim();
-              if (!data || data === '[DONE]') continue;
+              if (!data) continue;
+              if (data === '[DONE]') break;
               try {
                 const j = JSON.parse(data);
                 const delta =
@@ -240,6 +293,8 @@ export class AIClient {
         }
       }
     } finally {
+      clearTimer();
+      req.signal?.removeEventListener('abort', onAbort);
       try {
         reader.releaseLock();
       } catch {
@@ -547,7 +602,7 @@ export class AIClient {
           delay,
           isAbort ? `timeout ${timeoutMs}ms` : e?.message || 'network',
         );
-        await sleep(delay);
+        await sleep(delay, req.signal);
         attempt++;
         lastError = e;
       } finally {
@@ -558,12 +613,86 @@ export class AIClient {
 
     throw new AIError(`Failed after ${maxRetries + 1} attempts: ${String(lastError)}`);
   }
+
+  private async readResponseText(res: Response, req: ChatRequest): Promise<string> {
+    if (!res.body) return res.text();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const timeoutMs = req.timeoutMs ?? this.cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let timedOut = false;
+    let aborted = false;
+    let text = '';
+
+    const clearTimer = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    const cancelReader = (reason: unknown) => {
+      try {
+        void reader.cancel(reason).catch(() => undefined);
+      } catch {
+      }
+    };
+    const armTimer = () => {
+      clearTimer();
+      timer = setTimeout(() => {
+        timedOut = true;
+        cancelReader(new AIError(`AI response timeout after ${timeoutMs}ms`, undefined, true));
+      }, timeoutMs);
+    };
+    const onAbort = () => {
+      aborted = true;
+      cancelReader(new DOMException('Aborted', 'AbortError'));
+    };
+
+    try {
+      if (req.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      req.signal?.addEventListener('abort', onAbort);
+      armTimer();
+      while (true) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (e) {
+          if (timedOut) throw new AIError(`AI response timeout after ${timeoutMs}ms`, undefined, true);
+          if (aborted || req.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+          throw e;
+        }
+        if (timedOut) throw new AIError(`AI response timeout after ${timeoutMs}ms`, undefined, true);
+        if (aborted || req.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+        if (chunk.done) break;
+        armTimer();
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+      return text;
+    } finally {
+      clearTimer();
+      req.signal?.removeEventListener('abort', onAbort);
+      try {
+        reader.releaseLock();
+      } catch {
+      }
+    }
+  }
 }
 
 // ============ 工具 ============
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 async function safeText(res: Response): Promise<string> {

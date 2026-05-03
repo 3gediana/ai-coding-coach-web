@@ -393,7 +393,7 @@ function installFeedbackMiddleware(middlewares: Connect.Server) {
 let managedOllama: ChildProcess | null = null;
 let ensuringPromise: Promise<boolean> | null = null;
 let warmupPromise: Promise<Array<{ label: string; model: string; ok: boolean; latencyMs: number; error?: string }>> | null = null;
-let lastWarmupAt = 0;
+const lastWarmupOkAtByKey = new Map<string, number>();
 const OLLAMA_WARMUP_KEEP_ALIVE = '10m';
 let serverOllamaMode: 'enabled' | 'disabled' =
   process.env.AICC_OLLAMA === '0' ? 'disabled' : 'enabled';
@@ -524,22 +524,46 @@ function rememberOllamaTargets(targets: Array<{ baseUrl?: string; model?: string
   const merged = [...knownOllamaTargets, ...targets];
   const seen = new Set<string>();
   knownOllamaTargets = merged.filter((t) => {
+    const baseUrl = t.baseUrl?.trim();
     const model = t.model?.trim();
-    if (!model || seen.has(model)) return false;
-    seen.add(model);
+    if (!baseUrl || !model) return false;
+    const key = ollamaTargetKey(baseUrl, model);
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }
 
+function ollamaTargetKey(baseUrl: string, model: string): string {
+  try {
+    const u = new URL(baseUrl.trim());
+    let host = u.hostname.toLowerCase();
+    if (host === 'localhost' || host === '::1') host = '127.0.0.1';
+    const port = u.port || (u.protocol === 'https:' ? '443' : '80');
+    return `${u.protocol}//${host}:${port}|${model.trim()}`;
+  } catch {
+    return `${baseUrl.trim()}|${model.trim()}`;
+  }
+}
+
+function ollamaNativeChatUrl(baseUrl: string): string {
+  const u = new URL(baseUrl.trim());
+  return `${u.protocol}//${u.host}/api/chat`;
+}
+
 async function unloadOllamaTargets(targets: Array<{ baseUrl?: string; model?: string }>) {
   const seen = new Set<string>();
-  if (!(await probeOllamaServe(1200))) return;
   for (const t of targets) {
+    const baseUrl = t.baseUrl?.trim();
     const model = t.model?.trim();
-    if (!model || seen.has(model)) continue;
-    seen.add(model);
+    if (!baseUrl || !model) continue;
+    const key = ollamaTargetKey(baseUrl, model);
+    if (seen.has(key)) continue;
+    seen.add(key);
     try {
-      await fetch('http://127.0.0.1:11434/api/chat', {
+      const target = new URL(ollamaNativeChatUrl(baseUrl));
+      if (isLocalOllamaTarget(target) && !(await probeOllamaServe(1200))) continue;
+      await fetch(target.toString(), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model, messages: [], keep_alive: 0 }),
@@ -578,7 +602,8 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
     }));
   }
   if (warmupPromise) return warmupPromise;
-  if (Date.now() - lastWarmupAt < 60_000) {
+  const warmupKey = ollamaTargetKey(unique[0].baseUrl!, unique[0].model!);
+  if (Date.now() - (lastWarmupOkAtByKey.get(warmupKey) ?? 0) < 60_000) {
     rememberOllamaTargets(unique);
     return unique.map((t) => ({
       label: t.label ?? 'ollama',
@@ -592,7 +617,8 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
     const model = target.model!.trim();
     const startedAt = Date.now();
     try {
-      const ready = await ensureOllamaRunning();
+      const targetUrl = new URL(ollamaNativeChatUrl(target.baseUrl!));
+      const ready = isLocalOllamaTarget(targetUrl) ? await ensureOllamaRunning() : true;
       if (!ready) {
         return [{
           label: target.label ?? 'ollama',
@@ -604,7 +630,7 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
             : 'ollama 未就绪；已尝试自动启动，请确认本机已安装 Ollama 且 11434 未被其它程序占用',
         }];
       }
-      const upstream = await fetch('http://127.0.0.1:11434/api/chat', {
+      const upstream = await fetch(targetUrl.toString(), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -617,8 +643,10 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
         signal: AbortSignal.timeout(30_000),
       });
       const text = upstream.ok ? '' : await upstream.text().catch(() => '');
-      lastWarmupAt = Date.now();
-      if (upstream.ok) rememberOllamaTargets(unique);
+      if (upstream.ok) {
+        lastWarmupOkAtByKey.set(warmupKey, Date.now());
+        rememberOllamaTargets(unique);
+      }
       return [{
         label: target.label ?? 'ollama',
         model,
@@ -694,11 +722,20 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
           headers[k] = v;
         }
       }
+      const ctrl = new AbortController();
+      let upstreamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      const abortUpstream = () => {
+        ctrl.abort();
+        upstreamReader?.cancel().catch(() => undefined);
+      };
+      req.on('close', abortUpstream);
+      res.on('close', abortUpstream);
       try {
         const upstream = await fetch(target.toString(), {
           method: req.method ?? 'POST',
           headers,
           body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
+          signal: ctrl.signal,
         });
         res.statusCode = upstream.status;
         upstream.headers.forEach((v, k) => {
@@ -710,6 +747,7 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
           return;
         }
         const reader = upstream.body.getReader();
+        upstreamReader = reader;
         try {
           while (true) {
             const { done, value } = await reader.read();
@@ -717,9 +755,12 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
             res.write(Buffer.from(value));
           }
         } finally {
+          upstreamReader = null;
+          reader.releaseLock();
           if (!res.writableEnded) res.end();
         }
       } catch (e: any) {
+        if (ctrl.signal.aborted) return;
         if (res.writableEnded) return;
         if (res.headersSent) {
           res.destroy(e instanceof Error ? e : new Error(String(e?.message || e)));
@@ -728,6 +769,9 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
         res.statusCode = 502;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: String(e?.message || e) }));
+      } finally {
+        req.off('close', abortUpstream);
+        res.off('close', abortUpstream);
       }
     });
   });
