@@ -3280,8 +3280,25 @@ export const useStore = create<State>((set, get) => {
     },
 
     cancelTask: (id) => {
+      // 已 running → 走 AbortController；catch 分支会把 task 状态打成 'cancelled'
       const ctrl = abortersById.get(id);
-      ctrl?.abort();
+      if (ctrl) {
+        ctrl.abort();
+        return;
+      }
+      // queued（还没轮到执行）→ 直接打成 cancelled，并丢弃 handler 引用
+      // 之前这里只 abort 不处理 queued，用户点"取消"后任务会一直挂在 queued。
+      const t = get().tasks.find((x) => x.id === id);
+      if (!t || (t.status !== 'queued' && t.status !== 'running')) return;
+      handlersById.delete(id);
+      const now = Date.now();
+      set((s) => ({
+        tasks: s.tasks.map((x) =>
+          x.id === id
+            ? { ...x, status: 'cancelled', finishedAt: now, error: '已取消' }
+            : x,
+        ),
+      }));
     },
 
     retryTask: (id) => {
@@ -3311,9 +3328,25 @@ export const useStore = create<State>((set, get) => {
     },
 
     clearFinishedTasks: () => {
-      set((s) => ({
-        tasks: s.tasks.filter((t) => t.status === 'queued' || t.status === 'running'),
-      }));
+      // 同步清掉 closure map 里的 handler 和流式预览，避免内存泄漏。
+      // 之前这里只过滤 tasks 数组，handlersById / streamPreviewById 永远累积。
+      const tasks = get().tasks;
+      const removedIds = tasks
+        .filter((t) => t.status !== 'queued' && t.status !== 'running')
+        .map((t) => t.id);
+      for (const id of removedIds) {
+        handlersById.delete(id);
+        // abortersById 在 runTask finally 里已经 delete，这里兜底
+        abortersById.delete(id);
+      }
+      set((s) => {
+        const nextPreview = { ...s.streamPreviewById };
+        for (const id of removedIds) delete nextPreview[id];
+        return {
+          tasks: s.tasks.filter((t) => t.status === 'queued' || t.status === 'running'),
+          streamPreviewById: nextPreview,
+        };
+      });
     },
 
     deleteProblem: async (id) => {
