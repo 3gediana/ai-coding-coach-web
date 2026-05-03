@@ -22,6 +22,7 @@ import { cn } from '../lib/cn';
 import type { CodeFile, FileLang } from '../core/types';
 import { ResizeHandle } from './ResizeHandle';
 import { usePersistedWidth } from '../lib/usePersistedWidth';
+import { useOnlineStatus } from '../lib/offlineMode';
 
 const DRAFT_SCOPE = '__draft__';
 
@@ -56,6 +57,7 @@ export function FileTree() {
   const toggleDiffSelection = useStore((s) => s.toggleDiffSelection);
   const enqueueDiff = useStore((s) => s.enqueueDiff);
   const clearDiffSelection = useStore((s) => s.clearDiffSelection);
+  const offline = useOnlineStatus() !== 'online';
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const files = filesByScope[scope] ?? [];
@@ -281,8 +283,9 @@ export function FileTree() {
                 <span className="flex-1">已选 2 个文件</span>
                 <button
                   onClick={() => enqueueDiff()}
-                  className="px-2 py-0.5 rounded bg-cyan/20 hover:bg-cyan/30 transition"
-                  title="让 AI 对比这两个文件"
+                  disabled={offline}
+                  className="px-2 py-0.5 rounded bg-cyan/20 hover:bg-cyan/30 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={offline ? '离线模式下禁用对拍分析' : '让 AI 对比这两个文件'}
                 >
                   对拍
                 </button>

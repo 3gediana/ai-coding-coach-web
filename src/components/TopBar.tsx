@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { hasUsableAIConfig, useStore } from '../lib/store';
 import { cn } from '../lib/cn';
+import { useOnlineStatus } from '../lib/offlineMode';
+import { hasLocalFastLaneTarget } from '../lib/offlinePolicy';
 
 export function TopBar() {
   const aiConfig = useStore((s) => s.aiConfig);
@@ -35,7 +37,8 @@ export function TopBar() {
   );
 
   const activeProblem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
-  const apiOk = hasUsableAIConfig(aiConfig);
+  const offline = useOnlineStatus() !== 'online';
+  const apiOk = offline ? hasLocalFastLaneTarget(aiConfig) : hasUsableAIConfig(aiConfig);
   const scope = activeProblemId ?? '__draft__';
   const activeFile = (filesByScope[scope] ?? []).find(
     (f) => f.id === activeFileIdByScope[scope],
@@ -140,6 +143,7 @@ export function TopBar() {
         onOpenEditor={() => setProblemEditorOpen(true)}
         onOpenSubmit={() => setSubmitModalOpen(true)}
         onOpenFeynman={() => useStore.getState().openFeynman()}
+        offline={offline}
       />
 
       <div className="w-px h-5 bg-line/60" />
@@ -175,6 +179,7 @@ function ProblemMenu({
   onOpenEditor,
   onOpenSubmit,
   onOpenFeynman,
+  offline,
 }: {
   apiOk: boolean;
   hasActiveProblem: boolean;
@@ -182,6 +187,7 @@ function ProblemMenu({
   onOpenEditor: () => void;
   onOpenSubmit: () => void;
   onOpenFeynman: () => void;
+  offline: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -233,9 +239,9 @@ function ProblemMenu({
     {
       icon: Presentation,
       label: '费曼模式',
-      desc: '用你的话讲题，AI 从初学者视角追问',
+      desc: offline ? '离线模式下禁用：需要强推理和多轮上下文' : '用你的话讲题，AI 从初学者视角追问',
       onClick: onOpenFeynman,
-      disabled: !hasActiveProblem || !apiOk,
+      disabled: offline || !hasActiveProblem || !apiOk,
       accent: true,
     },
   ];

@@ -18,6 +18,7 @@ import {
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import type { CodeFile, FileLang, Lang } from '../core/types';
+import { useOnlineStatus } from '../lib/offlineMode';
 
 const DRAFT_SCOPE = '__draft__';
 
@@ -35,6 +36,7 @@ export function TabBar() {
   const toggleDiffSelection = useStore((s) => s.toggleDiffSelection);
   const enqueueDiff = useStore((s) => s.enqueueDiff);
   const clearDiffSelection = useStore((s) => s.clearDiffSelection);
+  const offline = useOnlineStatus() !== 'online';
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const files = filesByScope[scope] ?? [];
@@ -224,8 +226,9 @@ export function TabBar() {
               onClick={() => {
                 enqueueDiff();
               }}
-              className="px-3 flex items-center gap-1.5 hover:bg-cyan/10"
-              title="让 AI 对比这两个文件"
+              disabled={offline}
+              className="px-3 flex items-center gap-1.5 hover:bg-cyan/10 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={offline ? '离线模式下禁用对拍分析' : '让 AI 对比这两个文件'}
             >
               <GitCompare size={13} />
               对拍

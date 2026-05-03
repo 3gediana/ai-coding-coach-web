@@ -119,10 +119,15 @@ export class Coach {
     return { client, decision };
   }
 
+  private offlineClient(): AIClient | null {
+    return isEffectivelyOffline() ? this.aiFast ?? null : null;
+  }
+
   /** 把粘贴的题目原文 -> 结构化 Problem（流式） */
   async parseProblem(rawText: string, opts: StreamOpts = {}): Promise<Problem> {
     const { system, user } = buildParseProblemPrompt(rawText);
-    const data = await this.ai.chatJsonStream<{
+    const client = this.offlineClient() ?? this.ai;
+    const data = await client.chatJsonStream<{
       title?: string;
       statement?: string;
       inputFormat?: string;
@@ -178,6 +183,20 @@ export class Coach {
           temperature: 0.4,
         })
       ).trim();
+    const offline = this.offlineClient();
+    if (offline) {
+      try {
+        const text = await callOnceWith(offline);
+        if (text) return text;
+      } catch (e) {
+        if (typeof console !== 'undefined') {
+          console.debug(
+            `[Coach.generatePlainExplanation] offline fastLane failed: ${(e as any)?.message?.slice?.(0, 80)}`,
+          );
+        }
+      }
+      return '';
+    }
     // 主云端：重试至多 2 次（共 3 次尝试）+ 退避
     for (let i = 0; i < 3; i++) {
       try {
@@ -256,6 +275,17 @@ export class Coach {
         jsonAttempts: isCloud ? 2 : 3,
       });
     let data: OverviewRaw;
+    const offline = this.offlineClient();
+    if (offline) {
+      try {
+        data = await callWith(offline, false);
+      } catch (e) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach.generateProblemOverview] offline fastLane failed', e);
+        }
+        return null;
+      }
+    } else {
     try {
       data = await callWith(this.ai, true);
     } catch (e) {
@@ -280,6 +310,7 @@ export class Coach {
         }
         return null;
       }
+    }
     }
     try {
       // 小模型偶发用同义字段名，全部接受（headline / title / brief / summary; notes / keyNotes / points / tips）
@@ -344,6 +375,17 @@ export class Coach {
         signal: args.signal,
       });
     let data: AcReviewRaw;
+    const offline = this.offlineClient();
+    if (offline) {
+      try {
+        data = await callWith(offline);
+      } catch (e) {
+        if (typeof console !== 'undefined' && console.debug) {
+          console.debug('[Coach.generateAcReview] offline fastLane failed', e);
+        }
+        return null;
+      }
+    } else {
     try {
       data = await callWith(this.ai);
     } catch (e) {
@@ -368,6 +410,7 @@ export class Coach {
         }
         return null;
       }
+    }
     }
     try {
       // LLM 偶发用同义字段名（pattern / summary / approach），全部接受
@@ -1017,6 +1060,18 @@ export class Coach {
     const { system, user } = buildSummarizePrompt(args);
     // 主路径走云端流式（前端 UI 需要 onChunk 实时显示）
     let data: any;
+    const offline = this.offlineClient();
+    if (offline) {
+      data = await offline.chatJson<any>({
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        maxTokens: 4000,
+        temperature: 0.3,
+        signal: opts.signal,
+      });
+    } else {
     try {
       data = await this.ai.chatJsonStream<any>({
         messages: [
@@ -1048,6 +1103,7 @@ export class Coach {
       } else {
         throw e;
       }
+    }
     }
 
     // 小模型偶发用同义字段名 → 全部接受兜底

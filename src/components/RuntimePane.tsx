@@ -30,6 +30,7 @@ import { getHackChainBlockReason, useStore } from '../lib/store';
 import { runPython, runCpp, isRuntimeSupported } from '../lib/runtime';
 import { cn } from '../lib/cn';
 import { toast } from 'sonner';
+import { useOnlineStatus } from '../lib/offlineMode';
 
 const DRAFT_SCOPE = '__draft__';
 
@@ -140,6 +141,7 @@ export function RuntimePane() {
     (s) => !!s.hackChainState && !s.hackChainState.result,
   );
   const ollamaMode = useStore((s) => s.aiConfig.ollamaMode);
+  const offline = useOnlineStatus() !== 'online';
 
   const scope = activeProblemId ?? DRAFT_SCOPE;
   const file = (filesByScope[scope] ?? []).find((f) => f.id === activeFileIdByScope[scope]);
@@ -347,7 +349,7 @@ export function RuntimePane() {
     file,
     lastRunByScope[scope],
   );
-  const canRunHackChain = !hackChainRunning && !hackChainBlockReason;
+  const canRunHackChain = !offline && !hackChainRunning && !hackChainBlockReason;
   const canOjSubmit = !!activeProblem?.source && /^https?:\/\//.test(activeProblem.source);
   const showCoachAction = !!(
     exitCode !== null &&
@@ -525,14 +527,16 @@ export function RuntimePane() {
             disabled={!canRunHackChain}
             className={cn(
               'py-1 px-2 text-[11px] rounded border transition flex items-center gap-1 font-semibold',
-              hackChainBlockReason
+              offline || hackChainBlockReason
                 ? 'border-line/40 text-ink-mute cursor-not-allowed'
                 : 'border-warn/50 bg-warn/10 text-warn hover:bg-warn/20 hover:border-warn/70',
             )}
             title={
               hackChainRunning
                 ? 'Hack Chain 正在跑'
-                : hackChainBlockReason ?? '样例 AC 后启动：Attacker → Executor → Explainer → FixSuggestor'
+                : offline
+                  ? '离线模式下禁用 Hack Chain'
+                  : hackChainBlockReason ?? '样例 AC 后启动：Attacker → Executor → Explainer → FixSuggestor'
             }
           >
             {hackChainRunning ? (

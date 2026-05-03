@@ -85,6 +85,8 @@ import bankData from '../data/problemBank.json';
 import { safeGetItem, safeJsonParse, safeRemoveItem, safeSetItem } from './safeLocalStorage';
 import { canEditLocalSettings } from './settingsAccess';
 import { isProblemDeletedLocally, storage } from './storage';
+import { isEffectivelyOffline } from './offlineMode';
+import { OFFLINE_DISABLED_MESSAGE, hasLocalFastLaneTarget } from './offlinePolicy';
 
 const PROBLEM_BANK = bankData as BankProblem[];
 
@@ -98,6 +100,23 @@ function today(): string {
 const FAILURE_STATS_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** P3 escalation 触发阈值（之前是 3 单题终身累计——几乎从不触发；现在 2 次 7 天内即可）*/
 export const FAILURE_STATS_ESCALATE_THRESHOLD = 2;
+
+function ensureOfflineFastLane(cfg: AIConfig): boolean {
+  if (!isEffectivelyOffline()) return true;
+  if (hasLocalFastLaneTarget(cfg)) return true;
+  toast.warning('离线模式需要本地 FastLane (Ollama)', {
+    description: '请确认 Ollama 已安装、已拉取本地模型，并在设置里配置 FastLane。',
+  });
+  return false;
+}
+
+function blockOfflineHeavyTask(label: string): boolean {
+  if (!isEffectivelyOffline()) return false;
+  toast.warning(`${label}在离线模式下不可用`, {
+    description: OFFLINE_DISABLED_MESSAGE,
+  });
+  return true;
+}
 
 interface FailureStats {
   count: number;
@@ -850,7 +869,7 @@ interface State {
   refreshFiles: () => Promise<void>;
   refreshAll: () => Promise<void>;
 
-  enqueueParseProblem: (rawText: string) => string;
+  enqueueParseProblem: (rawText: string) => string | null;
   enqueueAnalyze: (opts?: { reason?: string }) => string | null;
   /** 后台静默补齐题目的「白话解释」字段（已有则跳过；失败静默） */
   requestPlainExplanation: (problemId: string) => Promise<void>;
@@ -2189,6 +2208,7 @@ export const useStore = create<State>((set, get) => {
      */
     requestAlgoVizGeneration: async (problemId, opts = {}) => {
       const st = get();
+      if (blockOfflineHeavyTask('算法动画生成')) return;
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
       if (!hasUsableProblemStatement(problem)) return;
@@ -2328,6 +2348,7 @@ export const useStore = create<State>((set, get) => {
      */
     requestAlgoVizAnimationOnly: async (problemId, opts = {}) => {
       const st = get();
+      if (blockOfflineHeavyTask('算法动画生成')) return;
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
       if (!hasUsableProblemStatement(problem)) return;
@@ -2412,6 +2433,7 @@ export const useStore = create<State>((set, get) => {
      */
     detectAlgoVizModules: async (problemId, code) => {
       const st = get();
+      if (!ensureOfflineFastLane(st.aiConfig)) return;
       const problem = st.problems.find((p) => p.id === problemId);
       const schema = problem?.algoViz?.detectionSchema;
       if (!schema) return;
@@ -2537,7 +2559,7 @@ export const useStore = create<State>((set, get) => {
         }
         // 算法可视化：跟题眼速读同一触发点 — 完全没数据时后台自动跑 Status + Animation
         // （在 generating-* / ready / failed 时 requestAlgoVizGeneration 自己会 skip，无需这里判断）
-        if (target && !target.algoViz) {
+        if (target && !target.algoViz && !isEffectivelyOffline()) {
           void get().requestAlgoVizGeneration(id);
         }
       }
@@ -3123,6 +3145,7 @@ export const useStore = create<State>((set, get) => {
     // ===== AI 任务 =====
 
     enqueueParseProblem: (rawText) => {
+      if (!ensureOfflineFastLane(get().aiConfig)) return null;
       const label = `解析题目：${rawText.split('\n')[0].slice(0, 24) || '未命名'}`;
       return enqueue('parse-problem', label, {
         run: (onChunk, onRetry, signal) =>
@@ -3139,6 +3162,7 @@ export const useStore = create<State>((set, get) => {
 
     requestPlainExplanation: async (problemId) => {
       const st = get();
+      if (!ensureOfflineFastLane(st.aiConfig)) return;
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
       if (!hasUsableProblemStatement(problem)) return;
@@ -3190,6 +3214,7 @@ export const useStore = create<State>((set, get) => {
      */
     requestProblemOverview: async (problemId, opts = {}) => {
       const st = get();
+      if (!ensureOfflineFastLane(st.aiConfig)) return;
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
       if (!hasUsableProblemStatement(problem)) return;
@@ -3260,6 +3285,7 @@ export const useStore = create<State>((set, get) => {
      */
     requestAcReview: async (problemId, fileId) => {
       const st = get();
+      if (!ensureOfflineFastLane(st.aiConfig)) return;
       const problem = st.problems.find((p) => p.id === problemId);
       if (!problem) return;
       const file = (st.filesByScope[problemId] ?? []).find((f) => f.id === fileId);
@@ -3333,6 +3359,7 @@ export const useStore = create<State>((set, get) => {
 
     enqueueAnalyze: (opts) => {
       const st = get();
+      if (!ensureOfflineFastLane(st.aiConfig)) return null;
       // ollama 等本地服务不需要 apiKey
       const needsKey = st.aiConfig.provider !== 'ollama';
       if (needsKey && !st.aiConfig.apiKey) {
@@ -3560,6 +3587,7 @@ export const useStore = create<State>((set, get) => {
       const opts: SubmitOpts =
         typeof arg === 'boolean' ? { isMistake: arg } : arg;
       const st = get();
+      if (!ensureOfflineFastLane(st.aiConfig)) return null;
       if (!st.activeProblemId) {
         toast.error('请先激活一道题目');
         return null;
@@ -3678,6 +3706,7 @@ export const useStore = create<State>((set, get) => {
 
     enqueueDiff: () => {
       const st = get();
+      if (blockOfflineHeavyTask('对拍分析')) return null;
       if (!hasUsableAIConfig(st.aiConfig)) {
         toast.error('请先配置 AI');
         set({ settingsOpen: true });
@@ -3851,6 +3880,7 @@ export const useStore = create<State>((set, get) => {
      */
     runHackChain: async (opts) => {
       const st = get();
+      if (blockOfflineHeavyTask('Hack Chain')) return;
       // Hack Chain 与无 Ollama 模式兼容：Attacker/Explainer/FixSuggestor 走主云端，
       // Executor 是本地沙箱（pyodide / Wandbox），与 Ollama 无关。
       if (!st.activeProblemId) {
@@ -4898,6 +4928,7 @@ int main() {
      */
     requestDailyPlan: async (opts = {}) => {
       const st = get();
+      if (blockOfflineHeavyTask('学习规划 Agent')) return;
       const dateStr = today();
       // 缓存 hit
       if (!opts.force && st.dailyPlan?.date === dateStr) return;

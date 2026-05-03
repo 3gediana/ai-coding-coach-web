@@ -107,7 +107,7 @@ export function SettingsModal() {
     });
   };
 
-  const onToggleForcedOffline = () => {
+  const onToggleForcedOffline = async () => {
     if (forcedOffline) {
       setForcedOffline(false);
       toast.success('已退出飞行模式');
@@ -123,8 +123,24 @@ export function SettingsModal() {
       toast.warning('飞行模式需要先配本地 FastLane (Ollama)');
       return;
     }
+    try {
+      const models = await fetchOllamaModels(fastLaneModel.baseUrl);
+      if (!models.some((m) => m.name === fastLaneModel.model)) {
+        toast.warning('本地 Ollama 没找到 FastLane 模型', {
+          description: `请先运行：ollama pull ${fastLaneModel.model}`,
+        });
+        return;
+      }
+    } catch (e: any) {
+      toast.warning('无法连接本地 Ollama', {
+        description: String(e?.message || e).slice(0, 120),
+      });
+      return;
+    }
     setForcedOffline(true);
-    toast.success('已进入飞行模式 · AI 全部走本地');
+    toast.success('已进入飞行模式 · 基础 AI 走本地', {
+      description: '算法动画、Hack Chain、学习规划等强模型功能会禁用。',
+    });
   };
 
   /**

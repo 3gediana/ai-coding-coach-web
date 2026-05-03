@@ -14,6 +14,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Target, X, RefreshCw, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
+import { useOnlineStatus } from '../lib/offlineMode';
 
 export function ProblemOverviewCard() {
   const activeProblemId = useStore((s) => s.activeProblemId);
@@ -21,6 +22,7 @@ export function ProblemOverviewCard() {
   const dismissedIds = useStore((s) => s.overviewDismissedProblemIds);
   const dismiss = useStore((s) => s.dismissProblemOverview);
   const requestOverview = useStore((s) => s.requestProblemOverview);
+  const offline = useOnlineStatus() !== 'online';
 
   // 默认折叠：编辑器顶部只显示 headline 一行；详细 notes 在右栏「题目」Tab 已有，避免重复
   const [collapsed, setCollapsed] = useState(true);
@@ -90,7 +92,7 @@ export function ProblemOverviewCard() {
                 'p-1 rounded text-ink-mute hover:text-accent hover:bg-bg-elev2',
                 regenerating && 'animate-spin text-accent',
               )}
-              title="重新生成（云端再读一次）"
+              title={offline ? '重新生成（本地 Ollama 再读一次）' : '重新生成（云端再读一次）'}
               type="button"
             >
               {regenerating ? <Loader2 size={11} /> : <RefreshCw size={11} />}

@@ -7,12 +7,15 @@ import { fetchAndParseProblem, detectSite, isFetchableSite, FetchProblemError } 
 import { storage } from '../lib/storage';
 import type { Problem } from '../core/types';
 import { nanoid } from 'nanoid';
+import { useOnlineStatus } from '../lib/offlineMode';
+import { hasLocalFastLaneTarget } from '../lib/offlinePolicy';
 
 export function ProblemEditorModal() {
   const open = useStore((s) => s.problemEditorOpen);
   const setOpen = useStore((s) => s.setProblemEditorOpen);
   const enqueueParseProblem = useStore((s) => s.enqueueParseProblem);
-  const aiOk = useStore((s) => hasUsableAIConfig(s.aiConfig));
+  const offline = useOnlineStatus() !== 'online';
+  const aiOk = useStore((s) => offline ? hasLocalFastLaneTarget(s.aiConfig) : hasUsableAIConfig(s.aiConfig));
   const setSettingsOpen = useStore((s) => s.setSettingsOpen);
   const problems = useStore((s) => s.problems);
 
@@ -114,7 +117,7 @@ export function ProblemEditorModal() {
       return;
     }
     if (!aiOk) {
-      toast.error('请先配置 AI');
+      toast.error(offline ? '离线录题需要先配置本地 Ollama FastLane' : '请先配置 AI');
       setOpen(false);
       setSettingsOpen(true);
       return;
@@ -203,7 +206,9 @@ export function ProblemEditorModal() {
               </div>
 
               <div>
-                <div className="label">题面（粘贴 OJ 题目原文，AI 自动结构化）</div>
+                <div className="label">
+                  题面（粘贴 OJ 题目原文，AI 自动结构化{offline ? ' · 本地模型' : ''}）
+                </div>
                 <textarea
                   className="input font-mono text-xs resize-none"
                   rows={18}
@@ -229,7 +234,7 @@ export function ProblemEditorModal() {
               <div className="text-xs text-ink-mute leading-relaxed">
                 <p>
                   <strong className="text-ink">提示：</strong>
-                  AI 会从原文提取标题、约束、示例、知识点标签和难度等信息。
+                  {offline ? '离线模式会用本地 Ollama 小模型提取标题、约束、示例、标签等信息；超长题面可能不如云端稳定。' : 'AI 会从原文提取标题、约束、示例、知识点标签和难度等信息。'}
                   解析过程通常 30–60s（依赖 AI 服务），过程中你可以
                   <span className="text-accent-glow"> 直接关闭弹窗继续敲代码 </span>—— 解析完会自动激活该题目。
                 </p>

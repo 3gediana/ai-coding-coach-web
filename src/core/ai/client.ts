@@ -10,6 +10,8 @@
  * - 429 / 5xx / 网络错误 -> 指数退避重试，遵循 Retry-After
  */
 import type { AIConfig } from '../types';
+import { isEffectivelyOffline } from '../../lib/offlineMode';
+import { isCloudAiConfig } from '../../lib/offlinePolicy';
 
 /**
  * 鉴别 AbortError：用户主动 abort 或上层 signal.aborted 引起的错误。
@@ -417,6 +419,9 @@ export class AIClient {
 
   private async fetchWithRetry(body: Record<string, unknown>, req: ChatRequest): Promise<Response> {
     const cfg = this.cfg;
+    if (isEffectivelyOffline() && isCloudAiConfig(cfg)) {
+      throw new AIError('离线模式已启用：已阻止云端大模型请求', undefined, false);
+    }
     const maxRetries = req.maxRetries ?? cfg.maxRetries ?? DEFAULT_MAX_RETRIES;
     const timeoutMs = req.timeoutMs ?? cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 

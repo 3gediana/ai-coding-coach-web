@@ -31,6 +31,8 @@ import {
 import { Player, type PlayerRef } from '@remotion/player';
 import * as Remotion from 'remotion';
 import { useStore } from '../lib/store';
+import { cn } from '../lib/cn';
+import { useOnlineStatus } from '../lib/offlineMode';
 import { LLMComponentRenderer, compileLLMComponent } from '../algoviz/runtime';
 import type { Problem } from '../core/types';
 
@@ -68,6 +70,7 @@ export function AlgoVizPanel(): React.ReactElement {
   const requestGen = useStore((s) => s.requestAlgoVizGeneration);
   const requestAnimOnly = useStore((s) => s.requestAlgoVizAnimationOnly);
   const showRealtimeStatus = useStore((s) => s.aiConfig.ollamaMode !== 'disabled');
+  const offline = useOnlineStatus() !== 'online';
 
   if (!problem) {
     return (
@@ -130,6 +133,8 @@ export function AlgoVizPanel(): React.ReactElement {
             <button
               className="text-[11px] underline hover:no-underline"
               onClick={() => void requestAnimOnly(problem.id, { force: true })}
+              disabled={offline}
+              title={offline ? '离线模式下禁用算法动画生成' : undefined}
             >
               重试
             </button>
@@ -143,6 +148,7 @@ export function AlgoVizPanel(): React.ReactElement {
             onGenerateFull={() => void requestGen(problem.id, { force: status === 'failed' })}
             onGenerateAnimOnly={() => void requestAnimOnly(problem.id)}
             showRealtimeStatus={showRealtimeStatus}
+            offline={offline}
           />
         )}
 
@@ -166,6 +172,7 @@ export function AlgoVizPanel(): React.ReactElement {
             isAnimGenerating={isAnimGenerating}
             onRegenerateAnim={() => void requestAnimOnly(problem.id, { force: isAnimGenerating })}
             showRealtimeStatus={showRealtimeStatus}
+            offline={offline}
           />
         )}
       </div>
@@ -241,12 +248,14 @@ function IdleOrFailedView({
   onGenerateFull,
   onGenerateAnimOnly,
   showRealtimeStatus,
+  offline,
 }: {
   problem: Problem;
   errorMessage?: string;
   onGenerateFull: () => void;
   onGenerateAnimOnly: () => void;
   showRealtimeStatus: boolean;
+  offline: boolean;
 }): React.ReactElement {
   const aiOk = useStore((s) => {
     const cfg = s.aiConfig;
@@ -277,6 +286,11 @@ function IdleOrFailedView({
           请先在右上角齿轮里配置 AI 服务（或在「算法可视化模型」里单独配 DeepSeek）
         </div>
       )}
+      {offline && (
+        <div className="text-[11px] text-warn">
+          离线模式下禁用算法动画生成；可继续使用已生成内容和基础问答。
+        </div>
+      )}
       <div className="rounded-md border border-line bg-bg-card px-3 py-3 shadow-soft">
         <div className="flex items-start gap-3">
           <div className="h-9 w-9 rounded-xl border border-accent/30 bg-accent/10 flex items-center justify-center text-accent">
@@ -298,12 +312,14 @@ function IdleOrFailedView({
       <div className="space-y-2">
         <button
           onClick={onGenerateFull}
-          disabled={!aiOk}
+          disabled={!aiOk || offline}
           className="btn-primary w-full justify-center disabled:opacity-50 disabled:cursor-not-allowed"
           title={
-            showRealtimeStatus
-              ? '生成模块进度卡片 + AC 动画（耗时约 90-120 秒，后台进行不阻塞做题）'
-              : '生成 AC 动画（耗时约 90-120 秒，后台进行不阻塞做题）'
+            offline
+              ? '离线模式下禁用算法动画生成'
+              : showRealtimeStatus
+                ? '生成模块进度卡片 + AC 动画（耗时约 90-120 秒，后台进行不阻塞做题）'
+                : '生成 AC 动画（耗时约 90-120 秒，后台进行不阻塞做题）'
           }
         >
           <Sparkles size={13} />
@@ -314,9 +330,9 @@ function IdleOrFailedView({
         {showRealtimeStatus && (
           <button
             onClick={onGenerateAnimOnly}
-            disabled={!aiOk}
+            disabled={!aiOk || offline}
             className="btn-ghost w-full justify-center disabled:opacity-50 disabled:cursor-not-allowed"
-            title="只生成 AC 后的动画，跳过实时模块进度（适合已经做过的老题）"
+            title={offline ? '离线模式下禁用算法动画生成' : '只生成 AC 后的动画，跳过实时模块进度（适合已经做过的老题）'}
           >
             <Play size={12} />
             只生成 AC 动画（老题模式）
@@ -525,6 +541,7 @@ function ReadyView({
   isAnimGenerating,
   onRegenerateAnim,
   showRealtimeStatus,
+  offline,
 }: {
   problem: Problem;
   statusCode: string | null;
@@ -536,6 +553,7 @@ function ReadyView({
   isAnimGenerating: boolean;
   onRegenerateAnim: () => void;
   showRealtimeStatus: boolean;
+  offline: boolean;
 }) {
   const effectiveModuleStatus = useMemo<Record<string, boolean>>(() => {
     const out: Record<string, boolean> = {};
@@ -614,8 +632,9 @@ function ReadyView({
           <div className="flex-1" />
           <button
             onClick={onRegenerateAnim}
-            className="text-ink-mute hover:text-ink transition flex items-center gap-1 text-[10px]"
-            title={isAnimGenerating ? '强制解锁并重新生成动画' : '重新生成动画（重新调一次 Animation 模型）'}
+            disabled={offline}
+            className="text-ink-mute hover:text-ink transition flex items-center gap-1 text-[10px] disabled:opacity-50 disabled:cursor-not-allowed"
+            title={offline ? '离线模式下禁用算法动画生成' : isAnimGenerating ? '强制解锁并重新生成动画' : '重新生成动画（重新调一次 Animation 模型）'}
           >
             <RefreshCw size={10} className={isAnimGenerating ? 'animate-spin' : ''} />
             {isAnimGenerating ? '强制重试' : '重新生成'}

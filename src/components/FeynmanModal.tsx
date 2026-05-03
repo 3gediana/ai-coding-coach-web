@@ -31,6 +31,7 @@ import {
   runFeynmanEvaluation,
   FEYNMAN_MIN_USER_TURNS,
 } from '../core/feynmanSession';
+import { useOnlineStatus } from '../lib/offlineMode';
 
 interface ConvoMsg {
   role: 'user' | 'student';
@@ -65,6 +66,7 @@ export function FeynmanModal() {
   const coach = useStore((s) => s.coach);
   const aiConfig = useStore((s) => s.aiConfig);
   const recordTrace = useStore((s) => s.recordAgentTrace);
+  const offline = useOnlineStatus() !== 'online';
 
   const problem = activeProblemId ? problems.find((p) => p.id === activeProblemId) : null;
 
@@ -116,6 +118,27 @@ export function FeynmanModal() {
   }
 
   const aiUsable = hasUsableAIConfig(aiConfig);
+
+  if (offline) {
+    return (
+      <Backdrop onClose={close}>
+        <div className="glass-card max-w-sm p-6 text-center">
+          <Brain size={28} className="mx-auto text-warn mb-3" />
+          <div className="text-sm font-semibold mb-2">离线模式下不可用</div>
+          <div className="text-xs text-ink-mute leading-relaxed">
+            费曼模式需要多轮上下文和较强 reasoning；离线模式只保留基础问答、录题、分析和总结。
+          </div>
+          <button
+            onClick={close}
+            className="btn-primary mt-4 text-xs"
+            type="button"
+          >
+            知道了
+          </button>
+        </div>
+      </Backdrop>
+    );
+  }
 
   if (!aiUsable) {
     return (

@@ -28,6 +28,7 @@ import {
 import { useStore } from '../lib/store';
 import { cn } from '../lib/cn';
 import { toast } from 'sonner';
+import { useOnlineStatus } from '../lib/offlineMode';
 
 const KIND_META: Record<
   'new-problem' | 'review-mistake' | 'concept-recall',
@@ -49,6 +50,7 @@ export function DailyPlanCard() {
   const setActiveProblem = useStore((s) => s.setActiveProblem);
   const mistakes = useStore((s) => s.mistakes);
   const setSidebarTab = useStore((s) => s.setSidebarTab);
+  const offline = useOnlineStatus() !== 'online';
 
   const [collapsed, setCollapsed] = useState(false);
 
@@ -275,7 +277,8 @@ export function DailyPlanCard() {
             await requestDailyPlan({ force: true });
           }}
           className="btn text-[11px]"
-          disabled={dailyPlanGenerating}
+          disabled={dailyPlanGenerating || offline}
+          title={offline ? '离线模式下禁用学习规划 Agent' : undefined}
         >
           <RefreshCw size={11} /> 重新规划
         </button>

@@ -36,7 +36,7 @@ export function OfflineBanner() {
           <span>
             <strong className="text-cyan">飞行模式</strong>
             <span className="ml-1.5 text-ink-mute">
-              已主动禁用云端，所有任务走本地 Ollama
+              已主动禁用云端；基础问答/分析走本地 Ollama，强模型功能会禁用
               {!fastLaneOk && '（但 FastLane 没配好，AI 任务可能失败）'}
             </span>
           </span>
@@ -71,7 +71,7 @@ export function OfflineBanner() {
           <strong className="text-warn">网络已断开</strong>
           {cloudPrimary && fastLaneOk && (
             <span className="ml-1.5 text-ink-mute">
-              主云端不可用；AI 任务会自动 fallback 到本地 FastLane
+              主云端不可用；基础问答/分析会走本地 FastLane，强模型功能会禁用
             </span>
           )}
           {cloudPrimary && !fastLaneOk && (
