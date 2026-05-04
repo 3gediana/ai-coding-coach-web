@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AIClient } from './client';
+import { setForcedOffline } from '../../lib/offlineMode';
 
 function streamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -12,6 +13,32 @@ function streamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
 }
 
 describe('AIClient streaming lifecycle', () => {
+  it('finishes OpenAI-compatible streams when [DONE] is received', async () => {
+    vi.stubGlobal('navigator', { onLine: true });
+    setForcedOffline(false);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(streamFromChunks([
+      'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n',
+      'data: [DONE]\n\n',
+    ]), { status: 200 })));
+
+    const client = new AIClient({
+      provider: 'deepseek',
+      baseUrl: 'https://example.test/v1/chat/completions',
+      apiKey: 'test-key',
+      model: 'test-model',
+      maxTokens: 1000,
+      timeoutMs: 1000,
+    });
+
+    let text = '';
+    for await (const chunk of client.chatStream({ messages: [{ role: 'user', content: 'hi' }] })) {
+      text += chunk;
+    }
+
+    expect(text).toBe('hello');
+    vi.unstubAllGlobals();
+  });
+
   it('finishes Ollama-native streams when done is received', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(streamFromChunks([
       '{"message":{"content":"hello"},"done":false}\n',

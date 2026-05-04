@@ -392,7 +392,7 @@ function installFeedbackMiddleware(middlewares: Connect.Server) {
 
 let managedOllama: ChildProcess | null = null;
 let ensuringPromise: Promise<boolean> | null = null;
-let warmupPromise: Promise<Array<{ label: string; model: string; ok: boolean; latencyMs: number; error?: string }>> | null = null;
+const warmupPromisesByKey = new Map<string, Promise<Array<{ label: string; model: string; ok: boolean; latencyMs: number; error?: string }>>>();
 const lastWarmupOkAtByKey = new Map<string, number>();
 const OLLAMA_WARMUP_KEEP_ALIVE = '10m';
 let serverOllamaMode: 'enabled' | 'disabled' =
@@ -601,8 +601,9 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
       error: '本地 Ollama 只允许同时预热一种模型',
     }));
   }
-  if (warmupPromise) return warmupPromise;
   const warmupKey = ollamaTargetKey(unique[0].baseUrl!, unique[0].model!);
+  const existingWarmup = warmupPromisesByKey.get(warmupKey);
+  if (existingWarmup) return existingWarmup;
   if (Date.now() - (lastWarmupOkAtByKey.get(warmupKey) ?? 0) < 60_000) {
     rememberOllamaTargets(unique);
     return unique.map((t) => ({
@@ -612,7 +613,7 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
       latencyMs: 0,
     }));
   }
-  warmupPromise = (async () => {
+  const warmupPromise = (async () => {
     const target = unique[0];
     const model = target.model!.trim();
     const startedAt = Date.now();
@@ -663,9 +664,10 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
         error: String(err?.message || err).slice(0, 160),
       }];
     } finally {
-      warmupPromise = null;
+      warmupPromisesByKey.delete(warmupKey);
     }
   })();
+  warmupPromisesByKey.set(warmupKey, warmupPromise);
   return warmupPromise;
 }
 
@@ -728,7 +730,6 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
         ctrl.abort();
         upstreamReader?.cancel().catch(() => undefined);
       };
-      req.on('close', abortUpstream);
       res.on('close', abortUpstream);
       try {
         const upstream = await fetch(target.toString(), {
@@ -770,7 +771,6 @@ function installAiProxyMiddleware(middlewares: Connect.Server) {
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ error: String(e?.message || e) }));
       } finally {
-        req.off('close', abortUpstream);
         res.off('close', abortUpstream);
       }
     });

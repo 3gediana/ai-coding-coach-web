@@ -175,15 +175,15 @@ export class AIClient {
             if (!trimmed) continue;
             try {
               const j = JSON.parse(trimmed);
-              if (j?.done === true) {
-                completed = true;
-                break;
-              }
               const delta = j?.message?.content ?? '';
               if (typeof delta === 'string' && delta) {
                 acc += delta;
                 req.onChunk?.(delta, acc);
                 yield delta;
+              }
+              if (j?.done === true) {
+                completed = true;
+                break;
               }
             } catch {
               // ignore
@@ -242,6 +242,7 @@ export class AIClient {
                 req.onChunk?.(delta, acc);
                 yield delta;
               }
+              if (j?.done === true) break;
             } catch {
             }
           }
@@ -360,7 +361,7 @@ export class AIClient {
           `[AIClient.chatJsonStream] attempt ${i + 1}/${attempts} failed: ${(r.err as any)?.message?.slice?.(0, 80)}; ${i < attempts - 1 ? 'retrying' : 'giving up'}`,
         );
       }
-      if (i < attempts - 1) await new Promise((res) => setTimeout(res, 300 * (i + 1) + 200));
+      if (i < attempts - 1) await sleep(300 * (i + 1) + 200, req.signal);
     }
     throw lastErr;
   }
@@ -403,7 +404,7 @@ export class AIClient {
           `[AIClient.chatJson] attempt ${i + 1}/${attempts} failed: ${(r.err as any)?.message?.slice?.(0, 80)}; ${i < attempts - 1 ? 'retrying' : 'giving up'}`,
         );
       }
-      if (i < attempts - 1) await new Promise((res) => setTimeout(res, 300 * (i + 1) + 200));
+      if (i < attempts - 1) await sleep(300 * (i + 1) + 200, req.signal);
     }
     throw lastErr;
   }
@@ -578,7 +579,7 @@ export class AIClient {
         const delay =
           retryAfter ?? Math.min(20_000, 800 * Math.pow(2, attempt) + Math.random() * 600);
         req.onRetry?.(attempt + 1, delay, `${res.status} ${errText.slice(0, 80)}`);
-        await sleep(delay);
+        await sleep(delay, req.signal);
         attempt++;
       } catch (e: any) {
         clearTimeout(timer);
