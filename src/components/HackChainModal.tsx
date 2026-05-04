@@ -211,7 +211,7 @@ function Timeline({ steps, now }: { steps: HackChainStepState[]; now: number }) 
   return (
     <div className="grid grid-cols-4 gap-2">
       {steps.map((s, i) => (
-        <div key={s.step} className="flex items-center">
+        <div key={s.step} className="min-w-0 flex items-center">
           <StepCard state={s} now={now} />
           {i < steps.length - 1 && (
             <ArrowRight size={14} className="text-ink-mute shrink-0 -mx-0.5" />
@@ -247,13 +247,13 @@ function StepCard({ state, now }: { state: HackChainStepState; now: number }) {
     skipped: '跳过',
   };
   return (
-    <div className={cn('flex-1 rounded-md border px-2 py-2 transition', statusColor[state.status])}>
-      <div className="flex items-center gap-1.5 mb-1">
+    <div className={cn('min-w-0 flex-1 overflow-hidden rounded-md border px-2 py-2 transition', statusColor[state.status])}>
+      <div className="min-w-0 flex items-center gap-1.5 mb-1">
         <Icon size={12} className="shrink-0" />
-        <span className="text-[11px] font-semibold truncate">
+        <span className="min-w-0 text-[11px] font-semibold truncate">
           {meta.idx}. {meta.title}
         </span>
-        <span className="text-[9px] ml-auto">{statusLabel[state.status]}</span>
+        <span className="ml-auto shrink-0 text-[9px]">{statusLabel[state.status]}</span>
       </div>
       <p className="text-[9.5px] leading-tight opacity-80">{meta.subtitle}</p>
       <div className="flex items-center gap-1 mt-1 text-[9px] opacity-70">
@@ -261,7 +261,7 @@ function StepCard({ state, now }: { state: HackChainStepState; now: number }) {
         {elapsed !== null && <span className="font-mono">{(elapsed / 1000).toFixed(1)}s</span>}
       </div>
       {state.error && (
-        <p className="text-[9.5px] text-bad mt-1 truncate" title={state.error}>
+        <p className="mt-1 max-w-full truncate text-[9.5px] text-bad" title={state.error}>
           ⚠ {state.error}
         </p>
       )}

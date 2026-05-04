@@ -885,6 +885,7 @@ export class Coach {
        * 喂给 prompt 让 LLM 看到客观的结构信号，避免空想出"O(n^2)"这种结论。
        */
       astFeatures?: import('./astLite').CodeStructFeatures;
+      proactive?: boolean;
     },
     opts: StreamOpts = {},
   ): Promise<AnalysisResult> {

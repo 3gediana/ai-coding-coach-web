@@ -45,10 +45,75 @@ import {
   formatTokenWindow,
   inferModelContextWindowTokens,
 } from '../core/coach/contextBudget';
-import { collectLocalOllamaTargets, getLocalOllamaTargetConflict } from '../core/ai/warmup';
+import { collectLocalOllamaTargets, getLocalOllamaTargetConflict, unloadLocalModels, warmupLocalModels } from '../core/ai/warmup';
 import { applyTheme, getStoredTheme, THEMES, type Theme } from '../lib/theme';
 import { setForcedOffline, useOnlineStatus } from '../lib/offlineMode';
 import { canEditLocalSettings, getSettingsAccessHost } from '../lib/settingsAccess';
+
+function cloudApiKeyForEntry(cfg: AIConfig, entry: NonNullable<AIConfig['modelRegistry']>[number]): string {
+  if (entry.apiKey?.trim()) return entry.apiKey;
+  const entryBaseUrl = entry.baseUrl.trim().replace(/\/+$/, '');
+  const cfgBaseUrl = cfg.baseUrl.trim().replace(/\/+$/, '');
+  if (entry.provider === cfg.provider && entryBaseUrl === cfgBaseUrl && cfg.apiKey?.trim()) return cfg.apiKey;
+  return '';
+}
+
+function withCloudPrimaryFallback(cfg: AIConfig): AIConfig {
+  const topLevelCloud =
+    cfg.provider !== 'ollama' && cfg.baseUrl.trim() && cfg.model.trim()
+      ? {
+          provider: cfg.provider,
+          baseUrl: cfg.baseUrl,
+          apiKey: cfg.apiKey,
+          model: cfg.model,
+          contextWindowTokens: cfg.contextWindowTokens,
+          numCtx: cfg.numCtx,
+        }
+      : null;
+  if (topLevelCloud?.apiKey.trim()) {
+    return {
+      ...cfg,
+      ...topLevelCloud,
+      primaryModelId: undefined,
+      primaryModelIdExplicit: true,
+    };
+  }
+  const cloudEntry = (cfg.modelRegistry ?? []).find(
+    (m) => m.provider !== 'ollama' && m.baseUrl.trim() && m.model.trim() && cloudApiKeyForEntry(cfg, m).trim(),
+  );
+  if (cloudEntry) {
+    return {
+      ...cfg,
+      provider: cloudEntry.provider,
+      baseUrl: cloudEntry.baseUrl,
+      apiKey: cloudApiKeyForEntry(cfg, cloudEntry),
+      model: cloudEntry.model,
+      contextWindowTokens: cloudEntry.contextWindowTokens,
+      numCtx: cloudEntry.numCtx,
+      primaryModelId: cloudEntry.id,
+      primaryModelIdExplicit: true,
+    };
+  }
+  if (topLevelCloud) {
+    return {
+      ...cfg,
+      ...topLevelCloud,
+      primaryModelId: undefined,
+      primaryModelIdExplicit: true,
+    };
+  }
+  return {
+    ...cfg,
+    provider: DEFAULT_AI_CONFIG.provider,
+    baseUrl: DEFAULT_AI_CONFIG.baseUrl,
+    apiKey: DEFAULT_AI_CONFIG.apiKey,
+    model: DEFAULT_AI_CONFIG.model,
+    contextWindowTokens: DEFAULT_AI_CONFIG.contextWindowTokens,
+    numCtx: DEFAULT_AI_CONFIG.numCtx,
+    primaryModelId: DEFAULT_AI_CONFIG.modelRegistry?.[0]?.id,
+    primaryModelIdExplicit: false,
+  };
+}
 
 export function SettingsModal() {
   const open = useStore((s) => s.settingsOpen);
@@ -74,8 +139,10 @@ export function SettingsModal() {
   const [currentTheme, setCurrentTheme] = useState<Theme>(getStoredTheme());
 
   const fastLaneModel = resolveFastLaneModel(draft);
-  const localOllamaTargets = collectLocalOllamaTargets(draft);
-  const localOllamaConflicts = getLocalOllamaTargetConflict(draft);
+  const ollamaEnabled = draft.ollamaMode !== 'disabled';
+  const localOllamaTargets = ollamaEnabled ? collectLocalOllamaTargets(draft) : [];
+  const localOllamaConflicts = ollamaEnabled ? getLocalOllamaTargetConflict(draft) : [];
+  const previousLocalOllamaTargets = cfg.ollamaMode !== 'disabled' ? collectLocalOllamaTargets(cfg) : [];
 
   /** fastLane 是否就绪：enabled + 本地 baseUrl + model + Ollama 模式打开 */
   const fastLaneReady = !!(
@@ -84,7 +151,6 @@ export function SettingsModal() {
     fastLaneModel?.model.trim() &&
     isLocalOllamaUrl(fastLaneModel.baseUrl)
   );
-  const ollamaEnabled = draft.ollamaMode !== 'disabled';
   const offlineFastUsable =
     ollamaEnabled &&
     !!fastLaneModel?.baseUrl &&
@@ -212,14 +278,21 @@ export function SettingsModal() {
       });
       return;
     }
-    // 校验"实际生效的主模型"——若分配了 primaryModelId 就走 registry，否则走顶层字段
-    const primary = resolvePrimaryModel(draft);
-    if (localOllamaConflicts.length > 1) {
+    let nextDraft = draft;
+    let primary = resolvePrimaryModel(nextDraft);
+    if (nextDraft.ollamaMode === 'disabled' && primary.provider === 'ollama') {
+      nextDraft = withCloudPrimaryFallback(nextDraft);
+      primary = resolvePrimaryModel(nextDraft);
+    }
+    const nextOllamaEnabled = nextDraft.ollamaMode !== 'disabled';
+    const nextLocalOllamaTargets = nextOllamaEnabled ? collectLocalOllamaTargets(nextDraft) : [];
+    const nextLocalOllamaConflicts = nextOllamaEnabled ? getLocalOllamaTargetConflict(nextDraft) : [];
+    if (nextLocalOllamaConflicts.length > 1) {
       setTestResult({
         ok: false,
         msg:
           '本地 Ollama 只能配置一个模型。请让所有本地工位使用同一个模型：\n' +
-          localOllamaConflicts.map((t) => `- ${t.label}: ${t.model} @ ${t.baseUrl}`).join('\n'),
+          nextLocalOllamaConflicts.map((t) => `- ${t.label}: ${t.model} @ ${t.baseUrl}`).join('\n'),
       });
       return;
     }
@@ -227,24 +300,16 @@ export function SettingsModal() {
       setTestResult({ ok: false, msg: 'Base URL 不能为空（请到注册表登记或填写下方字段）' });
       return;
     }
-    if (draft.ollamaMode === 'disabled' && primary.provider === 'ollama') {
-      setTestResult({
-        ok: false,
-        msg: '当前是「无 Ollama 模式」，主 AI 服务不能选择 Ollama。请切到 DeepSeek / OpenAI 兼容云端，或打开 Ollama 模式。',
-      });
-      return;
-    }
     if (!primary.model.trim()) {
       setTestResult({ ok: false, msg: 'Model 不能为空' });
       return;
     }
-    if (draft.ollamaMode !== 'disabled' && draft.fastLane?.enabled) {
-      // FastLane 也支持注册制：modelId 优先，否则看 fastLane 自身字段
-      const flEntry = draft.fastLane.modelId
-        ? draft.modelRegistry?.find((m) => m.id === draft.fastLane!.modelId)
+    if (nextDraft.ollamaMode !== 'disabled' && nextDraft.fastLane?.enabled) {
+      const flEntry = nextDraft.fastLane.modelId
+        ? nextDraft.modelRegistry?.find((m) => m.id === nextDraft.fastLane!.modelId)
         : null;
-      const flBase = flEntry?.baseUrl ?? draft.fastLane.baseUrl;
-      const flModel = flEntry?.model ?? draft.fastLane.model;
+      const flBase = flEntry?.baseUrl ?? nextDraft.fastLane.baseUrl;
+      const flModel = flEntry?.model ?? nextDraft.fastLane.model;
       if (!flBase?.trim()) {
         setTestResult({ ok: false, msg: 'FastLane Base URL 不能为空（在「高级」里填或注册一个本地模型）' });
         return;
@@ -256,21 +321,93 @@ export function SettingsModal() {
     }
     setTesting(true);
     setTestResult(null);
-    setCfg(draft);
-    toast.success(localOllamaTargets.length > 0 ? 'AI 配置已保存，正在预热本地模型' : 'AI 配置已保存', {
+    if (nextDraft !== draft) setDraft(nextDraft);
+    setCfg(nextDraft);
+    let warmupMessage = '';
+    toast.success('AI 配置已保存', {
       description:
-        localOllamaTargets.length > 0
-          ? `本地模型：${localOllamaTargets[0].model}。请稍等，预热完成后会占用显存。`
+        nextLocalOllamaTargets.length > 0
+          ? `正在确认本地模型是否已加载：${nextLocalOllamaTargets[0].model}`
           : '连接测试将在后台继续执行。',
     });
+    if (!nextOllamaEnabled) {
+      try {
+        await unloadLocalModels(previousLocalOllamaTargets);
+        if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
+          const modeRes = await fetch('/__aicc-ollama-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'disabled' }),
+          });
+          if (!modeRes.ok) {
+            const text = await modeRes.text().catch(() => '');
+            throw new Error(`关闭 Ollama 模式失败：HTTP ${modeRes.status} ${text.slice(0, 120)}`);
+          }
+        }
+        toast.success('Ollama 模式已关闭', {
+          description: '已请求卸载本地模型并关闭本项目托管的 Ollama 服务。',
+          duration: 3000,
+        });
+      } catch (e: any) {
+        const msg = String(e?.message || e).slice(0, 200);
+        toast.error('Ollama 关闭清理失败', { description: msg });
+        setTestResult({ ok: false, msg });
+        setTesting(false);
+        return;
+      }
+    }
+    if (nextLocalOllamaTargets.length > 0) {
+      try {
+        if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
+          const modeRes = await fetch('/__aicc-ollama-mode', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ mode: 'enabled' }),
+          });
+          if (!modeRes.ok) {
+            const text = await modeRes.text().catch(() => '');
+            throw new Error(`切换 Ollama 模式失败：HTTP ${modeRes.status} ${text.slice(0, 120)}`);
+          }
+        }
+        const warmResults = await warmupLocalModels(nextDraft);
+        const okCount = warmResults.filter((r) => r.ok).length;
+        warmupMessage = warmResults
+          .map((r) => `${r.label}/${r.model}: ${r.ok ? `${r.latencyMs}ms` : r.error ?? '失败'}`)
+          .join('\n');
+        if (warmResults.length > 0 && okCount === warmResults.length) {
+          toast.success(`本地模型已就绪：${warmResults[0].model}`, {
+            description: '已加载或已确认在 Ollama 内存中。',
+            duration: 3000,
+          });
+          setTestResult({ ok: true, msg: `本地模型已就绪：\n${warmupMessage}` });
+        } else {
+          const msg = warmResults.length > 0 ? warmupMessage : '未发现需要预热的本地 Ollama 工位';
+          toast.error(`本地模型预热失败：${okCount}/${warmResults.length} 就绪`, {
+            description: msg,
+            duration: 5000,
+          });
+          setTestResult({ ok: false, msg });
+          setTesting(false);
+          return;
+        }
+      } catch (e: any) {
+        const msg = String(e?.message || e).slice(0, 200);
+        toast.error('本地模型预热失败', { description: msg });
+        setTestResult({ ok: false, msg });
+        setTesting(false);
+        return;
+      }
+    }
     // primary 是本地 Ollama → 跳过 ping，避免和 warmup 并发把按钮卡 30s；warmup 自身会 toast 成功/失败
     const primaryIsLocalOllama =
       primary.provider === 'ollama' && isLocalOllamaUrl(primary.baseUrl);
     if (primaryIsLocalOllama) {
-      setTestResult({
-        ok: true,
-        msg: '配置已保存。本地 Ollama 主模型不再前台 ping，预热结果会以 toast 形式反馈。',
-      });
+      if (nextLocalOllamaTargets.length === 0) {
+        setTestResult({
+          ok: true,
+          msg: '配置已保存。本地 Ollama 主模型不再前台 ping。',
+        });
+      }
       setTesting(false);
       setTimeout(() => setOpen(false), 600);
       return;
@@ -279,7 +416,11 @@ export function SettingsModal() {
     if (!shouldTestPrimary) {
       setTestResult({
         ok: true,
-        msg: '配置已保存。主云端模型尚未填写 API Key，云端任务会继续显示未配置；本地 Ollama 工位会按配置预热/工作。',
+        msg: warmupMessage
+          ? `本地模型已就绪：\n${warmupMessage}\n\n主云端模型尚未填写 API Key，云端任务会继续显示未配置。`
+          : nextOllamaEnabled
+            ? '配置已保存。主云端模型尚未填写 API Key，云端任务会继续显示未配置；本地 Ollama 工位会按配置预热/工作。'
+            : '配置已保存。Ollama 模式已关闭；主云端模型尚未填写 API Key，云端任务会继续显示未配置。',
       });
       setTesting(false);
       setTimeout(() => setOpen(false), 600);
@@ -287,12 +428,12 @@ export function SettingsModal() {
     }
     // 用解析后的 primary 字段拼一个临时 AIConfig 给 AIClient
     const resolvedDraft: AIConfig = {
-      ...draft,
+      ...nextDraft,
       provider: primary.provider,
       baseUrl: primary.baseUrl,
       apiKey: primary.apiKey,
       model: primary.model,
-      numCtx: primary.numCtx ?? draft.numCtx,
+      numCtx: primary.numCtx ?? nextDraft.numCtx,
     };
     const client = new AIClient(resolvedDraft);
     try {
@@ -308,12 +449,23 @@ export function SettingsModal() {
       });
       const trimmed = text.trim();
       if (!trimmed) throw new Error('模型连接成功但返回空内容，请检查模型名或关闭思考模式');
-      setTestResult({ ok: true, msg: `成功：${trimmed.slice(0, 60)}` });
+      setTestResult({
+        ok: true,
+        msg: warmupMessage
+          ? `本地模型已就绪：\n${warmupMessage}\n\n主模型连接成功：${trimmed.slice(0, 60)}`
+          : `成功：${trimmed.slice(0, 60)}`,
+      });
       toast.success('主模型连接测试通过', { description: '配置已保存，可以开始用了' });
       // 留 600ms 让用户看到绿条，再关闭
       setTimeout(() => setOpen(false), 600);
     } catch (e: any) {
-      setTestResult({ ok: false, msg: String(e?.message || e).slice(0, 200) });
+      const msg = String(e?.message || e).slice(0, 200);
+      setTestResult({
+        ok: false,
+        msg: warmupMessage
+          ? `本地模型已就绪：\n${warmupMessage}\n\n主模型连接测试失败：${msg}`
+          : msg,
+      });
       toast.warning('配置已保存，但主模型连接测试失败', {
         description: '本地模型预热不依赖云端主模型测试；如需云端任务，请回到设置检查主模型。',
       });
@@ -701,11 +853,11 @@ export function SettingsModal() {
                       className="ml-auto px-2 py-0.5 rounded-full bg-warn/15 border border-warn/40 text-[10px] font-medium text-warn"
                       title={
                         draft.ollamaMode === 'disabled'
-                          ? '无 Ollama 模式下，所有本地 AI 功能已隔离'
+                          ? 'Ollama 已关闭：本地实时能力隔离，主流程走云端模型'
                           : '启用本地 FastLane 后自动激活：运行时报错诊断 / 数据范围 sanity check / 题意偏离嗅探'
                       }
                     >
-                      {draft.ollamaMode === 'disabled' ? '无 Ollama 模式' : '⚠ 3 项嗅探休眠中'}
+                      {draft.ollamaMode === 'disabled' ? 'Ollama 已关闭' : '⚠ 3 项嗅探休眠中'}
                     </span>
                   )}
                 </summary>
@@ -822,7 +974,7 @@ export function SettingsModal() {
                   <div className="ml-6 mb-3 px-3 py-2 rounded-md border border-line/60 bg-warn/5 text-[11px] leading-relaxed text-ink-mute">
                     <div className="font-semibold text-ink mb-0.5">
                       {draft.ollamaMode === 'disabled'
-                        ? '⚠ 无 Ollama 模式：以下 8 项本地功能已隔离'
+                        ? '⚠ Ollama 已关闭：以下本地实时能力已隔离'
                         : '⚠ 当前以下 3 个主动嗅探功能正在休眠：'}
                     </div>
                     <ul className="list-disc list-inside space-y-0.5">
@@ -853,10 +1005,6 @@ export function SettingsModal() {
                             <span className="opacity-70">（本地小模型路由问题类型）</span>
                           </li>
                           <li>
-                            <span className="text-ink">AC 后 Hack Case</span>
-                            <span className="opacity-70">（本地生成极端测试）</span>
-                          </li>
-                          <li>
                             <span className="text-ink">题目图片识别 OCR</span>
                             <span className="opacity-70">（TM 导入截图转文字）</span>
                           </li>
@@ -865,7 +1013,7 @@ export function SettingsModal() {
                     </ul>
                     <div className="mt-1 opacity-80">
                       {draft.ollamaMode === 'disabled'
-                        ? '打开设置顶部「Ollama 模式」后，这些功能才会恢复；关闭时不会偷偷蹭主云端 token。'
+                        ? '主流程继续走云端模型；打开顶部「Ollama 模式」后，本地实时能力才会恢复。'
                         : '启用本地 FastLane 后自动激活，不会偷偷蹭主云端 token。'}
                     </div>
                   </div>
@@ -1162,7 +1310,7 @@ export function SettingsModal() {
                   <span>🎨 算法可视化模型</span>
                   <span className="chip text-[9px] px-1.5 py-0 ml-1">可选</span>
                   <span className="text-[10px] text-ink-mute font-normal ml-auto">
-                    {ollamaEnabled ? 'Status / Animation / Detect 三工位独立可配' : 'Animation 保留 · Detect 已隐藏'}
+                    {ollamaEnabled ? 'Status / Animation / Detect 三工位独立可配' : 'Animation 保留 · Detect 默认关闭'}
                   </span>
                 </summary>
                 <p className="text-[11px] text-ink-mute mb-3 pl-6 leading-relaxed">
@@ -1175,7 +1323,7 @@ export function SettingsModal() {
                     </>
                   ) : (
                     <>
-                      ：AC 动画仍走主云端生成；实时模块点亮 / Detect 已随 Ollama 模式关闭。
+                      ：AC 动画仍走主云端生成；Detect 默认不继承主模型，显式配置云端模型后才启用。
                     </>
                   )}
                 </p>
@@ -1200,41 +1348,37 @@ export function SettingsModal() {
                     draft={draft}
                     setDraft={setDraft}
                   />
-                  {ollamaEnabled && (
-                    <AlgoVizRoleConfig
-                      role="detect"
-                      label="实时模块检测"
-                      desc="每 15s 跑一次，输出极短（轻活，速度优先）"
-                      fallback="走 fastLane"
-                      draft={draft}
-                      setDraft={setDraft}
-                    />
-                  )}
+                  <AlgoVizRoleConfig
+                    role="detect"
+                    label="实时模块检测"
+                    desc="每 15s 跑一次，输出极短；默认不走主云端，需显式配置后才启用"
+                    fallback={ollamaEnabled ? '走 fastLane' : '默认关闭'}
+                    draft={draft}
+                    setDraft={setDraft}
+                  />
                 </div>
               </details>
 
               {/* ━━ 💡 学习辅助 ━━ */}
-              {ollamaEnabled && (
-                <div className="border-t border-line pt-4">
-                  <label className="flex items-center gap-2 cursor-pointer mb-2">
-                    <input
-                      type="checkbox"
-                      className="accent-warn"
-                      checked={stuckHintEnabled}
-                      onChange={(e) => setStuckHintEnabled(e.target.checked)}
-                    />
-                    <Lightbulb size={14} className="text-warn" />
-                    <span className="text-sm font-semibold">120s 卡住主动提醒</span>
-                    <span className="text-[10px] text-ink-mute ml-auto">
-                      {stuckHintEnabled ? '已开启' : '未开启'}
-                    </span>
-                  </label>
-                  <p className="text-[11px] text-ink-mute pl-6">
-                    连续 2 分钟没编辑代码时，AI 自动给一条引导式提示（不直接给答案）。
-                    关闭后，仍可点顶栏 <span className="inline-flex items-center gap-0.5"><Lightbulb size={10} className="text-warn" />求助</span> 按钮手动触发。
-                  </p>
-                </div>
-              )}
+              <div className="border-t border-line pt-4">
+                <label className="flex items-center gap-2 cursor-pointer mb-2">
+                  <input
+                    type="checkbox"
+                    className="accent-warn"
+                    checked={stuckHintEnabled}
+                    onChange={(e) => setStuckHintEnabled(e.target.checked)}
+                  />
+                  <Lightbulb size={14} className="text-warn" />
+                  <span className="text-sm font-semibold">120s 卡住主动提醒</span>
+                  <span className="text-[10px] text-ink-mute ml-auto">
+                    {stuckHintEnabled ? '已开启' : '未开启'}
+                  </span>
+                </label>
+                <p className="text-[11px] text-ink-mute pl-6">
+                  连续 2 分钟没编辑代码时，AI 自动给一条引导式提示（不直接给答案）。
+                  关闭后，仍可点顶栏 <span className="inline-flex items-center gap-0.5"><Lightbulb size={10} className="text-warn" />求助</span> 按钮手动触发。
+                </p>
+              </div>
 
               {/* ━━ ✨ Coach 主动嗅探（FastLane 专属） ━━ */}
               {ollamaEnabled && (
@@ -1472,7 +1616,6 @@ function AlgoVizRoleConfig({
               value={cur?.modelId}
               onChange={(id) => update({ modelId: id })}
               config={draft}
-              filter={role === 'detect' ? (m) => m.provider === 'ollama' : undefined}
               placeholder="— 未分配 / 用下方手填 —"
             />
           </Field>

@@ -1,4 +1,9 @@
-import type { AlgoVizTemplateRoute } from '../core/types';
+import type {
+  AlgoVizPromptFamilyRoute,
+  AlgoVizTemplateRoute,
+  AlgoVizTrace,
+  AlgoVizVisualPlan,
+} from '../core/types';
 
 export type { AlgoVizTemplateRoute };
 
@@ -10,6 +15,25 @@ export interface AlgoVizTemplate {
   visualPlanHint: string;
   animationHint: string;
 }
+
+const GRAPH_PROMPT_FAMILY_ID = 'cinematic-brightstage-curve-v22';
+const GENERIC_PROMPT_FAMILY_ID = 'cinematic-brightstage-curve-v30';
+const GRAPH_TEMPLATE_IDS = new Set([
+  'bfs.queue.v1',
+  'dijkstra.shortest_path.v1',
+  'tree_traversal.frames.v1',
+]);
+
+const PROMPT_FAMILY_HINTS: Record<string, { visualPlanHint: string; animationHint: string }> = {
+  [GRAPH_PROMPT_FAMILY_ID]: {
+    visualPlanHint: `Layer-1 prompt family: graph/node-link cinematic brightstage. This is the broad visual foundation; still obey the Layer-2 VISUAL_TEMPLATE_HINT if present. Prefer graph_focus with one large node-link hero, exact node/edge anchors, stable route/visited/frontier semantics, and minimal surrounding panels. Plan curves/edges as semantic motion only: connected at node boundaries, symmetric where possible, never covering labels, and visible from frame 0.`,
+    animationHint: `Layer-1 prompt family: graph/node-link cinematic brightstage. This is the broad visual foundation; still obey the Layer-2 ALGORITHM_TEMPLATE_HINT if present. Render one premium bright node-link stage with all nodes/edges visible at frame 0. Use deterministic frame-driven motion only. Curves and edges must connect exactly to node boundaries, avoid text, and never gap or drift. Keep labels minimal and stable; use SVG foreignObject or safe generated-label HTML for node labels, never SVG <text>. No raw animate tags, no undefined filters, no CSS keyframes, no style property named transition. Compute complex highlight indices and derived values in const variables before return; do not place nested ternaries in JSX attributes.`,
+  },
+  [GENERIC_PROMPT_FAMILY_ID]: {
+    visualPlanHint: `Layer-1 prompt family: generic non-graph cinematic brightstage. This is the broad visual foundation; still obey the Layer-2 VISUAL_TEMPLATE_HINT if present. Prefer one large semantic hero structure: array row, binary-search interval, hash lookup row+map, DP row/table, stack/queue, heap, parent array, interval timeline, or recursion frames. Avoid dashboard/card-grid composition: use one dominant hero occupying most of the stage, with at most two compact support/result zones. Keep frame 0 readable with title/goal/core data visible. Plan minimal text, safe relation rails, and a clean final result composition.`,
+    animationHint: `Layer-1 prompt family: generic non-graph cinematic brightstage v30. This is the broad visual foundation; still obey the Layer-2 ALGORITHM_TEMPLATE_HINT if present. Use a premium bright educational stage with one large hero data structure occupying most of the canvas; avoid dashboard/card-grid composition and empty panels. Use generated-label-only visible text when practical, and minimal raw DOM text. Include .generatedLabel::before { content: attr(data-label); } if using generated labels. Do not leave raw JSX text separators such as <span>→</span>; separators should also use data-label. Keep frame 0 title/goal/core data visible. Never call interpolate with equal or descending input ranges. SVG primitives must be inside svg, and SVG <text> is forbidden. Hide transient operation chips in final frames when they crowd the result. Compute complex highlight indices and derived values in const variables before return; do not place nested ternaries in JSX attributes. No CSS keyframes, no style property named transition, no timers, no random sources.`,
+  },
+};
 
 export const COMMON_TEMPLATE_SAFETY_GUARD = `COMMON_TEMPLATE_SAFETY_GUARD:
 - Never call interpolate() with an equal or descending inputRange. Every inputRange must be strictly increasing.
@@ -140,6 +164,54 @@ const templateById = new Map(templates.map((template) => [template.id, template]
 export function getAlgoVizTemplate(templateId: string | null | undefined): AlgoVizTemplate | null {
   if (!templateId) return null;
   return templateById.get(templateId) ?? null;
+}
+
+export function selectAlgoVizPromptFamily(input: {
+  trace?: AlgoVizTrace | null;
+  visualPlan?: AlgoVizVisualPlan | null;
+}): AlgoVizPromptFamilyRoute {
+  const explicit = input.visualPlan?.promptFamilyRoute ?? input.trace?.promptFamilyRoute ?? null;
+  if (explicit) return explicit;
+  const templateId = input.trace?.templateRoute?.templateId;
+  const layout = input.visualPlan?.layout;
+  const graphByLayout = layout === 'graph_focus';
+  const graphByTemplate = !!templateId && GRAPH_TEMPLATE_IDS.has(templateId);
+  const graphByFocus =
+    input.trace?.states.some((state) => state.focus?.some((target) => /^node\[|^edge\[|^graph\[/.test(target))) ?? false;
+  if (graphByLayout || graphByTemplate || graphByFocus) {
+    return {
+      promptFamilyId: GRAPH_PROMPT_FAMILY_ID,
+      topologyKind: 'node_link_graph',
+      confidence: graphByTemplate || graphByLayout ? 0.86 : 0.72,
+      evidence: [
+        ...(templateId ? [`template:${templateId}`] : []),
+        ...(layout ? [`layout:${layout}`] : []),
+        ...(graphByFocus ? ['trace focus uses node/edge targets'] : []),
+      ],
+    };
+  }
+  return {
+    promptFamilyId: GENERIC_PROMPT_FAMILY_ID,
+    topologyKind: layout === 'table_focus' ? 'table_or_dp' : 'linear_or_structured_non_graph',
+    confidence: 0.78,
+    evidence: [
+      ...(templateId ? [`template:${templateId}`] : []),
+      ...(layout ? [`layout:${layout}`] : []),
+      'default non-graph cinematic generated-label family',
+    ],
+  };
+}
+
+export function buildVisualPlanPromptFamilyHint(route: AlgoVizPromptFamilyRoute): string {
+  const hint = PROMPT_FAMILY_HINTS[route.promptFamilyId] ?? PROMPT_FAMILY_HINTS[GENERIC_PROMPT_FAMILY_ID];
+  return `Prompt family route: ${route.promptFamilyId} / ${route.topologyKind} (${Math.round(route.confidence * 100)}% confidence). Evidence: ${route.evidence.join(', ') || 'topology route'}.
+${hint.visualPlanHint}`;
+}
+
+export function buildAnimationPromptFamilyHint(route: AlgoVizPromptFamilyRoute): string {
+  const hint = PROMPT_FAMILY_HINTS[route.promptFamilyId] ?? PROMPT_FAMILY_HINTS[GENERIC_PROMPT_FAMILY_ID];
+  return `Prompt family route: ${route.promptFamilyId} / ${route.topologyKind} (${Math.round(route.confidence * 100)}% confidence). Evidence: ${route.evidence.join(', ') || 'topology route'}.
+${hint.animationHint}`;
 }
 
 export function buildVisualPlanTemplateHint(template: AlgoVizTemplate, route: AlgoVizTemplateRoute): string {

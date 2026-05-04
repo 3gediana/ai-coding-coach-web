@@ -77,6 +77,7 @@ export default function App() {
     const nextKeys = new Set(targets.map(targetKey));
     const removedTargets = warmTargetsRef.current.filter((t) => !nextKeys.has(targetKey(t)));
     warmTargetsRef.current = targets;
+    let modeReady: Promise<void> = Promise.resolve();
     if (typeof window !== 'undefined' && isLocalBrowser) {
       const mode = aiConfig.ollamaMode === 'disabled' ? 'disabled' : 'enabled';
       // dev / preview 都挂了 /__aicc-ollama-mode 中间件；生产部署没有也不会影响业务，fetch catch 静默
@@ -85,13 +86,11 @@ export default function App() {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ mode }),
-        }).catch(() => undefined);
+        }).then(() => undefined).catch(() => undefined);
       if (mode === 'disabled' && removedTargets.length > 0) {
-        void unloadLocalModels(removedTargets).finally(() => {
-          void notifyMode();
-        });
+        modeReady = unloadLocalModels(removedTargets).then(() => notifyMode()).catch(() => notifyMode());
       } else {
-        void notifyMode();
+        modeReady = notifyMode();
         if (removedTargets.length > 0) {
           void unloadLocalModels(removedTargets);
         }
@@ -100,8 +99,11 @@ export default function App() {
     const timer = setTimeout(() => {
       if (cancelled) return;
       if (!isLocalBrowser) return;
-      void warmupLocalModels(aiConfig).then((results) => {
-        if (cancelled || results.length === 0) return;
+      void modeReady.then(() => {
+        if (cancelled) return;
+        return warmupLocalModels(aiConfig);
+      }).then((results) => {
+        if (cancelled || !results || results.length === 0) return;
         const okCount = results.filter((r) => r.ok).length;
         const message = results.map((r) => `${r.label}/${r.model}: ${r.ok ? r.latencyMs + 'ms' : r.error ?? '失败'}`).join('\n');
         const resultKey = results.map((r) => `${r.label}:${r.model}:${r.ok}:${r.error ?? ''}`).join('|');

@@ -946,6 +946,7 @@ export function buildAnalyzeCodePrompt(args: {
   };
   /** AST-Light 结构特征字符串（已格式化好），由本地启发式 Agent 输出。 */
   astFeatureBlock?: string;
+  proactive?: boolean;
 }): PromptPair {
   const problemContext = args.problem
     ? `【当前题目】
@@ -979,6 +980,14 @@ ${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTR
   const astBlock = args.astFeatureBlock
     ? `\n${args.astFeatureBlock}\n`
     : '';
+  const proactiveBlock = args.proactive
+    ? `\n【静默主动行内批注模式】
+这是后台低打扰审查，学生没有主动打开聊天窗口。请把输出当作贴在代码行尾的短批注：
+- 最多输出 4 条 issues，宁缺毋滥。
+- 有硬错误才用 error；复杂度/边界风险用 warning；可优化观察用 info；温和提醒用 hint。
+- 如果代码基本正确，可以给 1-2 条 info/hint，例如复杂度确认、边界自检、命名或输入输出细节，让画面有温和的蓝色/灰色提示。
+- 不要弹劾式语气，不要要求学生立刻停下来，只写能帮助他继续思考的一句话。\n`
+    : '';
 
   return {
     system: SYSTEM_CODING_COACH + systemTrailer + SYSTEM_JSON_OUTPUT,
@@ -986,7 +995,7 @@ ${args.problem.constraints ? '约束：' + clip(args.problem.constraints, CONSTR
 ${profileBlock}
 ${historyBlock}
 ${siblingBlock}
-${runtimeBlock}${escalationBlock}${astBlock}
+${runtimeBlock}${escalationBlock}${astBlock}${proactiveBlock}
 【学生当前正在分析的 ${args.language} 代码（哈希=${currentHash}, ${totalLines} 行${truncated ? '，已截断' : ''}，每行带 "行号 | " 前缀）】
 \`\`\`
 ${numbered}

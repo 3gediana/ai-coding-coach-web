@@ -29,9 +29,12 @@ import {
   parseVisualPlanOutput,
 } from './prompts';
 import {
+  buildAnimationPromptFamilyHint,
   buildAnimationTemplateHint,
+  buildVisualPlanPromptFamilyHint,
   buildVisualPlanTemplateHint,
   getAlgoVizTemplate,
+  selectAlgoVizPromptFamily,
 } from './templates';
 
 export interface AlgoVizGenerateCallbacks {
@@ -93,6 +96,9 @@ export class AlgoVizService {
 
     const templateRoute = trace.templateRoute ?? null;
     const template = getAlgoVizTemplate(templateRoute?.templateId);
+    const promptFamilyRoute = selectAlgoVizPromptFamily({ trace });
+    const visualPlanPromptFamilyHint = buildVisualPlanPromptFamilyHint(promptFamilyRoute);
+    const animationPromptFamilyHint = buildAnimationPromptFamilyHint(promptFamilyRoute);
     const visualPlanTemplateHint =
       template && templateRoute ? buildVisualPlanTemplateHint(template, templateRoute) : undefined;
     const animationTemplateHint =
@@ -106,6 +112,7 @@ export class AlgoVizService {
           constraints: problem.constraints,
           examples: problem.examples,
           trace,
+          promptFamilyHint: visualPlanPromptFamilyHint,
           templateHint: visualPlanTemplateHint,
         });
         const raw = await this.clients.status!.chat({
@@ -175,6 +182,8 @@ export class AlgoVizService {
 
     const { schema, statusCode: statusCodeRef } = statusResult;
     const { visualPlan } = visualPlanResult;
+    const finalPromptFamilyRoute = selectAlgoVizPromptFamily({ trace, visualPlan });
+    const finalAnimationPromptFamilyHint = buildAnimationPromptFamilyHint(finalPromptFamilyRoute);
 
     // 阶段 2：Animation
     if (!this.clients.animation) {
@@ -195,6 +204,7 @@ export class AlgoVizService {
         schema,
         trace,
         visualPlan,
+        promptFamilyHint: finalAnimationPromptFamilyHint,
         templateHint: animationTemplateHint,
       });
       const raw = await this.clients.animation.chat({
@@ -234,6 +244,11 @@ export class AlgoVizService {
     try {
       const templateRoute = problem.algoViz?.trace?.templateRoute ?? null;
       const template = getAlgoVizTemplate(templateRoute?.templateId);
+      const promptFamilyRoute = selectAlgoVizPromptFamily({
+        trace: problem.algoViz?.trace ?? null,
+        visualPlan: problem.algoViz?.visualPlan ?? null,
+      });
+      const animationPromptFamilyHint = buildAnimationPromptFamilyHint(promptFamilyRoute);
       const animationTemplateHint =
         template && templateRoute ? buildAnimationTemplateHint(template, templateRoute) : undefined;
       const { system, user } = buildAnimationPrompt({
@@ -245,6 +260,7 @@ export class AlgoVizService {
         schema,
         trace: problem.algoViz?.trace ?? null,
         visualPlan: problem.algoViz?.visualPlan ?? null,
+        promptFamilyHint: animationPromptFamilyHint,
         templateHint: animationTemplateHint,
       });
       const raw = await this.clients.animation.chat({

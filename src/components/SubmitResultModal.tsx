@@ -73,7 +73,7 @@ export function SubmitResultModal() {
     });
     // 非 AC + 用户勾选时一并触发深度分析
     if (isMistake && alsoAnalyze) {
-      enqueueAnalyze({ reason: `submit-${verdict}` });
+      enqueueAnalyze({ reason: `submit-${verdict}`, silent: true, proactive: true });
     }
     setOpen(false);
   };

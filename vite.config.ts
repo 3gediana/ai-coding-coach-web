@@ -393,7 +393,6 @@ function installFeedbackMiddleware(middlewares: Connect.Server) {
 let managedOllama: ChildProcess | null = null;
 let ensuringPromise: Promise<boolean> | null = null;
 const warmupPromisesByKey = new Map<string, Promise<Array<{ label: string; model: string; ok: boolean; latencyMs: number; error?: string }>>>();
-const lastWarmupOkAtByKey = new Map<string, number>();
 const OLLAMA_WARMUP_KEEP_ALIVE = '10m';
 let serverOllamaMode: 'enabled' | 'disabled' =
   process.env.AICC_OLLAMA === '0' ? 'disabled' : 'enabled';
@@ -403,6 +402,10 @@ const serverOllamaAutostart =
 let loggedExternalOllama = false;
 let knownOllamaTargets: Array<{ baseUrl?: string; model?: string }> = [];
 let shuttingDownOllama = false;
+
+function isServerOllamaDisabled(): boolean {
+  return serverOllamaMode === 'disabled';
+}
 
 function probePort(host: string, port: number, timeoutMs = 400): Promise<boolean> {
   return new Promise((resolve) => {
@@ -450,6 +453,9 @@ async function probeOllamaServe(timeoutMs = 1500): Promise<boolean> {
  * 当网页端 Ollama 模式为 enabled 时自动 spawn；disabled 时不触碰本地服务。
  */
 async function ensureOllamaRunning(): Promise<boolean> {
+  if (isServerOllamaDisabled()) {
+    return false;
+  }
   if (await probeOllamaServe(1200)) {
     if (!loggedExternalOllama && !managedOllama) {
       console.log('\x1b[32m[aicc-ollama]\x1b[0m 检测到后台已有 ollama serve，直接复用');
@@ -457,21 +463,25 @@ async function ensureOllamaRunning(): Promise<boolean> {
     }
     return true;
   }
-  if (serverOllamaMode === 'disabled' || !serverOllamaAutostart) {
+  if (!serverOllamaAutostart) {
     return false;
   }
   if (ensuringPromise) return ensuringPromise;
   ensuringPromise = (async () => {
+    if (isServerOllamaDisabled()) return false;
     if (await probeOllamaServe(1200)) return true;
+    if (isServerOllamaDisabled()) return false;
     if (await probePort('127.0.0.1', 11434, 300)) {
       const ready = await waitOllamaReady(5_000);
-      if (ready) return true;
+      if (ready) return !isServerOllamaDisabled();
       console.warn('\x1b[31m[aicc-ollama]\x1b[0m 端口 11434 已被占用，但不是可用的 Ollama API，跳过自动启动');
       ensuringPromise = null;
       return false;
     }
+    if (isServerOllamaDisabled()) return false;
     if (managedOllama && !managedOllama.killed) {
-      return waitOllamaReady(8_000);
+      const ready = await waitOllamaReady(8_000);
+      return !isServerOllamaDisabled() && ready;
     }
     console.log('\x1b[33m[aicc-ollama]\x1b[0m 端口 11434 未在监听，自动启动 `ollama serve` ...');
     try {
@@ -497,6 +507,10 @@ async function ensureOllamaRunning(): Promise<boolean> {
       return false;
     }
     const ready = await waitOllamaReady(20_000);
+    if (isServerOllamaDisabled()) {
+      killManagedOllama();
+      return false;
+    }
     if (ready) console.log('\x1b[32m[aicc-ollama]\x1b[0m ✓ ollama 已就绪 (auto-managed)');
     else {
       console.warn('\x1b[31m[aicc-ollama]\x1b[0m ⚠ 20s 内 ollama 未就绪，跳过');
@@ -551,6 +565,28 @@ function ollamaNativeChatUrl(baseUrl: string): string {
   return `${u.protocol}//${u.host}/api/chat`;
 }
 
+function ollamaPsUrl(baseUrl: string): string {
+  const u = new URL(baseUrl.trim());
+  return `${u.protocol}//${u.host}/api/ps`;
+}
+
+async function isOllamaModelLoaded(baseUrl: string, model: string): Promise<boolean> {
+  try {
+    const target = new URL(ollamaPsUrl(baseUrl));
+    const res = await fetch(target.toString(), { signal: AbortSignal.timeout(2500) });
+    if (!res.ok) return false;
+    const data = await res.json().catch(() => null) as { models?: Array<{ name?: string; model?: string }> } | null;
+    const expected = model.trim();
+    const expectedLatest = expected.includes(':') ? expected : `${expected}:latest`;
+    return (data?.models ?? []).some((m) => {
+      const loaded = String(m.model || m.name || '').trim();
+      return loaded === expected || loaded === expectedLatest;
+    });
+  } catch {
+    return false;
+  }
+}
+
 async function unloadOllamaTargets(targets: Array<{ baseUrl?: string; model?: string }>) {
   const seen = new Set<string>();
   for (const t of targets) {
@@ -582,6 +618,7 @@ async function shutdownOllamaLifecycle() {
   try {
     await unloadOllamaTargets(knownOllamaTargets);
   } finally {
+    knownOllamaTargets = [];
     killManagedOllama();
     shuttingDownOllama = false;
   }
@@ -604,15 +641,6 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
   const warmupKey = ollamaTargetKey(unique[0].baseUrl!, unique[0].model!);
   const existingWarmup = warmupPromisesByKey.get(warmupKey);
   if (existingWarmup) return existingWarmup;
-  if (Date.now() - (lastWarmupOkAtByKey.get(warmupKey) ?? 0) < 60_000) {
-    rememberOllamaTargets(unique);
-    return unique.map((t) => ({
-      label: t.label ?? 'ollama',
-      model: t.model!,
-      ok: true,
-      latencyMs: 0,
-    }));
-  }
   const warmupPromise = (async () => {
     const target = unique[0];
     const model = target.model!.trim();
@@ -631,6 +659,15 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
             : 'ollama 未就绪；已尝试自动启动，请确认本机已安装 Ollama 且 11434 未被其它程序占用',
         }];
       }
+      if (await isOllamaModelLoaded(target.baseUrl!, model)) {
+        rememberOllamaTargets(unique);
+        return [{
+          label: target.label ?? 'ollama',
+          model,
+          ok: true,
+          latencyMs: Date.now() - startedAt,
+        }];
+      }
       const upstream = await fetch(targetUrl.toString(), {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -645,7 +682,6 @@ async function warmupOllamaTargets(targets: Array<{ baseUrl?: string; model?: st
       });
       const text = upstream.ok ? '' : await upstream.text().catch(() => '');
       if (upstream.ok) {
-        lastWarmupOkAtByKey.set(warmupKey, Date.now());
         rememberOllamaTargets(unique);
       }
       return [{
@@ -1055,6 +1091,9 @@ export default defineConfig({
             const payload = await readJsonBody<{ mode?: 'enabled' | 'disabled' }>(req);
             serverOllamaMode = payload.mode === 'disabled' ? 'disabled' : 'enabled';
             process.env.AICC_OLLAMA = serverOllamaMode === 'disabled' ? '0' : '1';
+            if (serverOllamaMode === 'disabled') {
+              await shutdownOllamaLifecycle();
+            }
             res.statusCode = 200;
             res.setHeader('content-type', 'application/json');
             res.end(JSON.stringify({ ok: true, mode: serverOllamaMode }));

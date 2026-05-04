@@ -108,7 +108,9 @@ function buildMainClient(cfg: AIConfig, role: AlgoVizRole): AIClient | null {
       : !!quality.apiKey.trim()
     : false;
   const primary = isHeavy && qualityUsable ? quality! : main;
-  const usable = primary.provider === 'ollama' ? !!primary.baseUrl.trim() : !!primary.apiKey.trim();
+  const usable = primary.provider === 'ollama'
+    ? cfg.ollamaMode !== 'disabled' && !!primary.baseUrl.trim()
+    : !!primary.apiKey.trim();
   if (!usable) return null;
   return new AIClient({
     provider: primary.provider,
@@ -137,7 +139,7 @@ export function pickAlgoVizClient(cfg: AIConfig, role: AlgoVizRole): AIClient | 
   if (role === 'detect') {
     const fast = buildFastLaneClient(cfg, role);
     if (fast) return fast;
-    return buildMainClient(cfg, role);
+    return null;
   }
   // 3. status / animation 走主 cfg
   return buildMainClient(cfg, role);
@@ -154,9 +156,8 @@ export function describeRoute(cfg: AIConfig, role: AlgoVizRole): string {
   }
   if (role === 'detect') {
     const fl = resolveFastLaneModel(cfg);
-    if (fl) return `fastLane · ${fl.model}`;
-    const primary = resolvePrimaryModel(cfg);
-    return `主云端 · ${primary.model || '未配'}`;
+    if (cfg.ollamaMode !== 'disabled' && fl && isLocalOllamaUrl(fl.baseUrl)) return `fastLane · ${fl.model}`;
+    return '未启用 · 默认不走主云端';
   }
   const primary =
     role === 'status' || role === 'animation'

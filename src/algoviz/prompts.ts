@@ -37,6 +37,12 @@ Required JSON shape:
 {
   "algoName": "PascalCaseName",
   "family": "short_family_name",
+  "promptFamilyRoute": {
+    "promptFamilyId": "cinematic-brightstage-curve-v22 | cinematic-brightstage-curve-v30",
+    "topologyKind": "node_link_graph | linear_or_structured_non_graph | table_or_dp",
+    "confidence": 0.0,
+    "evidence": ["short reason from problem/trace topology"]
+  },
   "templateRoute": {
     "templateId": "one allowed template id from the list below",
     "family": "normalized_family_name",
@@ -59,7 +65,12 @@ Required JSON shape:
   ]
 }
 
-Template routing is part of Stage 0 and MUST be decided by this model, not by downstream rule matching.
+Layer-1 prompt family routing is part of Stage 0 and MUST be decided before downstream template filling:
+- Choose "cinematic-brightstage-curve-v22" only for node-link / graph / tree / explicit edge traversal topology.
+- Choose "cinematic-brightstage-curve-v30" for arrays, hash lookup, binary search, DP rows/tables, stacks, queues, heaps, union-find parent arrays, intervals, and other non-node-link visual topologies.
+- Do not route by title keywords alone. Use TRACE structure, state focus targets, data structures, and visual topology evidence.
+
+Layer-2 template routing is also part of Stage 0 and MUST be decided by this model, not by downstream rule matching.
 Choose the best templateId directly from this exact allowlist:
 - dynamic_programming.table.v1 — DP table/row, recurrence, base cases, dependency reads/writes.
 - hash_lookup.map.v1 — hash map/set lookup, complement/key hit/miss, insert/update.
@@ -79,6 +90,10 @@ If none applies, set templateRoute to null. If one applies, include templateRout
 
 Rules:
 - 4-8 states total.
+- 4-8 states is a hard budget. Do not output 9+ states.
+- For sliding window, BFS, Dijkstra, heap, stack, or repeated-loop algorithms, compress repetitive iterations into representative milestone states: setup, first meaningful operation, first mutation, one middle representative mutation, best/target update, final result.
+- Do not create one state for every pointer move, queue pop, heap push, or loop iteration if that would exceed 8 states.
+- The final state must still match the first example output.
 - states[0] must be setup with core input visible.
 - final state must match the first example output.
 - Every state's data must be internally consistent.
@@ -149,6 +164,12 @@ This plan must make the later animation look like a polished educational product
 Required JSON shape:
 {
   "layout": "hero_side_panels | grid_2x2 | table_focus | graph_focus | linear_timeline",
+  "promptFamilyRoute": {
+    "promptFamilyId": "cinematic-brightstage-curve-v22 | cinematic-brightstage-curve-v30",
+    "topologyKind": "node_link_graph | linear_or_structured_non_graph | table_or_dp",
+    "confidence": 0.0,
+    "evidence": ["short reason from plan topology"]
+  },
   "durationFrames": 300,
   "components": [
     { "id": "array", "type": "ArrayCells", "role": "input", "dataRef": "sample.nums", "label": "数组" }
@@ -218,11 +239,13 @@ Rules:
 - Include an updateData action for the component that displays any changed variable.
 - If a beat changes focus, include a focus/highlight action for the exact target, e.g. array[2], mid, map[7].
 - Do not over-plan text. Prefer visual components: cells, chips, pointers, rows, badges, progress dots.
-- If VISUAL_TEMPLATE_HINT is provided, use it as the preferred visual topology while still obeying TRACE_JSON.
+- If PROMPT_FAMILY_HINT is provided, treat it as the broad Layer-1 visual foundation.
+- If VISUAL_TEMPLATE_HINT is provided, treat it as the narrower Layer-2 algorithm template. Use it while still obeying TRACE_JSON and PROMPT_FAMILY_HINT.
 - Return valid JSON only inside VISUAL_PLAN_JSON.`;
 
 export interface VisualPlanPromptInput extends TracePromptInput {
   trace: AlgoVizTrace;
+  promptFamilyHint?: string;
   templateHint?: string;
 }
 
@@ -235,6 +258,7 @@ Statement: ${input.statement}
 ${input.constraints ? `Constraints: ${input.constraints}\n` : ''}${examplesText ? `\n${examplesText}\n` : ''}
 TRACE_JSON:
 ${formatTraceForPrompt(input.trace)}
+${input.promptFamilyHint ? `\nPROMPT_FAMILY_HINT:\n${input.promptFamilyHint}\n` : ''}
 ${input.templateHint ? `\nVISUAL_TEMPLATE_HINT:\n${input.templateHint}\n` : ''}
 
 Output the VISUAL_PLAN_JSON block only.`;
@@ -582,6 +606,10 @@ If there are 5 modules, use this layout structure:
 - Do not write a transition style at all, not even transition:'none'.
 - Forbidden exact style key: transition. Do not include "transition:" anywhere in the code.
 - Before final output, scan your code. If the substring "transition" appears anywhere, remove that whole property/line.
+- Do not use SVG <text> anywhere. If text must appear inside SVG, use <foreignObject> containing HTML <div>/<span>, or place an absolutely positioned HTML label above the SVG.
+- Do not put complex ternary or optional-chaining expressions directly inside JSX attributes. Compute them in plain const variables before return, then pass the variable to JSX.
+- Every JSX attribute expression should be syntactically simple: a variable, literal, function call with simple arguments, or short boolean expression. Avoid nested ? : chains in JSX props.
+- Before final output, mentally parse every JSX tag. Unbalanced parentheses or dangling ternaries make the output invalid.
 - No Remotion Sequence or TransitionSeries in this UI animation.
 - No external imports. Use globals only:
   const { useCurrentFrame, interpolate, spring, AbsoluteFill, Easing } = Remotion;
@@ -758,6 +786,7 @@ export interface AnimationPromptInput extends StatusPromptInput {
   /** Status 输出的 schema，告诉 Animation 用哪些 module key */
   schema: AlgoVizDetectionSchema;
   visualPlan?: AlgoVizVisualPlan | null;
+  promptFamilyHint?: string;
   templateHint?: string;
 }
 
@@ -792,6 +821,7 @@ The Status component below was already generated with the same modules. Match it
 --- STATUS COMPONENT CODE ---
 ${input.statusCode}
 --- END STATUS COMPONENT ---
+${input.promptFamilyHint ? `\nPROMPT_FAMILY_HINT:\n${input.promptFamilyHint}\n` : ''}
 ${input.templateHint ? `\nALGORITHM_TEMPLATE_HINT:\n${input.templateHint}\n` : ''}
 
 Output the <ANIMATION_TSX> block.`;
@@ -919,10 +949,11 @@ function normalizeTrace(value: unknown): AlgoVizTrace | null {
   if (!isRecord(value)) return null;
   const algoName = typeof value.algoName === 'string' ? value.algoName.trim() : '';
   const family = typeof value.family === 'string' ? value.family.trim() : '';
+  const promptFamilyRoute = normalizePromptFamilyRoute(value.promptFamilyRoute);
   const templateRoute = normalizeTemplateRoute(value.templateRoute);
   const sample = isRecord(value.sample) ? value.sample : {};
   const rawStates = Array.isArray(value.states) ? value.states : [];
-  if (!algoName || !family || rawStates.length < 2 || rawStates.length > 12) return null;
+  if (!algoName || !family || rawStates.length < 2 || rawStates.length > 16) return null;
   const states = rawStates
     .map((state, index) => {
       if (!isRecord(state)) return null;
@@ -951,7 +982,28 @@ function normalizeTrace(value: unknown): AlgoVizTrace | null {
     })
     .filter((state): state is AlgoVizTrace['states'][number] => !!state);
   if (states.length < 2) return null;
-  return { algoName, family, templateRoute, sample, states };
+  return { algoName, family, promptFamilyRoute, templateRoute, sample, states };
+}
+
+function normalizePromptFamilyRoute(value: unknown): AlgoVizTrace['promptFamilyRoute'] {
+  if (value === null) return null;
+  if (!isRecord(value)) return null;
+  const promptFamilyId = typeof value.promptFamilyId === 'string' ? value.promptFamilyId.trim() : '';
+  const topologyKind = typeof value.topologyKind === 'string' ? value.topologyKind.trim() : '';
+  if (!promptFamilyId || !topologyKind) return null;
+  const confidence =
+    typeof value.confidence === 'number' && Number.isFinite(value.confidence)
+      ? Math.max(0, Math.min(1, value.confidence))
+      : 0.62;
+  const evidence = Array.isArray(value.evidence)
+    ? value.evidence.filter((item): item is string => typeof item === 'string' && !!item.trim()).slice(0, 6)
+    : [];
+  return {
+    promptFamilyId,
+    topologyKind,
+    confidence,
+    evidence,
+  };
 }
 
 function normalizeTemplateRoute(value: unknown): AlgoVizTrace['templateRoute'] {
@@ -981,6 +1033,7 @@ function normalizeTemplateRoute(value: unknown): AlgoVizTrace['templateRoute'] {
 function normalizeVisualPlan(value: unknown): AlgoVizVisualPlan | null {
   if (!isRecord(value)) return null;
   const layout = typeof value.layout === 'string' && value.layout.trim() ? value.layout.trim() : 'grid_2x2';
+  const promptFamilyRoute = normalizePromptFamilyRoute(value.promptFamilyRoute);
   const durationFrames = 300;
   const components = Array.isArray(value.components)
     ? value.components
@@ -1102,6 +1155,7 @@ function normalizeVisualPlan(value: unknown): AlgoVizVisualPlan | null {
       }
     : undefined;
   return {
+    ...(promptFamilyRoute ? { promptFamilyRoute } : {}),
     layout,
     durationFrames,
     components,

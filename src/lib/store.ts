@@ -430,9 +430,12 @@ const lastDiagByStderrHash = new Map<string, number>();
 const sanityCheckedProblems = new Set<string>();
 const lastSniffByCodeHash = new Map<string, number>();
 const lastIntentSniffAt = { ts: 0 };
+const proactiveAnalyzeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const lastProactiveAnalyzeByKey = new Map<string, { hash: string; ts: number }>();
 
 const DIAG_DEDUP_MS = 60_000;
 const INTENT_SNIFF_GLOBAL_MS = 5 * 60_000;
+const PROACTIVE_ANALYZE_COOLDOWN_MS = 4 * 60_000;
 
 /** 跑代码输入/输出比较的归一化（与 RuntimePane.normalizeSampleText 同语义） */
 function normalizeRunIO(s: string | undefined): string {
@@ -485,6 +488,15 @@ interface TaskHandler {
   ) => Promise<unknown>;
   onSuccess?: (result: unknown) => void | Promise<void>;
   onFailure?: (err: Error) => void;
+  silent?: boolean;
+}
+
+interface AnalyzeOptions {
+  reason?: string;
+  silent?: boolean;
+  proactive?: boolean;
+  scope?: string;
+  fileId?: string;
 }
 
 /** 一次代码运行的快照（用于 analyzeCode 喂给 AI 看 stderr/exitCode） */
@@ -901,7 +913,7 @@ interface State {
   refreshAll: () => Promise<void>;
 
   enqueueParseProblem: (rawText: string) => string | null;
-  enqueueAnalyze: (opts?: { reason?: string }) => string | null;
+  enqueueAnalyze: (opts?: AnalyzeOptions) => string | null;
   /** 后台静默补齐题目的「白话解释」字段（已有则跳过；失败静默） */
   requestPlainExplanation: (problemId: string) => Promise<void>;
   /** P1 题眼速读：激活新题时云端读一遍生成 coachOverview 缓存到 problem 上 */
@@ -1605,6 +1617,82 @@ function readEnvAIConfig(): Partial<AIConfig> {
   return out;
 }
 
+function firstUserRegisteredModelId(registry: ModelEntry[]): string | undefined {
+  return registry.find((m) => !DEFAULT_MODEL_IDS.has(m.id))?.id;
+}
+
+function normalizedBaseUrl(url: string | undefined): string {
+  return (url ?? '').trim().replace(/\/+$/, '');
+}
+
+function registryEntryApiKey(cfg: AIConfig, entry: ModelEntry): string {
+  if (entry.apiKey?.trim()) return entry.apiKey;
+  if (entry.provider === cfg.provider && normalizedBaseUrl(entry.baseUrl) === normalizedBaseUrl(cfg.baseUrl)) {
+    return cfg.apiKey;
+  }
+  return '';
+}
+
+function withCloudPrimaryWhenOllamaDisabled(cfg: AIConfig): AIConfig {
+  if (cfg.ollamaMode !== 'disabled') return cfg;
+  const primary = resolvePrimaryModel(cfg);
+  if (primary.provider !== 'ollama') return cfg;
+  const topLevelCloud =
+    cfg.provider !== 'ollama' && cfg.baseUrl.trim() && cfg.model.trim()
+      ? {
+          provider: cfg.provider,
+          baseUrl: cfg.baseUrl,
+          apiKey: cfg.apiKey,
+          model: cfg.model,
+          contextWindowTokens: cfg.contextWindowTokens,
+          numCtx: cfg.numCtx,
+        }
+      : null;
+  if (topLevelCloud?.apiKey.trim()) {
+    return {
+      ...cfg,
+      ...topLevelCloud,
+      primaryModelId: undefined,
+      primaryModelIdExplicit: true,
+    };
+  }
+  const cloudEntry = (cfg.modelRegistry ?? []).find(
+    (m) => m.provider !== 'ollama' && m.baseUrl.trim() && m.model.trim() && registryEntryApiKey(cfg, m).trim(),
+  );
+  if (cloudEntry) {
+    return {
+      ...cfg,
+      provider: cloudEntry.provider,
+      baseUrl: cloudEntry.baseUrl,
+      apiKey: registryEntryApiKey(cfg, cloudEntry),
+      model: cloudEntry.model,
+      contextWindowTokens: cloudEntry.contextWindowTokens,
+      numCtx: cloudEntry.numCtx,
+      primaryModelId: cloudEntry.id,
+      primaryModelIdExplicit: true,
+    };
+  }
+  if (topLevelCloud) {
+    return {
+      ...cfg,
+      ...topLevelCloud,
+      primaryModelId: undefined,
+      primaryModelIdExplicit: true,
+    };
+  }
+  return {
+    ...cfg,
+    provider: DEFAULT_AI_CONFIG.provider,
+    baseUrl: DEFAULT_AI_CONFIG.baseUrl,
+    apiKey: DEFAULT_AI_CONFIG.apiKey,
+    model: DEFAULT_AI_CONFIG.model,
+    contextWindowTokens: DEFAULT_AI_CONFIG.contextWindowTokens,
+    numCtx: DEFAULT_AI_CONFIG.numCtx,
+    primaryModelId: DEEPSEEK_FLASH_MODEL_ID,
+    primaryModelIdExplicit: false,
+  };
+}
+
 function withDefaultCloudModels(cfg: AIConfig): AIConfig {
   const defaults = DEFAULT_AI_CONFIG.modelRegistry ?? [];
   const byId = new Map((cfg.modelRegistry ?? []).map((m) => [m.id, m]));
@@ -1636,15 +1724,15 @@ function withDefaultCloudModels(cfg: AIConfig): AIConfig {
   const primaryModelIdExplicit =
     cfg.primaryModelIdExplicit || (!!primaryModelId && primaryModelId !== DEEPSEEK_FLASH_MODEL_ID);
   if (cfg.provider !== 'deepseek' || cfg.baseUrl !== DEFAULT_AI_CONFIG.baseUrl) {
-    return {
+    return withCloudPrimaryWhenOllamaDisabled({
       ...cfg,
       contextWindowTokens: cfg.contextWindowTokens ?? inferModelContextWindowTokens(cfg.provider, cfg.model, cfg.numCtx),
       primaryModelId,
       primaryModelIdExplicit,
       modelRegistry: registry,
-    };
+    });
   }
-  return {
+  return withCloudPrimaryWhenOllamaDisabled({
     ...cfg,
     model: cfg.model || DEEPSEEK_FLASH_MODEL_ID,
     contextWindowTokens: cfg.contextWindowTokens ?? 1_000_000,
@@ -1657,7 +1745,7 @@ function withDefaultCloudModels(cfg: AIConfig): AIConfig {
       status: cfg.algoVizModels?.status ?? DEFAULT_AI_CONFIG.algoVizModels?.status,
       animation: cfg.algoVizModels?.animation ?? DEFAULT_AI_CONFIG.algoVizModels?.animation,
     },
-  };
+  });
 }
 
 function mergeModelRegistries(...registries: Array<ModelEntry[] | undefined>): ModelEntry[] {
@@ -1681,11 +1769,6 @@ function hasUserPersistedPrimary(parsed: Partial<AIConfig>): boolean {
     (!!parsed.modelRegistry?.some((m) => parsed.primaryModelId === m.id && !DEFAULT_MODEL_IDS.has(m.id)))
   );
 }
-
-function firstUserRegisteredModelId(registry: ModelEntry[]): string | undefined {
-  return registry.find((m) => !DEFAULT_MODEL_IDS.has(m.id))?.id;
-}
-
 const initialAIConfig: AIConfig = (() => {
   const envCfg = readEnvAIConfig();
   try {
@@ -1968,8 +2051,10 @@ export const useStore = create<State>((set, get) => {
       }));
       if (!isAbort) {
         handler.onFailure?.(e);
-        const lbl = get().tasks.find((t) => t.id === taskId)?.label ?? '任务';
-        toast.error(`${lbl} 失败：${String(e?.message || e).slice(0, 80)}`);
+        if (!handler.silent) {
+          const lbl = get().tasks.find((t) => t.id === taskId)?.label ?? '任务';
+          toast.error(`${lbl} 失败：${String(e?.message || e).slice(0, 80)}`);
+        }
       }
     } finally {
       abortersById.delete(taskId);
@@ -1990,6 +2075,45 @@ export const useStore = create<State>((set, get) => {
     }));
     setTimeout(tick, 0);
     return id;
+  };
+
+  const scheduleProactiveAnalyze = (scope: string, fileId: string, reason: string, delayMs: number) => {
+    const timerKey = `${scope}:${fileId}:${reason}`;
+    const prev = proactiveAnalyzeTimers.get(timerKey);
+    if (prev) clearTimeout(prev);
+    proactiveAnalyzeTimers.set(
+      timerKey,
+      setTimeout(() => {
+        proactiveAnalyzeTimers.delete(timerKey);
+        const st = get();
+        if (st.qaPendingProblemId) return;
+        const file = (st.filesByScope[scope] ?? []).find((f) => f.id === fileId);
+        if (!file || (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python')) return;
+        const nonEmptyLines = file.content.split('\n').filter((l) => l.trim().length > 0).length;
+        if (file.content.trim().length < 80 || nonEmptyLines < 5) return;
+        const running = st.tasks.some(
+          (t) =>
+            t.kind === 'analyze-code' &&
+            (t.status === 'running' || t.status === 'queued') &&
+            t.meta?.fileId === fileId,
+        );
+        if (running) return;
+        const hash = codeHash(file.content);
+        const cached = st.analysisByProblem[scope];
+        if (
+          cached?.fileId === fileId &&
+          cached.codeHash === hash &&
+          cached.analyzedAt &&
+          Date.now() - cached.analyzedAt < PROACTIVE_ANALYZE_COOLDOWN_MS
+        ) {
+          return;
+        }
+        const last = lastProactiveAnalyzeByKey.get(timerKey);
+        if (last && last.hash === hash && Date.now() - last.ts < PROACTIVE_ANALYZE_COOLDOWN_MS) return;
+        lastProactiveAnalyzeByKey.set(timerKey, { hash, ts: Date.now() });
+        st.enqueueAnalyze({ reason, silent: true, proactive: true, scope, fileId });
+      }, delayMs),
+    );
   };
 
   // ---- helpers ----
@@ -2944,11 +3068,17 @@ export const useStore = create<State>((set, get) => {
       });
       // Coach 主动嗅探挂钩（全部静默，失败/超时也不打扰）
       const st = get();
+      const problem = scope === DRAFT_SCOPE ? undefined : st.problems.find((p) => p.id === scope);
+      const sampleAccepted = !!problem && isSampleAcceptedRun(problem, snap);
       if (snap.exitCode !== 0 && st.diagnoseOnFailEnabled) {
         // A. 跑失败 → 800ms 后归因（让 stderr / 日志完全 flush）
         setTimeout(() => {
           void get().requestRuntimeDiagnosis(scope);
         }, 800);
+        scheduleProactiveAnalyze(scope, snap.fileId, 'run-failed-inline', 1800);
+      }
+      if (sampleAccepted && st.constraintSanityEnabled) {
+        scheduleProactiveAnalyze(scope, snap.fileId, 'sample-passed-inline', 2200);
       }
       if (
         snap.exitCode === 0 &&
@@ -3481,34 +3611,43 @@ export const useStore = create<State>((set, get) => {
 
     enqueueAnalyze: (opts) => {
       const st = get();
-      if (!ensureOfflineFastLane(st.aiConfig)) return null;
+      if (opts?.silent) {
+        if (isEffectivelyOffline() && !hasLocalFastLaneTarget(st.aiConfig)) return null;
+      } else if (!ensureOfflineFastLane(st.aiConfig)) {
+        return null;
+      }
       // ollama 等本地服务不需要 apiKey
       const needsKey = st.aiConfig.provider !== 'ollama';
       if (needsKey && !st.aiConfig.apiKey) {
+        if (opts?.silent) return null;
         toast.error('请先在设置里填 API Key');
         set({ settingsOpen: true });
         return null;
       }
       if (!st.aiConfig.baseUrl) {
+        if (opts?.silent) return null;
         toast.error('请先在设置里配 Base URL');
         set({ settingsOpen: true });
         return null;
       }
-      const scopeKey = st.activeProblemId ?? DRAFT_SCOPE;
-      const activeFileId = st.activeFileIdByScope[scopeKey];
+      const scopeKey = opts?.scope ?? st.activeProblemId ?? DRAFT_SCOPE;
+      const activeFileId = opts?.fileId ?? st.activeFileIdByScope[scopeKey];
       const files = st.filesByScope[scopeKey] ?? [];
       const file = files.find((f) => f.id === activeFileId);
       if (!file) {
+        if (opts?.silent) return null;
         toast.error('当前没有活跃文件');
         return null;
       }
       if (file.language !== 'cpp' && file.language !== 'c' && file.language !== 'python') {
+        if (opts?.silent) return null;
         toast.error(`${file.language} 文件不能直接分析（请切到代码文件）`);
         return null;
       }
       // 阈值：少于 3 行非空代码或 < 30 字符 → 没什么可分析
       const nonEmptyLines = file.content.split('\n').filter((l) => l.trim().length > 0).length;
       if (file.content.trim().length < 30 || nonEmptyLines < 3) {
+        if (opts?.silent) return null;
         toast.warning('代码太短了', { description: '至少写 3 行实质代码再触发分析（节省 AI 调用）' });
         return null;
       }
@@ -3521,11 +3660,13 @@ export const useStore = create<State>((set, get) => {
           t.label.endsWith(`· ${file.name}`),
       );
       if (existing) {
-        toast.info('已有分析在跑，请等当前结果', { duration: 1500 });
+        if (!opts?.silent) {
+          toast.info('已有分析在跑，请等当前结果', { duration: 1500 });
+        }
         return existing.id;
       }
-      const problem = st.activeProblemId
-        ? st.problems.find((p) => p.id === st.activeProblemId)
+      const problem = scopeKey !== DRAFT_SCOPE
+        ? st.problems.find((p) => p.id === scopeKey)
         : undefined;
 
       const label = problem
@@ -3581,7 +3722,7 @@ export const useStore = create<State>((set, get) => {
 
             // 取最近一次运行快照（让 AI 看到 stderr / exitCode）
             // 仅当快照对应当前 file 且 30 分钟内才用，避免给 AI 过期上下文
-            const runSnap = get().lastRunByScope[problem?.id ?? DRAFT_SCOPE];
+            const runSnap = get().lastRunByScope[scopeKey];
             const runtimeContext =
               runSnap &&
               runSnap.fileId === file.id &&
@@ -3649,13 +3790,14 @@ export const useStore = create<State>((set, get) => {
                 runtimeContext,
                 escalation,
                 astFeatures,
+                proactive: opts?.proactive,
               },
               { onChunk, onRetry, signal },
             );
           },
           onSuccess: async (result) => {
             const r = result as AnalysisResult;
-            const pid = problem?.id ?? DRAFT_SCOPE;
+            const pid = scopeKey;
             const stamped: AnalysisResult = {
               ...r,
               fileId: file.id,
@@ -3695,12 +3837,15 @@ export const useStore = create<State>((set, get) => {
               detail: stamped.overallComment ? stamped.overallComment.slice(0, 240) : undefined,
               problemId: problem?.id,
             });
-            toast.success(
-              `分析完成：${stamped.issues.length === 0 ? '没发现明显问题' : `${stamped.issues.length} 个问题`}`,
-            );
+            if (!opts?.silent) {
+              toast.success(
+                `分析完成：${stamped.issues.length === 0 ? '没发现明显问题' : `${stamped.issues.length} 个问题`}`,
+              );
+            }
           },
+          silent: opts?.silent,
         },
-        { problemId: problem?.id, fileId: file.id },
+        { problemId: problem?.id, fileId: file.id, reason: opts?.reason, proactive: opts?.proactive },
       );
     },
 
@@ -3869,12 +4014,6 @@ export const useStore = create<State>((set, get) => {
 
     enqueueHackCase: (opts) => {
       const st = get();
-      if (st.aiConfig.ollamaMode === 'disabled') {
-        toast.warning('Hack Case 需要 Ollama 模式', {
-          description: '这是 AC 后本地挑战功能；可在「设置」顶部开启 Ollama 模式后使用',
-        });
-        return null;
-      }
       if (!st.activeProblemId) {
         toast.error('请先激活一道题目');
         return null;
@@ -5377,7 +5516,13 @@ int main() {
             userNote: r.rawText || r.message,
           });
           if (isMistake) {
-            get().enqueueAnalyze({ reason: `oj-${verdict}` });
+            get().enqueueAnalyze({
+              reason: `oj-${verdict}`,
+              silent: true,
+              proactive: true,
+              scope: problem.id,
+              fileId: file.id,
+            });
           }
         },
       }, { problemId: problem.id, fileId: file.id, source });

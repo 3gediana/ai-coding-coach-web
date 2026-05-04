@@ -122,9 +122,21 @@ export interface AlgoVizDetectionSchema {
 export interface AlgoVizTrace {
   algoName: string;
   family: string;
+  promptFamilyRoute?: AlgoVizPromptFamilyRoute | null;
   templateRoute?: AlgoVizTemplateRoute | null;
   sample: Record<string, unknown>;
   states: AlgoVizTraceState[];
+}
+
+export type AlgoVizPromptFamilyId =
+  | 'cinematic-brightstage-curve-v22'
+  | 'cinematic-brightstage-curve-v30';
+
+export interface AlgoVizPromptFamilyRoute {
+  promptFamilyId: AlgoVizPromptFamilyId | string;
+  topologyKind: string;
+  confidence: number;
+  evidence: string[];
 }
 
 export interface AlgoVizTemplateRoute {
@@ -147,6 +159,7 @@ export interface AlgoVizTraceState {
 }
 
 export interface AlgoVizVisualPlan {
+  promptFamilyRoute?: AlgoVizPromptFamilyRoute | null;
   layout:
     | 'hero_side_panels'
     | 'grid_2x2'
